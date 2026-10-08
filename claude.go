@@ -307,7 +307,7 @@ func (p *proc) exited() error { return fmt.Errorf("claude exited: %v", p.wait())
 // mid-conversation system messages pins its environment block right after
 // the first message. The API documents a 20-block lookback that should find
 // a message's old end after it grew, but through Claude Code that never read
-// back in our measurements (Fable 5.1, Opus 5.5, Sonnet 5.5, Haiku 4.5),
+// back in our measurements (Fable 5.1, Opus 5.5, Sonnet 5.5, Haiku 5.5),
 // while an exact repeat of a marked prefix always did. So a call opens with:
 //
 //	[view up to its last multiple of 64 lines] [env] ok [rest of the view] [input]

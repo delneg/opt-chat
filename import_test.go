@@ -307,9 +307,16 @@ func TestImportNotes(t *testing.T) {
 	if out := importInto(t, c, path, importOpts{}, "\n"); !strings.HasPrefix(out, "2 notes, one per line.") || len(logged(c)) != 0 {
 		t.Fatalf("declined: %q, logged %q", out, logged(c))
 	}
-	importInto(t, c, path, importOpts{}, "y\n")
+	// The chat reads what follows the answer.
+	in := strings.NewReader("y\nhello\n")
+	if err := importChats(c, path, importOpts{}, in, io.Discard); err != nil {
+		t.Fatal(err)
+	}
 	if got := logged(c); !slices.Equal(got, []string{"note: I like F#", "note: I dislike Haskell"}) {
 		t.Fatal(got)
+	}
+	if rest, _ := io.ReadAll(in); string(rest) != "hello\n" {
+		t.Fatalf("left for the chat: %q", rest)
 	}
 }
 

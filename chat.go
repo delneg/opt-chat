@@ -409,7 +409,7 @@ func (c *Chat) next() (key, bool) {
 }
 
 func (c *Chat) pump() {
-	for c.compact != nil && len(c.busy) < jobs { // nil: importing, the next run builds
+	for c.compact != nil && len(c.busy) < jobs { // nil: before the chat starts, or quitting
 		k, ok := c.next()
 		if !ok {
 			return

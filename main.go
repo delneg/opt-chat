@@ -38,7 +38,7 @@ func main() {
 	ceffort := flag.String("compact-effort", "xhigh", "effort for compactions")
 	perm := flag.String("permission-mode", "auto", "Claude Code permission mode")
 	tools := flag.String("tools", "Bash,Read,Edit,Write,WebSearch,WebFetch", "Claude Code tools")
-	importPath := flag.String("import", "", "import past chats, then exit: a ~/.claude or ~/.codex directory, a session's .jsonl, a Claude or ChatGPT export (.zip), or a text file whose lines become notes")
+	importPath := flag.String("import", "", "import past chats, then chat: a ~/.claude or ~/.codex directory, a session's .jsonl, a Claude or ChatGPT export (.zip), or a text file whose lines become notes")
 	importSince := flag.String("import-since", "", "import only messages from this day on (YYYY-MM-DD)")
 	importTools := flag.Bool("import-tools", false, "import tool calls and results too")
 	importSkip := flag.String("import-skip", "", "skip sessions whose directory (or a chat's title) contains any of these, comma-separated")
@@ -58,10 +58,10 @@ func main() {
 		switch err := importChats(c, *importPath, o, os.Stdin, os.Stdout); {
 		case errors.Is(err, errDeclined):
 			fmt.Println("Nothing imported.")
+			return
 		case err != nil:
 			fatal("import: %v", err)
 		}
-		return
 	}
 	system := prompt
 	if b, err := os.ReadFile(filepath.Join(*dir, "AGENTS.md")); err == nil {

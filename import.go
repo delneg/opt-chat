@@ -729,7 +729,7 @@ func importChats(c *Chat, path string, o importOpts, in io.Reader, out io.Writer
 			return errDeclined
 		}
 		c.logMsgs(notes)
-		fmt.Fprintln(out, "Imported: the next run summarizes them.")
+		fmt.Fprintln(out, "Imported.")
 		return nil
 	}
 	sessions, found, err := readSessions(path, keeper(c.imported(), o))
@@ -751,12 +751,20 @@ func importChats(c *Chat, path string, o importOpts, in io.Reader, out io.Writer
 		return errDeclined
 	}
 	c.logSessions(sessions)
-	fmt.Fprintln(out, "Imported: the next run summarizes them.")
+	fmt.Fprintln(out, "Imported.")
 	return nil
 }
 
 func confirm(in io.Reader, out io.Writer) bool {
 	fmt.Fprint(out, "Import? The log is append-only: this can't be undone. [y/N] ")
-	answer, _ := bufio.NewReader(in).ReadString('\n')
-	return slices.Contains([]string{"y", "yes"}, strings.ToLower(strings.TrimSpace(answer)))
+	// Byte by byte: what follows the answer is the chat's.
+	var answer []byte
+	for b := make([]byte, 1); ; {
+		if n, err := in.Read(b); n == 1 && b[0] != '\n' {
+			answer = append(answer, b[0])
+		} else if n == 1 || err != nil {
+			break
+		}
+	}
+	return slices.Contains([]string{"y", "yes"}, strings.ToLower(strings.TrimSpace(string(answer))))
 }

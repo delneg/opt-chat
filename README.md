@@ -21,7 +21,7 @@ Requires Go 1.27 and a logged-in `claude` CLI.
 go build -o opt-chat .
 ./opt-chat                       # chat in ~/.opt-chat, tools run in ~
 ./opt-chat -dir ~/chats/work -cwd ~/dev
-./opt-chat -import ~/.claude      # import your past chats, then exit
+./opt-chat -import ~/.claude      # import your past chats, then chat
 ```
 
 - Type a message and press Enter. A paste of many lines stays one message.
@@ -50,7 +50,7 @@ go build -o opt-chat .
 | `-compact-effort` | `xhigh` | effort for compactions |
 | `-permission-mode` | `auto` | Claude Code permission mode for turns and subagents |
 | `-tools` | `Bash,Read,Edit,Write,WebSearch,WebFetch` | Claude Code tools |
-| `-import` | | import past chats, then exit (below) |
+| `-import` | | import past chats first (below) |
 | `-import-since` | | import only messages from this day on, `YYYY-MM-DD` |
 | `-import-tools` | off | import tool calls and results too |
 | `-import-skip` | | skip sessions whose directory (or chat title) contains any of these, comma-separated |
@@ -86,11 +86,19 @@ summarizing them takes, and asks: the log is append-only. Importing again
 adds only what is new since, so a session that went on comes in where it left
 off, and a line that a forked or resumed session copied comes in once.
 
-The next run summarizes the import, 8 compactions at a time, and a turn waits
-until every message is summarized (it says how many are left, each minute).
+Then the chat starts and summarizes the import, 8 compactions at a time. A
+turn waits until every message is summarized (it says how many are left, each
+minute). Quit whenever you like: the next run goes on where this one stopped.
 UniiChat instead answers meanwhile from a partial tree; here a turn never sees
-a message unsummarized, as the recipe says, so import what you want, using
-`-import-since`, and let the first run build it.
+a message unsummarized, as the recipe says.
+
+The time goes to the compaction model's thinking. Building one day of chats
+at each effort, Haiku 5.5 thought about 10,400 tokens a line at the recipe's
+`xhigh` (41 s a call), 2,600 at `high` (12 s) and 1,100 at `medium` (7 s).
+Lines at `high` read as well as at `xhigh`; at `medium` and below the model
+more often tried a tool or wrote about itself in a line. So for a big import,
+`-compact-effort high` builds about 3x faster, on a quarter of the usage.
+Like every flag, it lasts until you quit.
 
 ## Files
 

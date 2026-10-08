@@ -44,15 +44,12 @@ type pastMsg struct {
 // importKey names a session across imports: by its id when it has one, so
 // a session whose transcript Claude Code deleted, read again from its
 // history, is still the one imported before.
-var importKey = func() func(note string) string {
-	id := regexp.MustCompile(`^(?:Claude Code|Codex) session (\S+?)(?: in |, from )`)
-	return func(note string) string {
-		if m := id.FindStringSubmatch(note); m != nil {
-			return m[1]
-		}
-		return note
+func importKey(note string) string {
+	if m := sessionID.FindStringSubmatch(note); m != nil {
+		return m[1]
 	}
-}()
+	return note
+}
 
 // note heads the session in the log, and names it for the next import.
 func (s *session) note() string {
@@ -82,6 +79,7 @@ var (
 	// Codex's injected context: <environment_context>, AGENTS.md, ...
 	codexSkip   = regexp.MustCompile(`^(<[a-z_]+[ >]|# AGENTS\.md)`)
 	sessionFile = regexp.MustCompile(`(^|/)(projects|sessions|archived_sessions)/`)
+	sessionID   = regexp.MustCompile(`^(?:Claude Code|Codex) session (\S+?)(?: in |, from )`)
 	// In Claude Code's history: a shell line, or a command.
 	historySkip = regexp.MustCompile(`^(!|` + slashCommand + `)`)
 	pasted      = regexp.MustCompile(`\[Pasted text #(\d+)(?: \+\d+ lines)?\]`)
@@ -110,9 +108,9 @@ func readSessions(path string, keep func(*session, pastMsg) bool) ([]session, in
 			transcripts[strings.TrimSuffix(filepath.Base(p), ".jsonl")] = true
 			return err
 		})
-		if h := filepath.Join(abs, "history.jsonl"); err == nil && fileExists(h) {
+		if err == nil {
 			var old []session
-			old, err = readHistory(h, transcripts, keep)
+			old, err = readHistory(filepath.Join(abs, "history.jsonl"), transcripts, keep)
 			all = append(all, old...)
 		}
 	case ext == ".jsonl":
@@ -140,15 +138,15 @@ func readSessions(path string, keep func(*session, pastMsg) bool) ([]session, in
 	return slices.DeleteFunc(all, func(s session) bool { return len(s.msgs) == 0 }), found, err
 }
 
-func fileExists(p string) bool { _, err := os.Stat(p); return err == nil }
-
 // readHistory reads Claude Code's history.jsonl, every prompt the user
 // typed, for the sessions whose transcripts are gone: Claude Code deletes
 // them after 30 days by default. Their user's words survive; the rest
 // doesn't, and the note says so.
 func readHistory(path string, transcripts map[string]bool, keep func(*session, pastMsg) bool) ([]session, error) {
 	f, err := os.Open(path)
-	if err != nil {
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	} else if err != nil {
 		return nil, err
 	}
 	defer f.Close()

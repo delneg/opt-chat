@@ -27,6 +27,9 @@ func (a *Agent) Spawn(name, task string) string {
 	if name == "" {
 		name = "agent"
 	}
+	if !a.begin() {
+		return "opt-chat is quitting."
+	}
 	a.mu.Lock()
 	base := name
 	for n := 2; ; n++ { // names are forever: zoom("Name") opens its log
@@ -39,7 +42,10 @@ func (a *Agent) Spawn(name, task string) string {
 	}
 	a.running[name] = nil // reserved until its call starts
 	a.mu.Unlock()
-	go a.runAgent(name, task)
+	go func() {
+		defer a.calls.Done() // after its report is in the chat
+		a.runAgent(name, task)
+	}()
 	return fmt.Sprintf("Started [%s] in the background. Its report will come as a message starting \"[%s]\".", name, name)
 }
 
@@ -49,10 +55,10 @@ func (a *Agent) Tell(name, text string) string {
 	defer a.mu.Unlock()
 	p := a.running[name]
 	if p == nil {
-		return fmt.Sprintf("No agent [%s] is taking messages.", name)
+		return fmt.Sprintf("No subagent [%s] is taking messages.", name)
 	}
-	a.agentWrite(name, "user", text)
-	if !p.send(text) {
+	a.agentWrite(name, "opt", text)
+	if !p.send(textBlock(text)) {
 		return fmt.Sprintf("[%s] has just finished.", name)
 	}
 	return "Sent."
@@ -66,11 +72,17 @@ func (a *Agent) agentWrite(name, kind, text string) {
 
 func (a *Agent) runAgent(name, task string) {
 	report := func(text string) {
+		if a.life.Err() != nil {
+			text = "stopped: opt-chat quit before this subagent finished."
+		}
 		a.mu.Lock()
 		delete(a.running, name)
 		a.mu.Unlock()
 		dim(fmt.Sprintf("[%s] done", name))
-		a.report("[" + name + "] " + text)
+		if !strings.HasPrefix(text, "["+name+"]") { // as the prompt asks of a report
+			text = "[" + name + "] " + text
+		}
+		a.report(text)
 	}
 	if err := os.MkdirAll(filepath.Join(a.chat.dir, "agents"), 0o700); err != nil {
 		report("failed: " + err.Error())
@@ -79,7 +91,10 @@ func (a *Agent) runAgent(name, task string) {
 	a.agentWrite(name, "task", task)
 	dim(fmt.Sprintf("[%s] started", name))
 	c := a.chat
-	c.settle(context.Background(), func(int) {})
+	if c.settle(a.life, func(int) {}) != nil {
+		report("")
+		return
+	}
 	c.mu.Lock()
 	lines := c.lines(c.view.keys)
 	c.mu.Unlock()
@@ -100,12 +115,13 @@ func (a *Agent) runAgent(name, task string) {
 			case e.Type == "assistant" && b.Type == "tool_use":
 				a.agentWrite(name, "tool", b.Name+" "+string(b.Input))
 			case e.Type == "user" && b.Type == "tool_result":
-				a.agentWrite(name, "echo", clip(resultText(b.Content), clipMax))
+				out, _ := resultContent(b.Content)
+				a.agentWrite(name, "echo", clip(out, clipMax))
 			}
 		}
 	}
 	var u usage
-	first, second := viewMessages(lines, fmt.Sprintf("You are agent [%s]. Your task:\n%s", name, task))
+	first, second := viewMessages(lines, []block{textBlock(fmt.Sprintf("You are subagent [%s]. Your task:\n%s", name, task))})
 	if err := a.ack(p, first, &u, each); err != nil {
 		p.wait()
 		report("failed: " + err.Error())
@@ -141,11 +157,11 @@ func (a *Agent) runAgent(name, task string) {
 	report(final)
 }
 
-// ZoomAgent gives an agent's whole chat.
+// ZoomAgent gives a subagent's whole chat.
 func (c *Chat) ZoomAgent(name string) string {
 	b, err := os.ReadFile(filepath.Join(c.dir, "agents", badName.ReplaceAllString(name, "-")+".log"))
 	if err != nil {
-		return fmt.Sprintf("No agent [%s].", name)
+		return fmt.Sprintf("No subagent [%s].", name)
 	}
 	return clip(string(b), clipMax)
 }

@@ -10,21 +10,29 @@ import (
 func TestMCP(t *testing.T) {
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	c.Log("user", "hi")
-	a := &Agent{chat: c, running: map[string]*proc{}, writing: map[string]chan struct{}{}}
-	cfg, err := serveMCP(a)
+	png, err := c.saveImage([]byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	var conf struct {
-		MCPServers map[string]struct {
-			URL string `json:"url"`
-		} `json:"mcpServers"`
-	}
-	if err := json.Unmarshal([]byte(cfg), &conf); err != nil {
+	c.Log("user", "see", png)
+	a := &Agent{chat: c, running: map[string]*proc{}, writing: map[string]chan struct{}{}}
+	cfg, agentCfg, err := serveMCP(a)
+	if err != nil {
 		t.Fatal(err)
 	}
-	url := conf.MCPServers["opt"].URL
-	call := func(body string) (int, map[string]any) {
+	urlOf := func(cfg string) string {
+		var conf struct {
+			MCPServers map[string]struct {
+				URL string `json:"url"`
+			} `json:"mcpServers"`
+		}
+		if err := json.Unmarshal([]byte(cfg), &conf); err != nil {
+			t.Fatal(err)
+		}
+		return conf.MCPServers["opt"].URL
+	}
+	url, agentURL := urlOf(cfg), urlOf(agentCfg)
+	post := func(url, body string) (int, map[string]any) {
 		resp, err := http.Post(url, "application/json", strings.NewReader(body))
 		if err != nil {
 			t.Fatal(err)
@@ -34,9 +42,9 @@ func TestMCP(t *testing.T) {
 		json.UnmarshalRead(resp.Body, &out)
 		return resp.StatusCode, out
 	}
-	text := func(out map[string]any) string {
-		return out["result"].(map[string]any)["content"].([]any)[0].(map[string]any)["text"].(string)
-	}
+	call := func(body string) (int, map[string]any) { return post(url, body) }
+	content := func(out map[string]any) []any { return out["result"].(map[string]any)["content"].([]any) }
+	text := func(out map[string]any) string { return content(out)[0].(map[string]any)["text"].(string) }
 
 	if code, out := call(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}`); code != 200 ||
 		out["result"].(map[string]any)["protocolVersion"] != "2025-06-18" {
@@ -51,8 +59,8 @@ func TestMCP(t *testing.T) {
 	for args, want := range map[string]string{
 		`{"name":"zoom","arguments":{"id":0,"n":1}}`:             "0+1|user: hi",
 		`{"name":"zoom","arguments":{"id":"0","n":1}}`:           "0+1|user: hi",
-		`{"name":"zoom","arguments":{"id":"Nobody"}}`:            "No agent [Nobody].",
-		`{"name":"tell","arguments":{"name":"X","message":"m"}}`: "No agent [X] is taking messages.",
+		`{"name":"zoom","arguments":{"id":"Nobody"}}`:            "No subagent [Nobody].",
+		`{"name":"tell","arguments":{"name":"X","message":"m"}}`: "No subagent [X] is taking messages.",
 		`{"name":"spawn","arguments":{"name":"X","task":" "}}`:   "No task given.",
 	} {
 		if _, out := call(`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":` + args + `}`); text(out) != want {
@@ -61,6 +69,19 @@ func TestMCP(t *testing.T) {
 	}
 	if _, out := call(`{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"date","arguments":{"id":0}}}`); !strings.Contains(text(out), "20") {
 		t.Fatalf("date: %v", out)
+	}
+	_, out := call(`{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"zoom","arguments":{"id":1,"n":1}}}`)
+	if img := content(out); len(img) != 2 || text(out) != "1+1|user: see" || img[1].(map[string]any)["type"] != "image" ||
+		img[1].(map[string]any)["mimeType"] != "image/png" {
+		t.Fatalf("zoom of a message with an image: %v", out)
+	}
+	for _, args := range []string{`{"name":"spawn","arguments":{"name":"X","task":"t"}}`, `{"name":"tell","arguments":{"name":"X","message":"m"}}`} {
+		if _, out := post(agentURL, `{"jsonrpc":"2.0","id":7,"method":"tools/call","params":`+args+`}`); text(out) != "Only Opt starts and tells subagents." {
+			t.Fatalf("a subagent's %s: %v", args, out)
+		}
+	}
+	if _, out := post(agentURL, `{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"zoom","arguments":{"id":0,"n":1}}}`); text(out) != "0+1|user: hi" {
+		t.Fatalf("a subagent's zoom: %v", out)
 	}
 	if _, out := call(`{"jsonrpc":"2.0","id":5,"method":"resources/list"}`); out["error"] == nil {
 		t.Fatalf("unknown method: %v", out)

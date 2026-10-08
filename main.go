@@ -13,6 +13,8 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -25,12 +27,12 @@ func main() {
 	home, _ := os.UserHomeDir()
 	dir := flag.String("dir", filepath.Join(home, ".opt-chat"), "where the chat lives; its AGENTS.md holds your instructions")
 	cwd := flag.String("cwd", home, "where Opt's tools run")
-	model := flag.String("model", "opus", "model for turns")
-	effort := flag.String("effort", "", "effort for turns: low, medium, high, xhigh, max (empty: the model's default)")
+	model := flag.String("model", "fable", "model for turns and subagents")
+	effort := flag.String("effort", "", "effort for turns and subagents: low, medium, high, xhigh, max (empty: the model's default)")
 	cmodel := flag.String("compact-model", "haiku", "model for compactions")
 	ceffort := flag.String("compact-effort", "xhigh", "effort for compactions")
-	perm := flag.String("permission-mode", "auto", "Claude Code permission mode for turns")
-	tools := flag.String("tools", "Bash,Read,Edit,Write,WebSearch,WebFetch", "Claude Code tools for turns")
+	perm := flag.String("permission-mode", "auto", "Claude Code permission mode")
+	tools := flag.String("tools", "Bash,Read,Edit,Write,WebSearch,WebFetch", "Claude Code tools")
 	importFile := flag.String("import", "", "log each line of this file as a note (memories from before the chat), then exit")
 	flag.Parse()
 
@@ -60,9 +62,10 @@ func main() {
 	h := &harness{}
 	a := &Agent{chat: c, system: system, model: *model, effort: *effort,
 		cmodel: *cmodel, ceffort: *ceffort, perm: *perm, cwd: *cwd, tools: *tools,
-		running: map[string]*proc{}, writing: map[string]chan struct{}{}, report: func(text string) { h.input(message{"work", text}) }}
+		running: map[string]*proc{}, writing: map[string]chan struct{}{}, report: func(text string) { h.input(message{kind: "work", text: text}) }}
+	a.life, a.stop = context.WithCancel(context.Background())
 	h.agent = a
-	if a.mcpConfig, err = serveMCP(a); err != nil {
+	if a.mcpConfig, a.agentMCP, err = serveMCP(a); err != nil {
 		fatal("mcp: %v", err)
 	}
 
@@ -74,6 +77,12 @@ func main() {
 	c.pump()
 	c.mu.Unlock()
 
+	quit := func() {
+		c.mu.Lock()
+		c.compact = nil // none starts from here on; the next run builds what is left
+		c.mu.Unlock()
+		h.quit()
+	}
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt)
 	in := readInput(os.Stdin)
@@ -81,14 +90,15 @@ func main() {
 		select {
 		case text, ok := <-in:
 			if !ok {
-				h.stop()
+				quit()
 				return
 			}
 			if strings.TrimSpace(text) != "" {
-				h.input(message{"user", text})
+				h.input(message{kind: "user", text: text, images: attach(c, text)})
 			}
 		case <-sig:
 			if !h.stop() {
+				quit()
 				return
 			}
 			dim("[stopped]")
@@ -99,25 +109,45 @@ func main() {
 // harness queues the user's messages: one turn at a time, and a message sent
 // while a turn runs reaches it between tool calls.
 type harness struct {
-	agent   *Agent
-	mu      sync.Mutex
-	queue   []message
-	turn    *Turn
-	cancel  context.CancelFunc
-	running bool
+	agent    *Agent
+	mu       sync.Mutex
+	queue    []message
+	turn     *Turn
+	cancel   context.CancelFunc
+	running  bool
+	quitting bool
+	loops    sync.WaitGroup
 }
 
 func (h *harness) input(m message) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if h.quitting { // a report from a subagent being stopped
+		h.agent.chat.Log(m.kind, m.text, m.images...)
+		return
+	}
 	if h.turn != nil && h.turn.Send(m) {
 		return
 	}
 	h.queue = append(h.queue, m)
 	if !h.running {
 		h.running = true
+		h.loops.Add(1)
 		go h.loop()
 	}
+}
+
+// quit stops every call and subagent underway, and returns once they have
+// ended and the messages waiting are logged, unanswered.
+func (h *harness) quit() {
+	h.mu.Lock()
+	h.quitting = true
+	if h.cancel != nil {
+		h.cancel()
+	}
+	h.mu.Unlock()
+	h.agent.quit()
+	h.loops.Wait()
 }
 
 // stop cancels the wait or the turn underway; false when idle.
@@ -132,12 +162,16 @@ func (h *harness) stop() bool {
 }
 
 func (h *harness) loop() {
+	defer h.loops.Done()
 	c := h.agent.chat
 	for {
 		ctx, cancel := context.WithCancel(context.Background())
 		h.mu.Lock()
-		if len(h.queue) == 0 {
-			h.running, h.cancel = false, nil
+		if len(h.queue) == 0 || h.quitting {
+			for _, m := range h.queue {
+				c.Log(m.kind, m.text, m.images...) // stays in the log, unanswered
+			}
+			h.queue, h.running, h.cancel = nil, false, nil
 			h.mu.Unlock()
 			cancel()
 			return
@@ -156,7 +190,7 @@ func (h *harness) loop() {
 		h.mu.Unlock()
 		if err != nil {
 			for _, m := range msgs {
-				c.Log(m.kind, m.text) // stays in the log, unanswered
+				c.Log(m.kind, m.text, m.images...) // stays in the log, unanswered
 			}
 		} else if err := t.Run(ctx, msgs); err != nil && ctx.Err() == nil {
 			warn("turn: %v", err)
@@ -201,6 +235,54 @@ func readInput(r io.Reader) <-chan string {
 		}
 	}()
 	return out
+}
+
+var (
+	pathToken = regexp.MustCompile(`'[^']+'|"[^"]+"|(?:\\.|[^\s'"\\])+`) // as a terminal drops a path: quoted, or with escaped spaces
+	escaped   = regexp.MustCompile(`\\(.)`)
+)
+
+// imagePaths finds the image files a message names.
+func imagePaths(text string) []string {
+	var out []string
+	for _, tok := range pathToken.FindAllString(text, -1) {
+		p := strings.TrimRight(escaped.ReplaceAllString(tok, "$1"), ".,;:!?)") // a path ending a sentence
+		if tok[0] == '\'' || tok[0] == '"' {
+			p = tok[1 : len(tok)-1]
+		}
+		if rest, ok := strings.CutPrefix(p, "~/"); ok {
+			home, _ := os.UserHomeDir()
+			p = filepath.Join(home, rest)
+		}
+		if !slices.Contains([]string{".png", ".jpg", ".jpeg", ".gif", ".webp"}, strings.ToLower(filepath.Ext(p))) {
+			continue
+		}
+		if fi, err := os.Stat(p); err == nil && fi.Mode().IsRegular() {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// attach saves the images a message names, for it to carry.
+func attach(c *Chat, text string) []string {
+	var names []string
+	for _, p := range imagePaths(text) {
+		b, err := os.ReadFile(p)
+		if err == nil {
+			var name string
+			if name, err = c.saveImage(b); err == nil && !slices.Contains(names, name) {
+				names = append(names, name)
+			}
+		}
+		if err != nil {
+			warn("%s: %v", p, err)
+		}
+	}
+	if len(names) > 0 {
+		dim(fmt.Sprintf("[%d image(s) attached]", len(names)))
+	}
+	return names
 }
 
 func warn(f string, a ...any) { fmt.Fprintf(os.Stderr, "\x1b[33m"+f+"\x1b[0m\n", a...) }

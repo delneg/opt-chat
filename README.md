@@ -8,7 +8,7 @@ turn starts fresh from a constant-size **view** of the whole chat. The model
 reads recent messages one line each and older ones coarser, and **zooms** into
 any line, down to the message itself, when it needs more detail.
 
-Claude Code is the tool loop. Every turn, agent and compaction is a
+Claude Code is the tool loop. Every turn, subagent and compaction is a
 `claude -p` call on your Claude subscription. opt-chat owns only the memory:
 the log, the tree, the view, and the `zoom`/`date`/`spawn`/`tell` tools,
 served to those calls over MCP.
@@ -25,8 +25,12 @@ go build -o opt-chat .
 ```
 
 - Type a message and press Enter. A paste of many lines stays one message.
+- To send an image, drop its file into the terminal or type its path, as
+  `/path/shot.png`, `'/path/my shot.png'` or `/path/my\ shot.png`. PNG,
+  JPEG, GIF and WebP go with the message.
 - A message sent while a turn runs reaches it between tool calls.
-- Ctrl-C stops the turn, or the wait before it. Ctrl-C when idle, or Ctrl-D, quits.
+- Ctrl-C stops the turn, or the wait before it. Ctrl-C when idle, or Ctrl-D,
+  quits: it stops every call and subagent underway and logs what was waiting.
 - Put your own instructions in `<dir>/AGENTS.md`: who you are, how your files
   are organized, how you want work done. They follow the system prompt. Edit
   the file only when you must, since the whole prompt cache starts over after
@@ -34,12 +38,12 @@ go build -o opt-chat .
 
 | flag | default | |
 |---|---|---|
-| `-model` | `opus` | model for turns and agents |
-| `-effort` | model default | effort for turns and agents |
+| `-model` | `fable` | model for turns and subagents |
+| `-effort` | model default | effort for turns and subagents |
 | `-compact-model` | `haiku` | model for compactions |
 | `-compact-effort` | `xhigh` | effort for compactions |
-| `-permission-mode` | `auto` | Claude Code permission mode for turns and agents |
-| `-tools` | `Bash,Read,Edit,Write,WebSearch,WebFetch` | Claude Code tools for turns and agents |
+| `-permission-mode` | `auto` | Claude Code permission mode for turns and subagents |
+| `-tools` | `Bash,Read,Edit,Write,WebSearch,WebFetch` | Claude Code tools |
 
 After each turn a dim line shows cache use for the view, for the turn, and
 for the compactions run since the last turn.
@@ -48,26 +52,36 @@ for the compactions run since the last turn.
 
 ```
 <dir>/
-  main/YYYY-MM-DD.jsonl   messages: {i, kind, text, size, date}, append-only, fsynced
+  main/YYYY-MM-DD.jsonl   messages: {i, kind, text, size, date, images}, append-only, fsynced
   tree/YYYY-MM-DD.jsonl   summary nodes: {l, i, text, size}, append-only, fsynced
   view.json               the view, as [l, i] pairs, kept across restarts
-  agents/<Name>.log       each agent's own steps
+  files/<hash>.<ext>      images, named by their content
+  agents/<Name>.log       each subagent's own steps
   AGENTS.md               your instructions (optional)
   lock                    one process per chat
 ```
 
 Back the directory up. Never edit the logs: they are the chat's history.
 
-## Agents
+## Images
 
-`spawn(name, task)` starts an agent in the background and returns at once. An
-agent is a fresh call that gets the view, then its task. Its steps go to
-`agents/<Name>.log`, which `zoom("Name")` opens. Its final reply comes back as
-a `work` message, `[Name] report`. If a turn is running, the report is
-injected into it; otherwise it starts a new turn. The chat never waits for an
-agent. `tell(name, message)` reaches a running agent between its tool calls.
-Agents run as long as opt-chat does: quitting stops them, and their reports
-are lost.
+A message's images are part of it. Yours go with your message; a tool
+result's, such as an image file that Read opened, go with its `echo`. The
+call sees them after the text, and so does the compaction that writes the
+message's line, which says in words what they show: a message with an image
+is never its own line. `zoom(id, 1)` gives the message whole, with its images.
+
+## Subagents
+
+`spawn(name, task)` starts a subagent in the background and returns at once.
+A subagent is a fresh call with the same prompt and tools, which gets the
+view, then its task. Its steps go to `agents/<Name>.log`, which
+`zoom("Name")` opens. Its final reply comes back as a `work` message,
+`[Name] report`. If a turn is running, the report is injected into it;
+otherwise it starts a new turn. The chat never waits for a subagent.
+`tell(name, message)` reaches a running subagent between its tool calls.
+Subagents can't start or tell subagents. Quitting stops them, and each one's
+report then says it was stopped.
 
 ## Where it departs from the recipe, and why
 
@@ -77,35 +91,52 @@ things, each measured through a logging proxy:
 1. **How the view is cached.** The recipe splits the view into blocks of 4
    lines, marks the last whole block, and relies on the API's 20-block
    lookback to find the previous call's entry. Claude Code places its own
-   marks: on the last two messages, plus, on Opus and Sonnet, on an
-   environment block that it pins after the first message. Growing a marked
-   message never read back from the cache on any model tried. Exact repeats
-   always did. So the view's first message holds its lines up to the last
-   multiple of 64, which stays byte-identical until 64 more lines arrive or a
-   batch merges. The model answers it "ok". The rest of the view and the
-   input follow in the second message. Each call reads the first message from
-   the cache and writes only the lines after it.
-2. **Compactions** run on another model than turns, so they could never read
-   the turns' cache. They get the same system prompt but no tools.
-3. **A failed compaction** is retried every 10 s, not only at the next
-   message, so a waiting turn never stalls until you type again.
+   marks, on the system prompt and on the last two messages, and on Fable,
+   Opus and Sonnet pins an environment block after the first message.
+   Growing a marked message never read back from the cache on any model
+   tried. Exact repeats always did. So the view's first message holds
+   its lines up to the last multiple of 64, which stays byte-identical until
+   64 more lines arrive or a batch merges. The model answers it "ok". The
+   rest of the view and the input follow in the second message. Each call
+   reads the first message from the cache and writes only the lines after
+   it.
+2. **"Never called" is enforced.** A compaction has the turns' system prompt
+   and tools, as the recipe says, but Claude Code would run a tool it calls,
+   so a `PreToolUse` hook refuses every call. It runs in the `default`
+   permission mode: the mode only adds reminders after the system prompt, and
+   auto mode, on a model without it, adds a random "Exited Auto Mode: ask
+   clarifying questions" mid-call. On one model, turns and compactions read
+   each other's tools and system prompt from the cache (measured on Fable).
+   The cache is per model, so with the recipe's Haiku they can't.
+3. **A failed compaction** is tried again at the next message, as the recipe
+   says, and also every 10 s, so a turn waiting on its line never waits for a
+   message that won't come.
 4. **The child environment** drops the variables of any Claude Code session
    that launched opt-chat. With them inherited, that session's token-budget
    reminder appeared in some calls and not others, and no two prompts
-   matched.
+   matched. It also turns off Claude Code's background shells: a call ends
+   with its reply, so a command left running in the background died unseen,
+   after the model had promised to report its result. Long work goes to
+   subagents, as in the recipe.
+
+The prompt is the recipe's, with Unii renamed Opt and the paragraph on
+computers dropped (opt-chat has no device tools), plus three additions: the
+two-part view, the `spawn` and `tell` tools, and a section for subagent
+calls.
 
 Everything else follows the recipe: the log and its kinds, the free nodes,
-512-byte lines, the merge order (`TestMostDueMatchesPush` checks it against
-Taelin's rollback push over 20,001 steps), the 128 KB → 64 KB sawtooth, the
-16–32 KB compaction view, the compaction tasks with ruler, cut and five tries,
-8 parallel compactions, ready-node queues, and waiting for summaries before
-every call.
-
-The recipe's computer-use tools and image support are not built.
+512-byte lines, tool output clipped to 30,000 characters, the merge order
+(`TestMostDueMatchesPush` checks it against Taelin's rollback push over
+20,001 steps), the 128 KB → 64 KB sawtooth, the 16–32 KB compaction view,
+the compaction tasks with ruler, cut and five tries, 8 parallel compactions,
+ready-node queues, and waiting for summaries before every call.
 
 ## Test
 
 ```sh
-go test ./...          # ~15 s: the sawtooth test fsyncs ~2,000 writes
+go test ./...          # ~20 s: the sawtooth test fsyncs ~2,000 writes
 go test -short ./...   # skips it
 ```
+
+The tests run turns, compactions and subagents against a fake `claude`: the
+test binary itself, speaking stream-json.

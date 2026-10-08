@@ -3,9 +3,14 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json/v2"
+	"errors"
 	"fmt"
 	"math/bits"
+	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
@@ -13,6 +18,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/samber/lo"
 )
@@ -23,8 +29,8 @@ const (
 	viewHi  = 128_000 // ...once it passes this
 	cviewLo = 16_000  // same sawtooth for the compactions' view
 	cviewHi = 32_000
-	jobs    = 8 // compactions running at once
-	clipMax = 30_000
+	jobs    = 8      // compactions running at once
+	clipMax = 30_000 // characters: a tool output's head and tail, and the most in one message
 	retryIn = 10 * time.Second
 	// A stuck compaction must not hold a job slot forever.
 	compactTimeout = 5 * time.Minute
@@ -41,11 +47,12 @@ func (k key) parent() key      { return key{k.L + 1, k.I / 2} }
 func (k key) kids() (a, b key) { return key{k.L - 1, 2 * k.I}, key{k.L - 1, 2*k.I + 1} }
 
 type Msg struct {
-	I    int       `json:"i"`
-	Kind string    `json:"kind"`
-	Text string    `json:"text"`
-	Size int       `json:"size"`
-	Date time.Time `json:"date"`
+	I      int       `json:"i"`
+	Kind   string    `json:"kind"`
+	Text   string    `json:"text"`
+	Size   int       `json:"size"`
+	Date   time.Time `json:"date"`
+	Images []string  `json:"images,omitzero"` // files/<hash>.<ext>, named by content
 }
 
 type Node struct {
@@ -65,17 +72,19 @@ type Chat struct {
 	view    view         // what turns see
 	cview   view         // what compactions see
 	queued  map[key]bool // waiting in ready0/readyM or running
-	busy    map[key]bool // running, or waiting out a retry
+	busy    map[key]bool // running
+	cooling map[key]bool // failed: tried again at the next message, or after retryIn
 	failed  map[key]bool // already reported
 	ready0  []int        // messages whose line needs a model call, in order
 	readyM  []key        // merges whose line needs a model call
 	changed chan struct{}
-	// compact builds one line with a model; set before the first pump.
-	compact func(ctx context.Context, context []string, task string) (string, error)
+	// compact builds one line with a model; set before the first pump, nil
+	// again at quit.
+	compact func(ctx context.Context, context []string, task []block) (string, error)
 }
 
 func openChat(dir string) (*Chat, error) {
-	for _, d := range []string{"main", "tree"} {
+	for _, d := range []string{"main", "tree", "files"} {
 		if err := os.MkdirAll(filepath.Join(dir, d), 0o700); err != nil {
 			return nil, err
 		}
@@ -91,7 +100,7 @@ func openChat(dir string) (*Chat, error) {
 	}
 	c := &Chat{
 		dir: dir, lock: lock, tree: map[key]string{}, queued: map[key]bool{}, busy: map[key]bool{},
-		failed: map[key]bool{}, changed: make(chan struct{}),
+		cooling: map[key]bool{}, failed: map[key]bool{}, changed: make(chan struct{}),
 		view: view{lo: viewLo, hi: viewHi}, cview: view{lo: cviewLo, hi: cviewHi},
 	}
 	err = load(filepath.Join(dir, "main"), func(m Msg) {
@@ -184,13 +193,17 @@ func (c *Chat) appendDay(sub string, v any) {
 	}
 }
 
-// Log appends one message, splitting text too long for one.
-func (c *Chat) Log(kind, text string) {
+// Log appends one message, splitting text too long for one. Its images
+// (names from saveImage) go with the first part.
+func (c *Chat) Log(kind, text string, images ...string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	for _, part := range splitText(text, clipMax) {
+	for j, part := range splitText(text, clipMax) {
 		i := len(c.msgs)
 		m := Msg{I: i, Kind: kind, Text: part, Size: len(kind) + 2 + len(part), Date: time.Now()}
+		if j == 0 {
+			m.Images = images
+		}
 		c.appendDay("main", m)
 		c.msgs = append(c.msgs, m)
 		c.need(key{0, i})
@@ -201,8 +214,47 @@ func (c *Chat) Log(kind, text string) {
 		}
 		c.saveView()
 	}
+	clear(c.cooling) // a failed compaction is tried again at the next message
 	c.pump()
 	c.notify()
+}
+
+// saveImage stores an image in files/, named by its content, and returns that name.
+func (c *Chat) saveImage(b []byte) (string, error) {
+	ext, ok := strings.CutPrefix(http.DetectContentType(b), "image/")
+	if !ok || !slices.Contains([]string{"png", "jpeg", "gif", "webp"}, ext) {
+		return "", fmt.Errorf("not a PNG, JPEG, GIF or WebP image")
+	}
+	sum := sha256.Sum256(b)
+	name := filepath.Join("files", hex.EncodeToString(sum[:16])+"."+ext)
+	if _, err := os.Stat(filepath.Join(c.dir, name)); err == nil {
+		return name, nil
+	}
+	f, err := os.CreateTemp(filepath.Join(c.dir, "files"), "tmp-*")
+	if err != nil {
+		return "", err
+	}
+	defer os.Remove(f.Name())
+	_, err = f.Write(b)
+	if err == nil {
+		err = f.Sync()
+	}
+	if err := errors.Join(err, f.Close()); err != nil {
+		return "", err
+	}
+	return name, os.Rename(f.Name(), filepath.Join(c.dir, name))
+}
+
+// imageBlocks loads saved images as content blocks for a call.
+func (c *Chat) imageBlocks(names []string) []block {
+	return lo.Map(names, func(name string, _ int) block {
+		b, err := os.ReadFile(filepath.Join(c.dir, name))
+		if err != nil {
+			return textBlock("[image lost: " + name + "]")
+		}
+		mt := "image/" + strings.TrimPrefix(filepath.Ext(name), ".")
+		return block{Type: "image", Source: &source{Type: "base64", MediaType: mt, Data: base64.StdEncoding.EncodeToString(b)}}
+	})
 }
 
 func (c *Chat) saveView() {
@@ -243,7 +295,7 @@ func (c *Chat) lines(keys []key) []string {
 func (c *Chat) freeText(k key) (string, bool) {
 	if k.L == 0 {
 		m := c.msgs[k.I]
-		return m.Kind + ": " + m.Text, m.Size <= nodeMax
+		return m.Kind + ": " + m.Text, m.Size <= nodeMax && len(m.Images) == 0 // an image takes a model to put in words
 	}
 	a, b := k.kids()
 	s := c.tree[a] + "\n" + c.tree[b]
@@ -300,17 +352,13 @@ func (c *Chat) enqueueMissing() {
 
 // next picks the next node to build: messages first, at most 8 deep, then merges.
 func (c *Chat) next() (key, bool) {
+	free := func(k key) bool { return !c.busy[k] && !c.cooling[k] }
 	for _, i := range c.ready0[:min(jobs, len(c.ready0))] {
-		if k := (key{0, i}); !c.busy[k] {
+		if k := (key{0, i}); free(k) {
 			return k, true
 		}
 	}
-	for _, k := range c.readyM {
-		if !c.busy[k] {
-			return k, true
-		}
-	}
-	return key{}, false
+	return lo.Find(c.readyM, free)
 }
 
 func (c *Chat) pump() {
@@ -321,31 +369,35 @@ func (c *Chat) pump() {
 		}
 		c.busy[k] = true
 		ctxLines, task := c.compactInput(k)
-		go c.build(k, ctxLines, task)
+		go c.build(k, c.compact, ctxLines, task)
 	}
 }
 
-func (c *Chat) build(k key, ctxLines []string, task string) {
+func (c *Chat) build(k key, compact func(context.Context, []string, []block) (string, error), ctxLines []string, task []block) {
 	ctx, cancel := context.WithTimeout(context.Background(), compactTimeout)
-	text, err := c.compact(ctx, ctxLines, task)
+	text, err := compact(ctx, ctxLines, task)
 	cancel()
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	delete(c.busy, k)
+	if err != nil && c.compact == nil {
+		return // quitting: the next run builds it
+	}
 	if err != nil {
 		if !c.failed[k] {
 			c.failed[k] = true
-			warn("compaction %s failed, retrying every %s: %v", k.name(), retryIn, err)
+			warn("compaction %s failed, trying again at the next message or in %s: %v", k.name(), retryIn, err)
 		}
-		// ponytail: fixed retry, so a waiting turn is never stuck until the next message.
+		c.cooling[k] = true
+		// ponytail: also on a timer, so a turn waiting on this line never waits for a message that won't come.
 		time.AfterFunc(retryIn, func() {
 			c.mu.Lock()
 			defer c.mu.Unlock()
-			delete(c.busy, k)
+			delete(c.cooling, k)
 			c.pump()
 		})
 		return
 	}
-	delete(c.busy, k)
 	delete(c.failed, k)
 	c.setNode(k, text)
 	c.pump()
@@ -356,7 +408,7 @@ var ruler = strings.Repeat("-", nodeMax)
 
 // compactInput is node k's context (the compaction view up to the node,
 // stopping at the first unbuilt line) and its task.
-func (c *Chat) compactInput(k key) ([]string, string) {
+func (c *Chat) compactInput(k key) ([]string, []block) {
 	until := k.end()
 	if k.L == 0 {
 		until = k.I
@@ -370,18 +422,20 @@ func (c *Chat) compactInput(k key) ([]string, string) {
 	}
 	if k.L == 0 {
 		m := c.msgs[k.I]
-		return c.lines(keys), fmt.Sprintf("Compaction: compress message %d into one line of at most 512 bytes\n"+
-			"(about 70 words), the length of this ruler:\n%s\n<input>\n%s: %s\n</input>", k.I, ruler, m.Kind, m.Text)
+		in := fmt.Sprintf("Compaction: compress message %d into one line of at most 512 bytes\n"+
+			"(about 70 words), the length of this ruler:\n%s\n<input>\n%s: %s\n", k.I, ruler, m.Kind, m.Text)
+		if len(m.Images) == 0 {
+			return c.lines(keys), []block{textBlock(in + "</input>")}
+		}
+		return c.lines(keys), slices.Concat([]block{textBlock(in)}, c.imageBlocks(m.Images), []block{textBlock("</input>")})
 	}
 	a, b := k.kids()
-	return c.lines(keys), fmt.Sprintf("Compaction: merge lines %s and %s, adjacent, into one line of at most\n"+
+	return c.lines(keys), []block{textBlock(fmt.Sprintf("Compaction: merge lines %s and %s, adjacent, into one line of at most\n"+
 		"512 bytes (about 70 words), the length of this ruler:\n%s\n"+
 		"<chat> may hold their messages, %d to %d, in more detail: take details\nof them from there too.\n"+
 		"<input>\n%s\n%s\n</input>",
-		a.name(), b.name(), ruler, k.start(), k.end()-1, flat(c.tree[a]), flat(c.tree[b]))
+		a.name(), b.name(), ruler, k.start(), k.end()-1, c.line(a), c.line(b)))}
 }
-
-func flat(s string) string { return strings.ReplaceAll(s, "\n", " ") }
 
 func (c *Chat) notify() {
 	close(c.changed)
@@ -410,19 +464,20 @@ func (c *Chat) settle(ctx context.Context, waiting func(n int)) error {
 	}
 }
 
-// Zoom opens line id+n into its two halves; n = 1 gives the message whole.
-func (c *Chat) Zoom(id, n int) string {
+// Zoom opens line id+n into its two halves; n = 1 gives the message whole,
+// with its images.
+func (c *Chat) Zoom(id, n int) (string, []string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if n < 1 || n&(n-1) != 0 || id < 0 || id%n != 0 || id+n > len(c.msgs) {
-		return fmt.Sprintf("No line %d+%d.", id, n)
+		return fmt.Sprintf("No line %d+%d.", id, n), nil
 	}
 	if n == 1 {
 		m := c.msgs[id]
-		return fmt.Sprintf("%d+1|%s: %s", id, m.Kind, m.Text)
+		return fmt.Sprintf("%d+1|%s: %s", id, m.Kind, m.Text), m.Images
 	}
 	a, b := key{bits.TrailingZeros(uint(n)), id / n}.kids()
-	return c.line(a) + "\n" + c.line(b)
+	return c.line(a) + "\n" + c.line(b), nil
 }
 
 func (c *Chat) Date(id int) string {
@@ -434,34 +489,46 @@ func (c *Chat) Date(id int) string {
 	return c.msgs[id].Date.Local().Format("Mon 2006-01-02 15:04:05 MST")
 }
 
-// splitText cuts s into pieces of at most n bytes, never inside a UTF-8 character.
+// splitText cuts s into pieces of at most n characters.
 func splitText(s string, n int) []string {
 	var out []string
-	for len(s) > n {
-		cut := n
-		for cut > 0 && !utf8Start(s[cut]) {
-			cut--
-		}
-		out = append(out, s[:cut])
-		s = s[cut:]
+	for utf8.RuneCountInString(s) > n {
+		i := runeOffset(s, n)
+		out = append(out, s[:i])
+		s = s[i:]
 	}
 	return append(out, s)
 }
 
-func utf8Start(b byte) bool { return b&0xC0 != 0x80 }
+// runeOffset is the byte offset of s's nth character.
+func runeOffset(s string, n int) int {
+	for i := range s {
+		if n == 0 {
+			return i
+		}
+		n--
+	}
+	return len(s)
+}
 
-// clip keeps the head and tail of a tool output, at most n bytes in all.
-func clip(s string, n int) string {
+// head is s's first n bytes at most, never cutting a character.
+func head(s string, n int) string {
 	if len(s) <= n {
 		return s
 	}
-	half := max(0, (n-len(fmt.Sprintf("\n[... %d bytes cut ...]\n", len(s))))/2)
-	h, t := half, len(s)-half // never inside a UTF-8 character
-	for h > 0 && !utf8Start(s[h]) {
-		h--
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
 	}
-	for t < len(s) && !utf8Start(s[t]) {
-		t++
+	return s[:n]
+}
+
+// clip keeps the head and tail of a tool output, at most n characters in all.
+func clip(s string, n int) string {
+	total := utf8.RuneCountInString(s)
+	if total <= n {
+		return s
 	}
-	return fmt.Sprintf("%s\n[... %d bytes cut ...]\n%s", s[:h], t-h, s[t:])
+	half := max(0, n-utf8.RuneCountInString(fmt.Sprintf("\n[... %d characters cut ...]\n", total))) / 2
+	h, t := runeOffset(s, half), runeOffset(s, total-half)
+	return fmt.Sprintf("%s\n[... %d characters cut ...]\n%s", s[:h], total-2*half, s[t:])
 }

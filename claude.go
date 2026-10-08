@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/base64"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
@@ -13,6 +14,8 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"syscall"
+	"time"
 )
 
 // Agent runs `claude -p` for turns and compactions: Claude Code is the tool
@@ -20,13 +23,18 @@ import (
 type Agent struct {
 	chat            *Chat
 	system          string // byte-identical across calls: the head of every cached prefix
-	mcpConfig       string
+	mcpConfig       string // the chat's tools, for turns and compactions
+	agentMCP        string // the same tools, for subagents, which can't spawn or tell
 	model, effort   string
 	cmodel, ceffort string
 	perm, cwd       string
 	tools           string
 
 	report func(text string) // hands an agent's report to the chat
+
+	life  context.Context // canceled at quit: every call stops
+	stop  context.CancelFunc
+	calls sync.WaitGroup // calls and subagents underway
 
 	mu          sync.Mutex
 	compactions int                      // since the last turn's report
@@ -69,12 +77,21 @@ func (a *Agent) takeCompactions() (int, usage) {
 type block struct {
 	Type     string         `json:"type"`
 	Text     string         `json:"text,omitempty"`
+	Source   *source        `json:"source,omitzero"` // image
 	Thinking string         `json:"thinking,omitempty"`
 	Name     string         `json:"name,omitempty"`
 	Input    jsontext.Value `json:"input,omitzero"`
 	Content  jsontext.Value `json:"content,omitzero"` // tool_result: a string or blocks
 	IsError  bool           `json:"is_error,omitzero"`
 }
+
+type source struct {
+	Type      string `json:"type"` // base64
+	MediaType string `json:"media_type"`
+	Data      string `json:"data"`
+}
+
+func textBlock(s string) block { return block{Type: "text", Text: s} }
 
 type usage struct {
 	Input  int `json:"input_tokens"`
@@ -120,12 +137,15 @@ func (e event) blocks() []block {
 
 // proc is one `claude -p` process speaking stream-json both ways.
 type proc struct {
-	prefix string // model and role: what its cache prefix depends on besides the messages
+	prefix string // what its cache prefix depends on besides the messages
 	cmd    *exec.Cmd
 	mu     sync.Mutex
 	stdin  io.WriteCloser // nil once closed
 	out    *bufio.Scanner
-	stderr strings.Builder
+	stderr strings.Builder // read only once the process has ended
+	ended  sync.Once
+	err    error
+	done   func()
 }
 
 type role int
@@ -136,32 +156,52 @@ const (
 	roleAgent
 )
 
-func (a *Agent) start(ctx context.Context, model, effort string, r role) (*proc, error) {
+// noTools blocks every tool call of a compaction. Its tools stay listed, the
+// same as a turn's, so that on one model both read one cache entry (gist §4).
+const noTools = `{"hooks":{"PreToolUse":[{"matcher":"*","hooks":[{"type":"command","command":"echo 'Compactions call no tools.' >&2; exit 2"}]}]}}`
+
+func (a *Agent) start(ctx context.Context, model, effort string, r role) (p *proc, err error) {
+	if !a.begin() {
+		return nil, errors.New("opt-chat is quitting")
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	unhook := context.AfterFunc(a.life, cancel)
+	done := func() { unhook(); cancel(); a.calls.Done() }
+	defer func() {
+		if err != nil {
+			done()
+		}
+	}()
+	mcp, perm := a.mcpConfig, a.perm
+	switch r {
+	case roleAgent:
+		mcp = a.agentMCP
+	case roleCompact:
+		// The mode only adds reminders after the system prompt. Auto mode,
+		// where a model lacks it, adds a random "Exited Auto Mode: ask
+		// clarifying questions" mid-call.
+		perm = "default"
+	}
+	// Every role gets the same system prompt and tools.
 	args := []string{"-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
-		"--model", model, "--system-prompt", a.system,
+		"--model", model, "--system-prompt", a.system, "--tools", a.tools, "--mcp-config", mcp,
+		"--permission-mode", perm, "--allowedTools", "mcp__opt__zoom,mcp__opt__date,mcp__opt__spawn,mcp__opt__tell",
 		// Nothing of the user's Claude Code setup leaks in: no hooks, plugins, CLAUDE.md or MCP servers.
 		"--setting-sources", "", "--strict-mcp-config", "--disable-slash-commands", "--no-session-persistence"}
 	if effort != "" {
 		args = append(args, "--effort", effort)
 	}
-	switch r {
-	case roleTurn:
-		args = append(args, "--tools", a.tools, "--mcp-config", a.mcpConfig, "--permission-mode", a.perm,
-			"--allowedTools", "mcp__opt__zoom,mcp__opt__date,mcp__opt__spawn,mcp__opt__tell")
-	case roleAgent: // agents don't spawn agents
-		args = append(args, "--tools", a.tools, "--mcp-config", a.mcpConfig, "--permission-mode", a.perm,
-			"--allowedTools", "mcp__opt__zoom,mcp__opt__date", "--disallowedTools", "mcp__opt__spawn,mcp__opt__tell")
-	default:
-		// A compaction calls no tools. It runs on another model, so it could
-		// not read the turns' cache entries anyway.
-		args = append(args, "--tools", "", "--mcp-config", `{"mcpServers":{}}`)
+	if r == roleCompact {
+		args = append(args, "--settings", noTools)
 	}
 	cmd := exec.CommandContext(ctx, "claude", args...)
+	// Stopped gently, so Claude Code can stop what its tools started.
+	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
+	cmd.WaitDelay = 5 * time.Second
 	cmd.Dir = a.cwd
 	cmd.Env = childEnv()
-	p := &proc{prefix: fmt.Sprint(model, r), cmd: cmd}
+	p = &proc{prefix: model + " " + effort, cmd: cmd, done: done}
 	cmd.Stderr = &p.stderr
-	var err error
 	if p.stdin, err = cmd.StdinPipe(); err != nil {
 		return nil, err
 	}
@@ -171,7 +211,29 @@ func (a *Agent) start(ctx context.Context, model, effort string, r role) (*proc,
 	}
 	p.out = bufio.NewScanner(stdout)
 	p.out.Buffer(nil, 64<<20)
-	return p, cmd.Start()
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	return p, nil
+}
+
+// begin counts a call or subagent about to start; false once quitting.
+func (a *Agent) begin() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.life.Err() != nil {
+		return false
+	}
+	a.calls.Add(1)
+	return true
+}
+
+// quit stops every call and subagent underway and waits until they have ended.
+func (a *Agent) quit() {
+	a.mu.Lock()
+	a.stop()
+	a.mu.Unlock()
+	a.calls.Wait()
 }
 
 // childEnv is this process's environment minus the variables that tie a
@@ -181,26 +243,24 @@ func (a *Agent) start(ctx context.Context, model, effort string, r role) (*proc,
 func childEnv() []string {
 	inherited := []string{"CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_CHILD_SESSION",
 		"CLAUDE_CODE_SESSION_ATTENDED", "CLAUDE_CODE_MESSAGING_SOCKET", "CLAUDE_CODE_MESSAGING_TOKEN",
-		"CLAUDE_CODE_EXECPATH", "CLAUDE_PID", "CLAUDE_EFFORT"}
-	return slices.DeleteFunc(os.Environ(), func(kv string) bool {
+		"CLAUDE_CODE_EXECPATH", "CLAUDE_PID", "CLAUDE_EFFORT", "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"}
+	env := slices.DeleteFunc(os.Environ(), func(kv string) bool {
 		k, _, _ := strings.Cut(kv, "=")
 		return slices.Contains(inherited, k)
 	})
+	// Long work goes to subagents, whose reports reach the chat. A shell left
+	// running in the background would die with its call, its result unseen.
+	return append(env, "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1")
 }
 
 // send writes one user message; false once stdin is closed.
-func (p *proc) send(texts ...string) bool {
+func (p *proc) send(content ...block) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.stdin == nil {
 		return false
 	}
-	content := make([]block, 0, len(texts))
-	for _, t := range texts {
-		if t != "" {
-			content = append(content, block{Type: "text", Text: t})
-		}
-	}
+	content = slices.DeleteFunc(slices.Clone(content), func(b block) bool { return b.Type == "text" && b.Text == "" })
 	b, _ := json.Marshal(map[string]any{"type": "user", "message": map[string]any{"role": "user", "content": content}})
 	_, err := p.stdin.Write(append(b, '\n'))
 	return err == nil
@@ -225,22 +285,28 @@ func (p *proc) next() (event, bool) {
 	return event{}, false
 }
 
+// wait ends the call and gives its error; called as often as convenient.
 func (p *proc) wait() error {
-	p.close()
-	if err := p.cmd.Wait(); err != nil {
-		return fmt.Errorf("%w: %s", err, lastLine(p.stderr.String()))
-	}
-	return nil
+	p.ended.Do(func() {
+		p.close()
+		if err := p.cmd.Wait(); err != nil {
+			p.err = fmt.Errorf("%w: %s", err, lastLine(p.stderr.String()))
+		}
+		p.done()
+	})
+	return p.err
 }
 
+// exited is the error for a call whose output ended before its result.
+func (p *proc) exited() error { return fmt.Errorf("claude exited: %v", p.wait()) }
+
 // How the view stays cached across calls. Claude Code marks for the cache
-// the end of the last message and of the one before it, and on models with
-// mid-conversation system messages pins its environment block, itself
-// marked, right after the first message. The API documents a 20-block
-// lookback that should find a message's old end after it grew, but through
-// Claude Code that never read back in our measurements (Opus 5.5, Sonnet
-// 5.5, Haiku 4.5), while an exact repeat of a marked prefix always did. So a
-// call opens with:
+// the system prompt and the ends of the last two messages, and on models with
+// mid-conversation system messages pins its environment block right after
+// the first message. The API documents a 20-block lookback that should find
+// a message's old end after it grew, but through Claude Code that never read
+// back in our measurements (Fable 5.1, Opus 5.5, Sonnet 5.5, Haiku 4.5),
+// while an exact repeat of a marked prefix always did. So a call opens with:
 //
 //	[view up to its last multiple of 64 lines] [env] ok [rest of the view] [input]
 //
@@ -256,7 +322,7 @@ const viewGoesOn = `The view goes on in the next message, with the input: reply 
 
 // viewMessages renders the view's two messages around input. A nil first
 // message: fewer lines than one checkpoint.
-func viewMessages(lines []string, input string) (first []string, second []string) {
+func viewMessages(lines []string, input []block) (first, second []block) {
 	chat := func(ls []string) string {
 		if len(ls) == 0 {
 			return "<chat>\n</chat>"
@@ -265,18 +331,18 @@ func viewMessages(lines []string, input string) (first []string, second []string
 	}
 	base := len(lines) / checkpoint * checkpoint
 	if base > 0 {
-		first = []string{chat(lines[:base]) + "\n" + viewGoesOn}
+		first = []block{textBlock(chat(lines[:base]) + "\n" + viewGoesOn)}
 	}
-	return first, []string{chat(lines[base:]), input}
+	return first, append([]block{textBlock(chat(lines[base:]))}, input...)
 }
 
 // ack sends the view's first message and waits out the model's "ok",
 // handing each other event to each (nil: drop them).
-func (a *Agent) ack(p *proc, first []string, u *usage, each func(event)) error {
+func (a *Agent) ack(p *proc, first []block, u *usage, each func(event)) error {
 	if first == nil {
 		return nil
 	}
-	defer a.writeOnce(p.prefix + "\x00" + first[0])()
+	defer a.writeOnce(p.prefix + "\x00" + first[0].Text)()
 	p.send(first...)
 	return awaitResult(p, u, each)
 }
@@ -285,7 +351,7 @@ func awaitResult(p *proc, u *usage, each func(event)) error {
 	for {
 		e, ok := p.next()
 		if !ok {
-			return fmt.Errorf("claude exited: %s", lastLine(p.stderr.String()))
+			return p.exited()
 		}
 		if e.Type != "result" {
 			if each != nil {
@@ -302,7 +368,7 @@ func awaitResult(p *proc, u *usage, each func(event)) error {
 }
 
 // Compact builds one tree line, enforcing the size with the ruler, the cut, and retries.
-func (a *Agent) Compact(ctx context.Context, lines []string, task string) (string, error) {
+func (a *Agent) Compact(ctx context.Context, lines []string, task []block) (string, error) {
 	p, err := a.start(ctx, a.cmodel, a.ceffort, roleCompact)
 	if err != nil {
 		return "", err
@@ -324,7 +390,7 @@ func (a *Agent) Compact(ctx context.Context, lines []string, task string) (strin
 	for try := 1; ; try++ {
 		e, ok := p.next()
 		if !ok {
-			return "", fmt.Errorf("claude exited: %s", lastLine(p.stderr.String()))
+			return "", p.exited()
 		}
 		if e.Type != "result" {
 			continue
@@ -344,14 +410,22 @@ func (a *Agent) Compact(ctx context.Context, lines []string, task string) (strin
 		if len(line) <= nodeMax || try >= 5 {
 			return best, nil
 		}
-		p.send(fmt.Sprintf("Too long: your line is %d bytes, over the 512-byte limit. Write\n"+
+		p.send(textBlock(fmt.Sprintf("Too long: your line is %d bytes, over the 512-byte limit. Write\n"+
 			"the whole line again for the same <input>, cutting just enough of the\n"+
-			"least valuable items to fit before this cut:\n%s| ← LIMIT", len(line), splitText(line, nodeMax)[0]))
+			"least valuable items to fit before this cut:\n%s| ← LIMIT", len(line), head(line, nodeMax))))
 	}
 }
 
 // message is one the chat hands a turn: the user's (kind user) or an agent's report (kind work).
-type message struct{ kind, text string }
+type message struct {
+	kind, text string
+	images     []string // saved with Chat.saveImage
+}
+
+// content is m as a call gets it: its text, then its images.
+func (c *Chat) content(m message) []block {
+	return append([]block{textBlock(m.text)}, c.imageBlocks(m.images)...)
+}
 
 // Turn is one fresh `claude -p` call: [system] [view] [message], logging
 // each reply, tool call and result as it happens.
@@ -368,10 +442,10 @@ func (t *Turn) Send(m message) bool {
 	if t.p == nil {
 		return false
 	}
-	t.agent.chat.Log(m.kind, m.text)
+	t.agent.chat.Log(m.kind, m.text, m.images...)
 	// Handled even if the write fails (the call just died): the message is
 	// logged, so it stays in the chat, unanswered, rather than logged twice.
-	t.p.send(m.text)
+	t.p.send(t.agent.chat.content(m)...)
 	return true
 }
 
@@ -390,10 +464,10 @@ func (t *Turn) Run(ctx context.Context, msgs []message) error {
 	c.mu.Lock()
 	lines := c.lines(c.view.keys) // rendered before the new messages are logged
 	c.mu.Unlock()
-	texts := make([]string, len(msgs))
-	for j, m := range msgs {
-		c.Log(m.kind, m.text)
-		texts[j] = m.text
+	var input []block
+	for _, m := range msgs {
+		c.Log(m.kind, m.text, m.images...)
+		input = append(input, c.content(m)...)
 	}
 	p, err := a.start(ctx, a.model, a.effort, roleTurn)
 	if err != nil {
@@ -429,14 +503,22 @@ func (t *Turn) Run(ctx context.Context, msgs []message) error {
 		case "user":
 			for _, b := range e.blocks() {
 				if b.Type == "tool_result" {
-					out := resultText(b.Content)
+					out, imgs := resultContent(b.Content)
 					dim("  " + oneLine(out, 160))
-					c.Log("echo", clip(out, clipMax))
+					var names []string
+					for _, img := range imgs {
+						if name, err := c.saveImage(img); err == nil {
+							names = append(names, name)
+						} else {
+							warn("echo image: %v", err)
+						}
+					}
+					c.Log("echo", clip(out, clipMax), names...)
 				}
 			}
 		}
 	}
-	first, second := viewMessages(lines, strings.Join(texts, "\n\n"))
+	first, second := viewMessages(lines, input)
 	if err := a.ack(p, first, &vu, handle); err != nil {
 		p.wait()
 		return err
@@ -470,29 +552,37 @@ func (t *Turn) Run(ctx context.Context, msgs []message) error {
 	return err
 }
 
-func resultText(v jsontext.Value) string {
+// resultContent is a tool result's text, with a mark where each image was,
+// and its images.
+func resultContent(v jsontext.Value) (string, [][]byte) {
 	var s string
 	if json.Unmarshal(v, &s) == nil {
-		return s
+		return s, nil
 	}
 	var bs []block
 	json.Unmarshal(v, &bs)
 	var parts []string
+	var imgs [][]byte
 	for _, b := range bs {
-		switch b.Type {
-		case "text":
+		switch {
+		case b.Type == "text":
 			parts = append(parts, b.Text)
+		case b.Type == "image" && b.Source != nil && b.Source.Type == "base64":
+			if img, err := base64.StdEncoding.DecodeString(b.Source.Data); err == nil {
+				imgs = append(imgs, img)
+			}
+			parts = append(parts, "[image]")
 		default:
 			parts = append(parts, "["+b.Type+"]")
 		}
 	}
-	return strings.Join(parts, "\n")
+	return strings.Join(parts, "\n"), imgs
 }
 
 func oneLine(s string, n int) string {
 	s = strings.Join(strings.Fields(s), " ")
 	if len(s) > n {
-		s = splitText(s, n)[0] + "…"
+		s = head(s, n) + "…"
 	}
 	return s
 }

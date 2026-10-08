@@ -51,22 +51,27 @@ func TestMostDueMatchesPush(t *testing.T) {
 	}
 }
 
+// Text limits count characters (gist §1), the line limit bytes (§2).
 func TestSplitAndClip(t *testing.T) {
 	s := "aé" + string(make([]byte, 10)) + "€z"
 	for _, p := range splitText(s, 3) {
-		if len(p) > 3 || !utf8Start(p[0]) {
+		if utf8.RuneCountInString(p) > 3 || !utf8.ValidString(p) {
 			t.Fatalf("bad piece %q", p)
 		}
 	}
-	if strings.Join(splitText(s, 3), "") != s {
-		t.Fatal("split lost bytes")
+	if strings.Join(splitText(s, 3), "") != s || len(splitText(s, 3)) != 5 {
+		t.Fatalf("split: %q", splitText(s, 3))
 	}
 	long := strings.Repeat("é", 40_000)
 	got := clip(long, clipMax)
-	if len(got) > clipMax || !strings.HasPrefix(got, "éé") || !strings.HasSuffix(got, "éé") || !utf8.ValidString(got) {
-		t.Fatalf("clip: %d bytes, %.20q...%.20q", len(got), got, got[len(got)-20:])
+	if n := utf8.RuneCountInString(got); n > clipMax || n < clipMax-2 || !strings.HasPrefix(got, "éé") || !strings.HasSuffix(got, "éé") ||
+		!strings.Contains(got, "[... ") || !utf8.ValidString(got) || len(splitText(got, clipMax)) != 1 {
+		t.Fatalf("clip: %d characters, %.20q...%.20q", n, got, got[len(got)-20:])
 	}
 	if clip("short", clipMax) != "short" || len(clip(long, 4)) == 0 {
 		t.Fatal("clip edge cases")
+	}
+	if h := head("aé€", 4); h != "aé" {
+		t.Fatalf("head = %q", h)
 	}
 }

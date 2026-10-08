@@ -27,15 +27,19 @@ func fakeChat(t *testing.T, dir string, size int) (*Chat, *atomic.Int64) {
 	}
 	calls := new(atomic.Int64)
 	msgRe := regexp.MustCompile(`compress message (\d+) `)
-	mergeRe := regexp.MustCompile(`messages, (\d+) to (\d+), in more detail`)
-	c.compact = func(_ context.Context, lines []string, task string) (string, error) {
+	mergeRe := regexp.MustCompile(`merge lines (\S+) and (\S+), adjacent(?s:.*)messages, (\d+) to (\d+), in more detail(?s:.*)<input>\n(.*)\n(.*)\n</input>$`)
+	c.compact = func(_ context.Context, lines []string, blocks []block) (string, error) {
 		calls.Add(1)
+		task := blocks[0].Text
 		limit := -1
 		if m := msgRe.FindStringSubmatch(task); m != nil {
 			limit, _ = strconv.Atoi(m[1]) // lines must end before the message
 		} else if m := mergeRe.FindStringSubmatch(task); m != nil {
-			limit, _ = strconv.Atoi(m[2])
+			limit, _ = strconv.Atoi(m[4])
 			limit++ // lines may cover the merge itself
+			if !strings.HasPrefix(m[5], m[1]+"|") || !strings.HasPrefix(m[6], m[2]+"|") {
+				t.Errorf("merge input without its lines' heads: %q", task)
+			}
 		} else {
 			t.Errorf("unknown task: %.80q", task)
 		}
@@ -87,8 +91,8 @@ func TestChatTreeZoomReload(t *testing.T) {
 	}
 	c.Log("user", "hi")
 	c.Log("opt", "hello")
-	c.Log("echo", strings.Repeat("x", 600))          // over 512: needs a model call
-	c.Log("user", strings.Repeat("é", clipMax/2+10)) // over clipMax: logged as two messages
+	c.Log("echo", strings.Repeat("x", 600))        // over 512: needs a model call
+	c.Log("user", strings.Repeat("é", clipMax+10)) // over clipMax characters: logged as two messages
 	c.mu.Lock()
 	c.pump()
 	c.mu.Unlock()
@@ -109,14 +113,14 @@ func TestChatTreeZoomReload(t *testing.T) {
 	if calls.Load() == 0 {
 		t.Fatal("no model call for a long message")
 	}
-	if got := c.Zoom(0, 2); got != "0+1|user: hi\n1+1|opt: hello" {
+	if got, _ := c.Zoom(0, 2); got != "0+1|user: hi\n1+1|opt: hello" {
 		t.Fatalf("zoom(0, 2) = %q", got)
 	}
-	if got := c.Zoom(2, 1); got != "2+1|echo: "+strings.Repeat("x", 600) {
+	if got, _ := c.Zoom(2, 1); got != "2+1|echo: "+strings.Repeat("x", 600) {
 		t.Fatalf("zoom(2, 1) = %.40q", got)
 	}
 	for _, bad := range [][2]int{{1, 2}, {0, 3}, {4, 8}, {-1, 1}, {5, 1}} {
-		if got := c.Zoom(bad[0], bad[1]); !strings.HasPrefix(got, "No line") {
+		if got, _ := c.Zoom(bad[0], bad[1]); !strings.HasPrefix(got, "No line") {
 			t.Fatalf("zoom%v = %q", bad, got)
 		}
 	}
@@ -203,23 +207,113 @@ func TestViewMessages(t *testing.T) {
 	for i := range lines {
 		lines[i] = fmt.Sprintf("%d+1|user: line %d", i, i)
 	}
-	first, second := viewMessages(lines[:30], "hi")
-	if first != nil || second[0] != "<chat>\n"+strings.Join(lines[:30], "\n")+"\n</chat>" || second[1] != "hi" {
-		t.Fatalf("short view: %q / %q", first, second)
+	in := func(s string) []block { return []block{textBlock(s)} }
+	first, second := viewMessages(lines[:30], in("hi"))
+	if first != nil || second[0].Text != "<chat>\n"+strings.Join(lines[:30], "\n")+"\n</chat>" || second[1].Text != "hi" {
+		t.Fatalf("short view: %v / %v", first, second)
 	}
-	a, _ := viewMessages(lines[:130], "x")
-	b, rest := viewMessages(lines[:150], "y")
-	if !slices.Equal(a, b) {
+	a, _ := viewMessages(lines[:130], in("x"))
+	b, rest := viewMessages(lines[:150], in("y"))
+	if len(a) != 1 || len(b) != 1 || a[0].Text != b[0].Text {
 		t.Fatal("the first message changed while the view grew within a checkpoint")
 	}
-	if !strings.HasSuffix(b[0], viewGoesOn) || !strings.Contains(b[0], lines[127]+"\n</chat>") {
-		t.Fatalf("first message: %.60q ... %.60q", b[0], b[0][len(b[0])-60:])
+	if f := b[0].Text; !strings.HasSuffix(f, viewGoesOn) || !strings.Contains(f, lines[127]+"\n</chat>") {
+		t.Fatalf("first message: %.60q ... %.60q", f, f[len(f)-60:])
 	}
-	if rest[0] != "<chat>\n"+strings.Join(lines[128:], "\n")+"\n</chat>" || rest[1] != "y" {
-		t.Fatalf("second message: %q", rest)
+	if rest[0].Text != "<chat>\n"+strings.Join(lines[128:], "\n")+"\n</chat>" || rest[1].Text != "y" {
+		t.Fatalf("second message: %v", rest)
 	}
-	if e, _ := viewMessages(nil, "z"); e != nil {
+	if e, _ := viewMessages(nil, in("z")); e != nil {
 		t.Fatal("empty view got a first message")
+	}
+}
+
+// A message's images are kept in files/, make its line take a model call
+// that sees them inside <input>, come back with zoom(id, 1), and survive a reload.
+func TestImages(t *testing.T) {
+	dir := t.TempDir()
+	c, _ := fakeChat(t, dir, 100)
+	var seen []block
+	inner := c.compact
+	c.compact = func(ctx context.Context, lines []string, task []block) (string, error) {
+		if strings.Contains(task[0].Text, "compress message 0 ") {
+			seen = task
+		}
+		return inner(ctx, lines, task)
+	}
+	png := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR")
+	if _, err := c.saveImage([]byte("plain text")); err == nil {
+		t.Fatal("saved text as an image")
+	}
+	name, err := c.saveImage(png)
+	if again, _ := c.saveImage(png); err != nil || again != name || !strings.HasSuffix(name, ".png") {
+		t.Fatalf("saveImage: %q, %q, %v", name, again, err)
+	}
+	c.Log("user", "look", name)
+	c.mu.Lock()
+	c.pump()
+	c.mu.Unlock()
+	if err := c.settle(context.Background(), func(int) {}); err != nil {
+		t.Fatal(err)
+	}
+	if len(seen) != 3 || !strings.HasSuffix(seen[0].Text, "<input>\nuser: look\n") || seen[1].Type != "image" ||
+		seen[1].Source.MediaType != "image/png" || seen[2].Text != "</input>" {
+		t.Fatalf("compaction task: %v", seen)
+	}
+	if text, imgs := c.Zoom(0, 1); text != "0+1|user: look" || !slices.Equal(imgs, []string{name}) {
+		t.Fatalf("zoom(0, 1) = %q, %v", text, imgs)
+	}
+	if b := c.imageBlocks([]string{"files/gone.png"}); b[0].Type != "text" {
+		t.Fatalf("lost image: %v", b)
+	}
+	waitIdle(t, c)
+	copyDir := t.TempDir()
+	if err := os.CopyFS(copyDir, os.DirFS(dir)); err != nil {
+		t.Fatal(err)
+	}
+	r, err := openChat(copyDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, imgs := r.Zoom(0, 1); !slices.Equal(imgs, []string{name}) {
+		t.Fatalf("reloaded zoom(0, 1) images: %v", imgs)
+	}
+}
+
+// A failed compaction is tried again at the next message, not only on the timer.
+func TestRetryAtNextMessage(t *testing.T) {
+	c, _ := fakeChat(t, t.TempDir(), 100)
+	inner := c.compact
+	var fails atomic.Int64
+	fails.Store(1)
+	c.compact = func(ctx context.Context, lines []string, task []block) (string, error) {
+		if fails.Add(-1) >= 0 {
+			return "", fmt.Errorf("down")
+		}
+		return inner(ctx, lines, task)
+	}
+	c.Log("user", strings.Repeat("a", 600))
+	c.mu.Lock()
+	c.pump()
+	c.mu.Unlock()
+	deadline := time.Now().Add(time.Second)
+	for {
+		c.mu.Lock()
+		cooling := c.cooling[key{0, 0}]
+		c.mu.Unlock()
+		if cooling {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the failure was not noted")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	c.Log("user", "next")
+	ctx, cancel := context.WithTimeout(context.Background(), retryIn/2)
+	defer cancel()
+	if err := c.settle(ctx, func(int) {}); err != nil {
+		t.Fatal("not retried at the next message")
 	}
 }
 

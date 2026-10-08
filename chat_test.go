@@ -222,3 +222,32 @@ func TestViewMessages(t *testing.T) {
 		t.Fatal("empty view got a first message")
 	}
 }
+
+func TestWriteOnce(t *testing.T) {
+	a := &Agent{writing: map[string]chan struct{}{}}
+	release := a.writeOnce("p")
+	other := a.writeOnce("q") // another prefix never waits
+	other()
+	var waited atomic.Int64
+	done := make(chan struct{})
+	for range 3 {
+		go func() {
+			a.writeOnce("p")() // waits for the writer, then goes on with the rest at once
+			waited.Add(1)
+			done <- struct{}{}
+		}()
+	}
+	time.Sleep(50 * time.Millisecond)
+	if waited.Load() != 0 {
+		t.Fatal("a call went on while another wrote its prefix")
+	}
+	release()
+	for range 3 {
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Fatal("waiters stuck after the writer finished")
+		}
+	}
+	a.writeOnce("p")() // free again
+}

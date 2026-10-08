@@ -60,7 +60,7 @@ func main() {
 	h := &harness{}
 	a := &Agent{chat: c, system: system, model: *model, effort: *effort,
 		cmodel: *cmodel, ceffort: *ceffort, perm: *perm, cwd: *cwd, tools: *tools,
-		running: map[string]*proc{}, report: func(text string) { h.input(message{"work", text}) }}
+		running: map[string]*proc{}, writing: map[string]chan struct{}{}, report: func(text string) { h.input(message{"work", text}) }}
 	h.agent = a
 	if a.mcpConfig, err = serveMCP(a); err != nil {
 		fatal("mcp: %v", err)

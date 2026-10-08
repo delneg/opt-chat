@@ -10,7 +10,7 @@ import (
 func TestMCP(t *testing.T) {
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	c.Log("user", "hi")
-	a := &Agent{chat: c, running: map[string]*proc{}}
+	a := &Agent{chat: c, running: map[string]*proc{}, writing: map[string]chan struct{}{}}
 	cfg, err := serveMCP(a)
 	if err != nil {
 		t.Fatal(err)

@@ -29,9 +29,33 @@ type Agent struct {
 	report func(text string) // hands an agent's report to the chat
 
 	mu          sync.Mutex
-	compactions int              // since the last turn's report
-	cusage      usage            // their usage
-	running     map[string]*proc // agents by name; nil while starting or finished
+	compactions int                      // since the last turn's report
+	cusage      usage                    // their usage
+	running     map[string]*proc         // agents by name; nil while starting or finished
+	writing     map[string]chan struct{} // first messages being written to the cache
+}
+
+// writeOnce lets one call at a time write a prefix to the cache: a call
+// whose first message another call is writing waits until that call has its
+// reply, then reads the entry instead of paying to write it too (gist §3.3;
+// compactions start up to 8 at once on one prefix). The first caller gets
+// a release func to call once its reply is in; the others get a no-op.
+func (a *Agent) writeOnce(prefix string) (release func()) {
+	a.mu.Lock()
+	if ch, ok := a.writing[prefix]; ok {
+		a.mu.Unlock()
+		<-ch
+		return func() {}
+	}
+	ch := make(chan struct{})
+	a.writing[prefix] = ch
+	a.mu.Unlock()
+	return func() {
+		a.mu.Lock()
+		delete(a.writing, prefix)
+		a.mu.Unlock()
+		close(ch)
+	}
 }
 
 func (a *Agent) takeCompactions() (int, usage) {
@@ -96,6 +120,7 @@ func (e event) blocks() []block {
 
 // proc is one `claude -p` process speaking stream-json both ways.
 type proc struct {
+	prefix string // model and role: what its cache prefix depends on besides the messages
 	cmd    *exec.Cmd
 	mu     sync.Mutex
 	stdin  io.WriteCloser // nil once closed
@@ -134,7 +159,7 @@ func (a *Agent) start(ctx context.Context, model, effort string, r role) (*proc,
 	cmd := exec.CommandContext(ctx, "claude", args...)
 	cmd.Dir = a.cwd
 	cmd.Env = childEnv()
-	p := &proc{cmd: cmd}
+	p := &proc{prefix: fmt.Sprint(model, r), cmd: cmd}
 	cmd.Stderr = &p.stderr
 	var err error
 	if p.stdin, err = cmd.StdinPipe(); err != nil {
@@ -247,10 +272,11 @@ func viewMessages(lines []string, input string) (first []string, second []string
 
 // ack sends the view's first message and waits out the model's "ok",
 // handing each other event to each (nil: drop them).
-func ack(p *proc, first []string, u *usage, each func(event)) error {
+func (a *Agent) ack(p *proc, first []string, u *usage, each func(event)) error {
 	if first == nil {
 		return nil
 	}
+	defer a.writeOnce(p.prefix + "\x00" + first[0])()
 	p.send(first...)
 	return awaitResult(p, u, each)
 }
@@ -290,7 +316,7 @@ func (a *Agent) Compact(ctx context.Context, lines []string, task string) (strin
 		a.mu.Unlock()
 	}()
 	first, second := viewMessages(lines, task)
-	if err := ack(p, first, &u, nil); err != nil {
+	if err := a.ack(p, first, &u, nil); err != nil {
 		return "", err
 	}
 	p.send(second...)
@@ -411,7 +437,7 @@ func (t *Turn) Run(ctx context.Context, msgs []message) error {
 		}
 	}
 	first, second := viewMessages(lines, strings.Join(texts, "\n\n"))
-	if err := ack(p, first, &vu, handle); err != nil {
+	if err := a.ack(p, first, &vu, handle); err != nil {
 		p.wait()
 		return err
 	}

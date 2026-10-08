@@ -106,7 +106,7 @@ func (a *Agent) runAgent(name, task string) {
 	}
 	var u usage
 	first, second := viewMessages(lines, fmt.Sprintf("You are agent [%s]. Your task:\n%s", name, task))
-	if err := ack(p, first, &u, each); err != nil {
+	if err := a.ack(p, first, &u, each); err != nil {
 		p.wait()
 		report("failed: " + err.Error())
 		return

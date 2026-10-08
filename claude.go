@@ -216,49 +216,61 @@ func (p *proc) wait() error {
 // exact repeat of a marked prefix reads reliably (growing a message past its
 // old mark did not, on any model tried), so a call opens with:
 //
-//	[view up to its last multiple of 64 lines] [env] ok [rest of view, input]
+//	[view up to its last multiple of 64 lines] [env] ok [rest of the view] [input]
 //
 // The first message is byte-identical from call to call until 64 more lines
 // arrive or a batch merges: each call reads it from the cache, and writes
 // only the lines after it. The "ok" is the model's reply to it.
 const checkpoint = 64
 
+// viewGoesOn closes the first message, constant like the rest of it. Without
+// it, a first message that ends on a request reads as one, and the model
+// acts on it instead of answering "ok".
+const viewGoesOn = `The view goes on in the next message, with the input: reply only "ok" to this one.`
+
 // viewMessages renders the view's two messages around input. A nil first
 // message: fewer lines than one checkpoint.
 func viewMessages(lines []string, input string) (first []string, second []string) {
+	chat := func(ls []string) string {
+		if len(ls) == 0 {
+			return "<chat>\n</chat>"
+		}
+		return "<chat>\n" + strings.Join(ls, "\n") + "\n</chat>"
+	}
 	base := len(lines) / checkpoint * checkpoint
-	rest := strings.Join(lines[base:], "\n")
-	if rest != "" {
-		rest += "\n"
+	if base > 0 {
+		first = []string{chat(lines[:base]) + "\n" + viewGoesOn}
 	}
-	if base == 0 {
-		return nil, []string{"<chat>\n" + rest + "</chat>", input}
-	}
-	return []string{"<chat>\n" + strings.Join(lines[:base], "\n") + "\n"}, []string{rest + "</chat>", input}
+	return first, []string{chat(lines[base:]), input}
 }
 
-// ack sends the view's first message and waits out the model's "ok".
-func ack(p *proc, first []string, u *usage) error {
+// ack sends the view's first message and waits out the model's "ok",
+// handing each other event to each (nil: drop them).
+func ack(p *proc, first []string, u *usage, each func(event)) error {
 	if first == nil {
 		return nil
 	}
 	p.send(first...)
-	return awaitResult(p, u)
+	return awaitResult(p, u, each)
 }
 
-func awaitResult(p *proc, u *usage) error {
+func awaitResult(p *proc, u *usage, each func(event)) error {
 	for {
 		e, ok := p.next()
 		if !ok {
 			return fmt.Errorf("claude exited: %s", lastLine(p.stderr.String()))
 		}
-		if e.Type == "result" {
-			u.add(e.Usage)
-			if e.IsError {
-				return errors.New(e.Result)
+		if e.Type != "result" {
+			if each != nil {
+				each(e)
 			}
-			return nil
+			continue
 		}
+		u.add(e.Usage)
+		if e.IsError {
+			return errors.New(e.Result)
+		}
+		return nil
 	}
 }
 
@@ -277,7 +289,7 @@ func (a *Agent) Compact(ctx context.Context, lines []string, task string) (strin
 		a.mu.Unlock()
 	}()
 	first, second := viewMessages(lines, task)
-	if err := ack(p, first, &u); err != nil {
+	if err := ack(p, first, &u, nil); err != nil {
 		return "", err
 	}
 	p.send(second...)
@@ -358,22 +370,12 @@ func (t *Turn) Run(ctx context.Context, msgs []message) error {
 		return err
 	}
 	var vu, u usage
-	first, second := viewMessages(lines, strings.Join(texts, "\n\n"))
-	if err := ack(p, first, &vu); err != nil {
-		p.wait()
-		return err
-	}
-	t.mu.Lock()
-	p.send(second...)
-	t.p = p
-	t.mu.Unlock()
-	for {
-		e, ok := p.next()
-		if !ok {
-			break
-		}
+	acking := true
+	// Everything the model does is logged as it happens, even during the
+	// ack, where only its "ok" is dropped.
+	handle := func(e event) {
 		if e.Parent != nil {
-			continue // a subagent's own steps stay out of the chat; its report comes back as a tool result
+			return // a subagent's own steps stay out of the chat
 		}
 		switch e.Type {
 		case "assistant":
@@ -384,8 +386,10 @@ func (t *Turn) Run(ctx context.Context, msgs []message) error {
 						dim(b.Thinking)
 					}
 				case "text":
-					fmt.Println(b.Text)
-					c.Log("opt", b.Text)
+					if !acking {
+						fmt.Println(b.Text)
+						c.Log("opt", b.Text)
+					}
 				case "tool_use":
 					call := b.Name + " " + string(b.Input)
 					dim("→ " + oneLine(call, 200))
@@ -400,15 +404,34 @@ func (t *Turn) Run(ctx context.Context, msgs []message) error {
 					c.Log("echo", clip(out, clipMax))
 				}
 			}
-		case "result":
-			u.add(e.Usage)
-			if e.IsError {
-				warn("turn: %s", e.Result)
-			}
-			// Claude Code delivers a message sent mid-run into this same result,
-			// so the call is done: close it to new messages and let it exit.
-			t.detach()
 		}
+	}
+	first, second := viewMessages(lines, strings.Join(texts, "\n\n"))
+	if err := ack(p, first, &vu, handle); err != nil {
+		p.wait()
+		return err
+	}
+	acking = false
+	t.mu.Lock()
+	p.send(second...)
+	t.p = p
+	t.mu.Unlock()
+	for {
+		e, ok := p.next()
+		if !ok {
+			break
+		}
+		if e.Type != "result" {
+			handle(e)
+			continue
+		}
+		u.add(e.Usage)
+		if e.IsError {
+			warn("turn: %s", e.Result)
+		}
+		// Claude Code delivers a message sent mid-run into this same result,
+		// so the call is done: close it to new messages and let it exit.
+		t.detach()
 	}
 	t.detach()
 	err = p.wait()

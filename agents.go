@@ -88,13 +88,30 @@ func (a *Agent) runAgent(name, task string) {
 		report("failed to start: " + err.Error())
 		return
 	}
+	acking := true
+	each := func(e event) {
+		if e.Parent != nil {
+			return
+		}
+		for _, b := range e.blocks() {
+			switch {
+			case e.Type == "assistant" && b.Type == "text" && !acking:
+				a.agentWrite(name, "agent", b.Text)
+			case e.Type == "assistant" && b.Type == "tool_use":
+				a.agentWrite(name, "tool", b.Name+" "+string(b.Input))
+			case e.Type == "user" && b.Type == "tool_result":
+				a.agentWrite(name, "echo", clip(resultText(b.Content), clipMax))
+			}
+		}
+	}
 	var u usage
 	first, second := viewMessages(lines, fmt.Sprintf("You are agent [%s]. Your task:\n%s", name, task))
-	if err := ack(p, first, &u); err != nil {
+	if err := ack(p, first, &u, each); err != nil {
 		p.wait()
 		report("failed: " + err.Error())
 		return
 	}
+	acking = false
 	a.mu.Lock()
 	p.send(second...)
 	a.running[name] = p
@@ -105,35 +122,18 @@ func (a *Agent) runAgent(name, task string) {
 		if !ok {
 			break
 		}
-		if e.Parent != nil {
+		if e.Type != "result" {
+			each(e)
 			continue
 		}
-		switch e.Type {
-		case "assistant":
-			for _, b := range e.blocks() {
-				switch b.Type {
-				case "text":
-					a.agentWrite(name, "agent", b.Text)
-				case "tool_use":
-					a.agentWrite(name, "tool", b.Name+" "+string(b.Input))
-				}
-			}
-		case "user":
-			for _, b := range e.blocks() {
-				if b.Type == "tool_result" {
-					a.agentWrite(name, "echo", clip(resultText(b.Content), clipMax))
-				}
-			}
-		case "result":
-			final = e.Result
-			if e.IsError {
-				final = "failed: " + final
-			}
-			a.mu.Lock() // done: Tell now answers that it is not taking messages
-			a.running[name] = nil
-			p.close()
-			a.mu.Unlock()
+		final = e.Result
+		if e.IsError {
+			final = "failed: " + final
 		}
+		a.mu.Lock() // done: Tell now answers that it is not taking messages
+		a.running[name] = nil
+		p.close()
+		a.mu.Unlock()
 	}
 	if err := p.wait(); err != nil && final == "" {
 		final = "failed: " + err.Error()

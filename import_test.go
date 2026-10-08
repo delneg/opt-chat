@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -97,9 +98,9 @@ func TestImportClaudeCode(t *testing.T) {
 		!strings.Contains(out, "-import-tools adds them") || len(logged(c)) != 0 {
 		t.Fatalf("declined: %q, logged %q", out, logged(c))
 	}
-	importInto(t, c, filepath.Join(home, ".claude"), importOpts{skip: []string{"", "/bots"}}, "y\n")
+	importInto(t, c, filepath.Join(home, ".claude"), importOpts{skip: []string{"", "/bots", "s1"}}, "y\n") // s1 is an id, not a directory
 	want := []string{
-		"note: Claude Code session in /work, from 2026-09-01 10:00:00 UTC (imported)",
+		"note: Claude Code session s1 in /work, from 2026-09-01 10:00:00 UTC (imported)",
 		"user: Fix the build",
 		"opt: Looking.",
 		"user: See [Image #1]",
@@ -132,12 +133,85 @@ func TestImportClaudeCode(t *testing.T) {
 	}
 }
 
+// Claude Code's history.jsonl gives the user's words of sessions whose
+// transcripts are gone, without commands, with pastes in full. A forked
+// session's copied lines come in once, also when its source came in an
+// earlier import, and a session imported before is the same session when
+// only its history is left.
+func TestImportHistory(t *testing.T) {
+	home := filepath.Join(t.TempDir(), ".claude")
+	ms := func(at string) int64 { d, _ := time.Parse(time.RFC3339, at); return d.UnixMilli() }
+	typed := func(session, project, at, text string, pasted ...string) obj {
+		e := obj{"display": text, "pastedContents": obj{}, "timestamp": ms(at), "project": project, "sessionId": session}
+		for i, p := range pasted {
+			e["pastedContents"].(obj)[strconv.Itoa(i+1)] = obj{"id": i + 1, "type": "text", "content": p}
+		}
+		return e
+	}
+	s1 := filepath.Join(home, "projects", "-work", "s1.jsonl")
+	jsonl(t, s1,
+		claudeLine("user", "2026-09-01T10:00:00Z", "Plan it", "uuid", "u1"),
+		claudeLine("assistant", "2026-09-01T10:00:01Z", "Planned.", "uuid", "u2"),
+	)
+	history := filepath.Join(home, "history.jsonl")
+	jsonl(t, history,
+		obj{"display": "an old prompt", "pastedContents": obj{}, "timestamp": ms("2025-10-14T09:00:00Z"), "project": "/old"},
+		typed("s3", "/docs", "2026-08-01T08:00:00Z", "/clear"),
+		typed("s3", "/docs", "2026-08-01T08:00:01Z", "!ls"),
+		typed("s3", "/docs", "2026-08-01T08:00:02Z", "/review this pull request carefully"),
+		typed("s3", "/docs", "2026-08-01T08:00:03Z", "Summarize [Pasted text #1 +2 lines] and [Pasted text #2]", "a\nb"),
+		typed("s3", "/docs", "2026-08-01T08:00:04Z", "/model opus"),
+		typed("s3", "/docs", "2026-08-01T08:00:05Z", "/Users/me/shot.png what is it"),
+		typed("s1", "/work", "2026-09-01T10:00:00Z", "Plan it"), // in its transcript
+		typed("s4", "/x", "2026-09-01T11:00:00Z", "/clear"),     // not a chat
+	)
+	c, _ := fakeChat(t, t.TempDir(), 100)
+	if out := importInto(t, c, home, importOpts{}, "y\n"); !strings.Contains(out, "6 messages (0.0 MB) from 3 sessions, ") {
+		t.Fatalf("the plan: %q", out)
+	}
+	want := []string{
+		"note: Claude Code session in /old, your messages only, from 2025-10-14 09:00:00 UTC (imported)",
+		"user: an old prompt",
+		"note: Claude Code session s3 in /docs, your messages only, from 2026-08-01 08:00:02 UTC (imported)",
+		"user: /review this pull request carefully",
+		"user: Summarize a\nb and [Pasted text #2]",
+		"user: /Users/me/shot.png what is it",
+		"note: Claude Code session s1 in /work, from 2026-09-01 10:00:00 UTC (imported)",
+		"user: Plan it",
+		"opt: Planned.",
+	}
+	if got := logged(c); !slices.Equal(got, want) {
+		t.Fatalf("logged %q\nwant %q", got, want)
+	}
+	if m := c.msgs[4]; !m.Date.Equal(time.Date(2026, 8, 1, 8, 0, 3, 0, time.UTC)) {
+		t.Fatalf("a prompt's date: %v", m.Date)
+	}
+
+	// s2 forks s1: it starts with a copy of s1's reply.
+	jsonl(t, filepath.Join(home, "projects", "-work", "s2.jsonl"),
+		claudeLine("assistant", "2026-09-01T10:00:01Z", "Planned.", "uuid", "u2"),
+		claudeLine("user", "2026-09-02T09:00:00Z", "Go on", "uuid", "u3"),
+	)
+	importInto(t, c, home, importOpts{}, "y\n")
+	if got := logged(c)[len(want):]; !slices.Equal(got, []string{"note: Claude Code session s2 in /work, from 2026-09-01 10:00:01 UTC (imported)", "user: Go on"}) {
+		t.Fatalf("the fork: %q", got)
+	}
+
+	// s1's transcript is deleted; its history goes on.
+	os.Remove(s1)
+	jsonl(t, history, typed("s1", "/work", "2026-09-03T12:00:00Z", "And test it"))
+	importInto(t, c, home, importOpts{}, "y\n")
+	if got := logged(c)[len(want)+2:]; !slices.Equal(got, []string{"note: Claude Code session s1 in /work, your messages only, from 2026-09-01 10:00:00 UTC (imported)", "user: And test it"}) {
+		t.Fatalf("the rest from the history: %q", got)
+	}
+}
+
 // Codex sessions: injected context and subagents' sessions stay out.
 func TestImportCodex(t *testing.T) {
 	home := t.TempDir()
 	item := func(at string, p obj) obj { return obj{"type": "response_item", "timestamp": at, "payload": p} }
 	jsonl(t, filepath.Join(home, ".codex", "sessions", "2026", "09", "01", "rollout-1.jsonl"),
-		obj{"type": "session_meta", "timestamp": "2026-09-01T08:00:00Z", "payload": obj{"cwd": "/code", "source": "cli"}},
+		obj{"type": "session_meta", "timestamp": "2026-09-01T08:00:00Z", "payload": obj{"id": "c1", "cwd": "/code", "source": "cli"}},
 		item("2026-09-01T08:00:01Z", obj{"type": "message", "role": "user", "content": []obj{{"type": "input_text", "text": "<environment_context>x</environment_context>"}}}),
 		item("2026-09-01T08:00:02Z", obj{"type": "message", "role": "user", "content": []obj{{"type": "input_text", "text": "list files"}}}),
 		item("2026-09-01T08:00:03Z", obj{"type": "function_call", "name": "shell", "arguments": `{"command":["ls"]}`}),
@@ -152,7 +226,7 @@ func TestImportCodex(t *testing.T) {
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	importInto(t, c, filepath.Join(home, ".codex"), importOpts{tools: true}, "yes\n")
 	want := []string{
-		"note: Codex session in /code, from 2026-09-01 08:00:02 UTC (imported)",
+		"note: Codex session c1 in /code, from 2026-09-01 08:00:02 UTC (imported)",
 		"user: list files",
 		`tool: shell {"command":["ls"]}`,
 		"echo: a b",

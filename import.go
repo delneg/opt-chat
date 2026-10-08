@@ -27,16 +27,32 @@ import (
 
 // session is one past chat.
 type session struct {
-	app, where string    // "Claude Code", "session in /path"
-	start      time.Time // its first message's date: with app and where, it names the session
+	app, where string    // "Claude Code", "session <id> in /path"
+	dir        string    // the directory it ran in, or a chat's title: what -import-skip looks in
+	start      time.Time // its first message's date
 	msgs       []pastMsg
+	ids        []string // the ids of all its lines, kept or not
 }
 
 type pastMsg struct {
 	kind, text string
 	date       time.Time
 	images     [][]byte
+	id         string // Claude Code's id of the line it came from: a resumed session copies lines
 }
+
+// importKey names a session across imports: by its id when it has one, so
+// a session whose transcript Claude Code deleted, read again from its
+// history, is still the one imported before.
+var importKey = func() func(note string) string {
+	id := regexp.MustCompile(`^(?:Claude Code|Codex) session (\S+?)(?: in |, from )`)
+	return func(note string) string {
+		if m := id.FindStringSubmatch(note); m != nil {
+			return m[1]
+		}
+		return note
+	}
+}()
 
 // note heads the session in the log, and names it for the next import.
 func (s *session) note() string {
@@ -62,12 +78,16 @@ var (
 	// Codex's injected context: <environment_context>, AGENTS.md, ...
 	codexSkip   = regexp.MustCompile(`^(<[a-z_]+[ >]|# AGENTS\.md)`)
 	sessionFile = regexp.MustCompile(`(^|/)(projects|sessions|archived_sessions)/`)
+	// In Claude Code's history: a shell command, or a command with at most
+	// two words after it (/clear, /model opus), not a path (/Users/me/x).
+	historySkip = regexp.MustCompile(`^\s*(!|/[\w:.-]+(\s+\S+){0,2}\s*$)`)
+	pasted      = regexp.MustCompile(`\[Pasted text #(\d+)(?: \+\d+ lines)?\]`)
 )
 
 // readSessions reads the past chats at path, oldest first: a ~/.claude or
 // ~/.codex directory (or one under it), one session's .jsonl, or a Claude or
 // ChatGPT export (its .zip, or the conversations.json in it). It returns the
-// sessions with a message keep takes, and how many it found.
+// sessions with a message keep takes, each message once, and how many it found.
 func readSessions(path string, keep func(*session, pastMsg) bool) ([]session, int, error) {
 	fi, err := os.Stat(path)
 	if err != nil {
@@ -77,14 +97,21 @@ func readSessions(path string, keep func(*session, pastMsg) bool) ([]session, in
 	switch ext := strings.ToLower(filepath.Ext(path)); {
 	case fi.IsDir():
 		abs, _ := filepath.Abs(path)
+		transcripts := map[string]bool{}
 		err = filepath.WalkDir(abs, func(p string, d fs.DirEntry, err error) error {
 			if err != nil || d.IsDir() || !strings.HasSuffix(p, ".jsonl") || !sessionFile.MatchString(p) || strings.Contains(p, "/subagents/") {
 				return err
 			}
 			s, err := readSessionFile(p, keep)
 			all = append(all, s)
+			transcripts[strings.TrimSuffix(filepath.Base(p), ".jsonl")] = true
 			return err
 		})
+		if h := filepath.Join(abs, "history.jsonl"); err == nil && fileExists(h) {
+			var old []session
+			old, err = readHistory(h, transcripts, keep)
+			all = append(all, old...)
+		}
 	case ext == ".jsonl":
 		var s session
 		s, err = readSessionFile(path, keep)
@@ -96,9 +123,75 @@ func readSessions(path string, keep func(*session, pastMsg) bool) ([]session, in
 	}
 	all = slices.DeleteFunc(all, func(s session) bool { return s.start.IsZero() }) // not a chat
 	found := len(all)
-	kept := slices.DeleteFunc(all, func(s session) bool { return len(s.msgs) == 0 })
-	slices.SortStableFunc(kept, func(a, b session) int { return a.start.Compare(b.start) })
-	return kept, found, err
+	slices.SortStableFunc(all, func(a, b session) int { return a.start.Compare(b.start) })
+	// A forked or resumed session can start with lines copied from another:
+	// each line belongs to the first session that has it, imported then or
+	// before.
+	seen := map[string]bool{}
+	for i := range all {
+		all[i].msgs = slices.DeleteFunc(all[i].msgs, func(m pastMsg) bool { return seen[m.id] })
+		for _, id := range all[i].ids {
+			seen[id] = true
+		}
+	}
+	return slices.DeleteFunc(all, func(s session) bool { return len(s.msgs) == 0 }), found, err
+}
+
+func fileExists(p string) bool { _, err := os.Stat(p); return err == nil }
+
+// readHistory reads Claude Code's history.jsonl, every prompt the user
+// typed, for the sessions whose transcripts are gone: Claude Code deletes
+// them after 30 days by default. Their user's words survive; the rest
+// doesn't, and the note says so.
+func readHistory(path string, transcripts map[string]bool, keep func(*session, pastMsg) bool) ([]session, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	sc.Buffer(nil, 256<<20)
+	byID := map[string]*session{}
+	var order []string
+	for sc.Scan() {
+		var e struct {
+			Display string `json:"display"`
+			Pasted  map[string]struct {
+				Content string `json:"content"`
+			} `json:"pastedContents"`
+			Timestamp int64  `json:"timestamp"`
+			Project   string `json:"project"`
+			SessionID string `json:"sessionId"`
+		}
+		if json.Unmarshal(sc.Bytes(), &e) != nil || transcripts[e.SessionID] {
+			continue
+		}
+		k := e.SessionID + "\x00" + e.Project
+		s := byID[k]
+		if s == nil {
+			s = &session{app: "Claude Code", where: "session in " + e.Project + ", your messages only", dir: e.Project}
+			if e.SessionID != "" { // Claude Code's first histories had none
+				s.where = "session " + e.SessionID + " in " + e.Project + ", your messages only"
+			}
+			byID[k] = s
+			order = append(order, k)
+		}
+		if historySkip.MatchString(e.Display) {
+			continue
+		}
+		text := pasted.ReplaceAllStringFunc(e.Display, func(tag string) string {
+			if p, ok := e.Pasted[pasted.FindStringSubmatch(tag)[1]]; ok && p.Content != "" {
+				return p.Content
+			}
+			return tag
+		})
+		s.add(keep, pastMsgs("user", text, nil, time.UnixMilli(e.Timestamp)))
+	}
+	out := make([]session, 0, len(order))
+	for _, k := range order {
+		out = append(out, *byID[k])
+	}
+	return out, sc.Err()
 }
 
 // readSessionFile reads one Claude Code or Codex session.
@@ -110,7 +203,8 @@ func readSessionFile(path string, keep func(*session, pastMsg) bool) (session, e
 	defer f.Close()
 	sc := bufio.NewScanner(f)
 	sc.Buffer(nil, 256<<20)
-	s := session{app: "Claude Code", where: "session"}
+	id := strings.TrimSuffix(filepath.Base(path), ".jsonl")
+	s := session{app: "Claude Code", where: "session " + id}
 	var date time.Time
 	for n := 0; sc.Scan(); n++ {
 		var j struct {
@@ -120,6 +214,7 @@ func readSessionFile(path string, keep func(*session, pastMsg) bool) (session, e
 			IsMeta           bool   `json:"isMeta"`
 			IsSidechain      bool   `json:"isSidechain"`
 			IsCompactSummary bool   `json:"isCompactSummary"`
+			UUID             string `json:"uuid"`
 			Message          struct {
 				Content jsontext.Value `json:"content"`
 			} `json:"message"`
@@ -140,8 +235,11 @@ func readSessionFile(path string, keep func(*session, pastMsg) bool) (session, e
 			s.add(keep, codexLine(&s, j.Type, j.Payload, date))
 			continue
 		}
-		if s.where == "session" && j.Cwd != "" {
-			s.where = "session in " + j.Cwd
+		if s.dir == "" && j.Cwd != "" {
+			s.where, s.dir = s.where+" in "+j.Cwd, j.Cwd
+		}
+		if j.UUID != "" {
+			s.ids = append(s.ids, j.UUID)
 		}
 		kind := ""
 		if j.Type == "user" {
@@ -153,12 +251,19 @@ func readSessionFile(path string, keep func(*session, pastMsg) bool) (session, e
 		case j.Type == "attachment" && j.Attachment.Type == "queued_command": // sent mid-turn
 			var prompt string
 			json.Unmarshal(j.Attachment.Prompt, &prompt)
-			s.add(keep, pastMsgs("user", prompt, nil, date))
+			s.add(keep, withID(j.UUID, pastMsgs("user", prompt, nil, date)))
 		case kind != "" && !j.IsMeta && !j.IsSidechain && !j.IsCompactSummary:
-			s.add(keep, blocksMsgs(kind, contentBlocks(j.Message.Content), date, claudeSkip))
+			s.add(keep, withID(j.UUID, blocksMsgs(kind, contentBlocks(j.Message.Content), date, claudeSkip)))
 		}
 	}
 	return s, sc.Err()
+}
+
+func withID(id string, msgs []pastMsg) []pastMsg {
+	for i := range msgs {
+		msgs[i].id = id
+	}
+	return msgs
 }
 
 // codexLine reads one line of a Codex session. A subagent's session is
@@ -166,6 +271,7 @@ func readSessionFile(path string, keep func(*session, pastMsg) bool) (session, e
 func codexLine(s *session, typ string, payload jsontext.Value, date time.Time) []pastMsg {
 	var p struct {
 		Type      string         `json:"type"`
+		ID        string         `json:"id"`
 		Role      string         `json:"role"`
 		Cwd       string         `json:"cwd"`
 		Source    jsontext.Value `json:"source"`
@@ -186,7 +292,8 @@ func codexLine(s *session, typ string, payload jsontext.Value, date time.Time) [
 		}
 		json.Unmarshal(p.Source, &src) // or a plain string, as "cli"
 		if len(src.Subagent) == 0 && len(src.Internal) == 0 {
-			s.where = "session in " + p.Cwd
+			s.where = strings.Join(slices.DeleteFunc([]string{"session", p.ID, "in", p.Cwd}, func(w string) bool { return w == "" }), " ")
+			s.dir = p.Cwd
 		}
 		return nil
 	}
@@ -339,12 +446,12 @@ func readExport(path string, keep func(*session, pastMsg) bool) ([]session, erro
 	var out []session
 	for _, c := range chats {
 		if c.Mapping != nil {
-			s := session{app: "ChatGPT", where: fmt.Sprintf("chat %q", c.Title)}
+			s := session{app: "ChatGPT", where: fmt.Sprintf("chat %q", c.Title), dir: c.Title}
 			s.add(keep, chatGPTMsgs(c.Mapping, c.Current, unixDate(c.CreateTime, time.Time{})))
 			out = append(out, s)
 			continue
 		}
-		s := session{app: "Claude", where: fmt.Sprintf("chat %q", c.Name)}
+		s := session{app: "Claude", where: fmt.Sprintf("chat %q", c.Name), dir: c.Name}
 		date := parseDate(c.Created, time.Time{})
 		for _, m := range c.Messages {
 			date = parseDate(m.Created, date)
@@ -464,7 +571,7 @@ func (c *Chat) imported() map[string]time.Time {
 	for _, m := range c.msgs {
 		switch {
 		case m.Kind == "note" && strings.HasSuffix(m.Text, " (imported)"):
-			cur, at = m.Text, m.Date
+			cur, at = importKey(m.Text), m.Date
 		case cur != "" && m.Date.Before(at):
 			if m.Date.After(done[cur]) {
 				done[cur] = m.Date
@@ -488,9 +595,9 @@ type importOpts struct {
 // keeper takes the messages to import, past what an earlier import logged.
 func keeper(done map[string]time.Time, o importOpts) func(*session, pastMsg) bool {
 	return func(s *session, m pastMsg) bool {
-		last, seen := done[s.note()]
+		last, seen := done[importKey(s.note())]
 		return (o.tools || m.kind != "tool" && m.kind != "echo") && !m.date.Before(o.since) && (!seen || m.date.After(last)) &&
-			!slices.ContainsFunc(o.skip, func(x string) bool { return x != "" && strings.Contains(s.where, x) })
+			!slices.ContainsFunc(o.skip, func(x string) bool { return x != "" && strings.Contains(s.dir, x) })
 	}
 }
 

@@ -50,7 +50,6 @@ go build -o opt-chat .
 | `-compact-effort` | `xhigh` | effort for compactions |
 | `-permission-mode` | `auto` | Claude Code permission mode for turns and subagents |
 | `-tools` | `Bash,Read,Edit,Write,WebSearch,WebFetch` | Claude Code tools |
-
 | `-import` | | import past chats, then exit (below) |
 | `-import-since` | | import only messages from this day on, `YYYY-MM-DD` |
 | `-import-tools` | off | import tool calls and results too |
@@ -64,7 +63,10 @@ for the compactions run since the last turn.
 `-import` brings chats from before opt-chat into its memory, as UniiChat's
 "Import my past AI chats" does:
 
-- `~/.claude` (or a project under it): Claude Code's sessions;
+- `~/.claude` (or a project under it): Claude Code's sessions, and, from its
+  `history.jsonl`, your own messages in the sessions whose transcripts are
+  gone (Claude Code deletes them after 30 days, unless `cleanupPeriodDays`
+  in its `settings.json` says otherwise), without commands, pastes in full;
 - `~/.codex`: Codex's sessions;
 - a Claude or ChatGPT data export, its `.zip` or the `conversations.json`
   in it;
@@ -72,16 +74,17 @@ for the compactions run since the last turn.
 - any other file: each line becomes a `note`.
 
 Each session goes into the log oldest first, under a note naming it
-(`Claude Code session in ~/dev/x, from 2026-08-01 10:00:00 UTC (imported)`),
+(`Claude Code session <id> in ~/dev/x, from 2026-08-01 10:00:00 UTC (imported)`),
 each message at its own date, so `date(id)` tells when it was said. The
 user's and the assistant's words come in, with their images; tool calls and
 results only with `-import-tools`; sessions run in a directory you name in
-`-import-skip` (`-import-skip /private/tmp,bots`) not at all; thinking, Claude Code's own commands and
-notices, and subagents' sessions never. Before it writes anything, the import
+`-import-skip` (`-import-skip dev/bots,scratch`) not at all; thinking,
+Claude Code's own commands and notices, and subagents' sessions never.
+Before it writes anything, the import
 says how many messages it adds and about how many compaction calls
 summarizing them takes, and asks: the log is append-only. Importing again
 adds only what is new since, so a session that went on comes in where it left
-off.
+off, and a line that a forked or resumed session copied comes in once.
 
 The next run summarizes the import, 8 compactions at a time, and a turn waits
 until every message is summarized (it says how many are left, each minute).

@@ -21,7 +21,7 @@ Requires Go 1.27 and a logged-in `claude` CLI.
 go build -o opt-chat .
 ./opt-chat                       # chat in ~/.opt-chat, tools run in ~
 ./opt-chat -dir ~/chats/work -cwd ~/dev
-./opt-chat -import LOG.txt       # each line becomes a `note`, then exit
+./opt-chat -import ~/.claude      # import your past chats, then exit
 ```
 
 - Type a message and press Enter. A paste of many lines stays one message.
@@ -51,8 +51,41 @@ go build -o opt-chat .
 | `-permission-mode` | `auto` | Claude Code permission mode for turns and subagents |
 | `-tools` | `Bash,Read,Edit,Write,WebSearch,WebFetch` | Claude Code tools |
 
+| `-import` | | import past chats, then exit (below) |
+| `-import-since` | | import only messages from this day on, `YYYY-MM-DD` |
+| `-import-tools` | off | import tool calls and results too |
+
 After each turn a dim line shows cache use for the view, for the turn, and
 for the compactions run since the last turn.
+
+## Importing past chats
+
+`-import` brings chats from before opt-chat into its memory, as UniiChat's
+"Import my past AI chats" does:
+
+- `~/.claude` (or a project under it): Claude Code's sessions;
+- `~/.codex`: Codex's sessions;
+- a Claude or ChatGPT data export, its `.zip` or the `conversations.json`
+  in it;
+- one session's `.jsonl`;
+- any other file: each line becomes a `note`.
+
+Each session goes into the log oldest first, under a note naming it
+(`Claude Code session in ~/dev/x, from 2026-08-01 10:00:00 UTC (imported)`),
+each message at its own date, so `date(id)` tells when it was said. The
+user's and the assistant's words come in, with their images; tool calls and
+results only with `-import-tools`; thinking, Claude Code's own commands and
+notices, and subagents' sessions never. Before it writes anything, the import
+says how many messages it adds and about how many compaction calls
+summarizing them takes, and asks: the log is append-only. Importing again
+adds only what is new since, so a session that went on comes in where it left
+off.
+
+The next run summarizes the import, 8 compactions at a time, and a turn waits
+until every message is summarized (it says how many are left, each minute).
+UniiChat instead answers meanwhile from a partial tree; here a turn never sees
+a message unsummarized, as the recipe says, so import what you want, using
+`-import-since`, and let the first run build it.
 
 ## Files
 

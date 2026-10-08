@@ -8,6 +8,7 @@ import (
 	"cmp"
 	"context"
 	_ "embed"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -37,26 +38,28 @@ func main() {
 	ceffort := flag.String("compact-effort", "xhigh", "effort for compactions")
 	perm := flag.String("permission-mode", "auto", "Claude Code permission mode")
 	tools := flag.String("tools", "Bash,Read,Edit,Write,WebSearch,WebFetch", "Claude Code tools")
-	importFile := flag.String("import", "", "log each line of this file as a note (memories from before the chat), then exit")
+	importPath := flag.String("import", "", "import past chats, then exit: a ~/.claude or ~/.codex directory, a session's .jsonl, a Claude or ChatGPT export (.zip), or a text file whose lines become notes")
+	importSince := flag.String("import-since", "", "import only messages from this day on (YYYY-MM-DD)")
+	importTools := flag.Bool("import-tools", false, "import tool calls and results too")
 	flag.Parse()
 
 	c, err := openChat(*dir)
 	if err != nil {
 		fatal("%v", err)
 	}
-	if *importFile != "" {
-		b, err := os.ReadFile(*importFile)
-		if err != nil {
-			fatal("%v", err)
-		}
-		n := 0
-		for line := range strings.Lines(string(b)) {
-			if line = strings.TrimSpace(line); line != "" {
-				c.Log("note", line)
-				n++
+	if *importPath != "" {
+		var since time.Time
+		if *importSince != "" {
+			if since, err = time.ParseInLocation(time.DateOnly, *importSince, time.Local); err != nil {
+				fatal("-import-since: %v", err)
 			}
 		}
-		fmt.Printf("imported %d notes; the next run summarizes them\n", n)
+		switch err := importChats(c, *importPath, since, *importTools, os.Stdin, os.Stdout); {
+		case errors.Is(err, errDeclined):
+			fmt.Println("Nothing imported.")
+		case err != nil:
+			fatal("import: %v", err)
+		}
 		return
 	}
 	system := prompt
@@ -77,7 +80,11 @@ func main() {
 	c.compact = a.Compact
 	lines := c.lines(c.view.keys)
 	fmt.Println(strings.Join(lines, "\n"))
-	dim(fmt.Sprintf("[%d messages; the view above is %d lines, %d bytes; %s]", len(c.msgs), len(lines), c.view.size(c), *dir))
+	backlog := ""
+	if n := len(c.ready0); n > 0 {
+		backlog = fmt.Sprintf("; %s to summarize, which turns wait for", count(n, "message"))
+	}
+	dim(fmt.Sprintf("[%d messages; the view above is %d lines, %d bytes; %s%s]", len(c.msgs), len(lines), c.view.size(c), *dir, backlog))
 	c.pump()
 	c.mu.Unlock()
 
@@ -183,7 +190,7 @@ func (h *harness) loop() {
 		h.cancel = cancel
 		h.mu.Unlock()
 		// Wait until every message is summarized: no call ever sees a placeholder.
-		err := c.settle(ctx, func(n int) { dim(fmt.Sprintf("[summarizing %d messages...]", n)) })
+		err := c.settle(ctx, func(n int) { dim(fmt.Sprintf("[summarizing %s first...]", count(n, "message"))) })
 		h.mu.Lock()
 		msgs := h.queue
 		h.queue = nil

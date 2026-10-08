@@ -205,11 +205,17 @@ func appendRaw(path string, b []byte) error {
 	return f.Sync()
 }
 
-// appendDay appends v as one line to sub/<today>.jsonl and fsyncs it.
-func (c *Chat) appendDay(sub string, v any) {
-	b, err := json.Marshal(v)
+// appendDay appends each v as one line to sub/<today>.jsonl, in one write,
+// and fsyncs it.
+func (c *Chat) appendDay(sub string, vs ...any) {
+	var b []byte
+	var err error
+	for _, v := range vs {
+		line, merr := json.Marshal(v)
+		b, err = append(append(b, line...), '\n'), errors.Join(err, merr)
+	}
 	if err == nil {
-		err = appendRaw(filepath.Join(c.dir, sub, time.Now().Format(time.DateOnly)+".jsonl"), append(b, '\n'))
+		err = appendRaw(filepath.Join(c.dir, sub, time.Now().Format(time.DateOnly)+".jsonl"), b)
 	}
 	if err != nil {
 		// ponytail: a failed write is fatal; the log is history and must not have holes.
@@ -220,24 +226,36 @@ func (c *Chat) appendDay(sub string, v any) {
 // Log appends one message, splitting text too long for one. Its images
 // (names from saveImage) go with the first part.
 func (c *Chat) Log(kind, text string, images ...string) {
+	c.logMsgs([]Msg{{Kind: kind, Text: text, Date: time.Now(), Images: images}})
+}
+
+// logMsgs appends messages (their kind, text, date and images) in one
+// write, each split as Log splits it.
+func (c *Chat) logMsgs(ms []Msg) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	for j, part := range splitText(text, clipMax) {
-		i := len(c.msgs)
-		m := Msg{I: i, Kind: kind, Text: part, Size: len(kind) + 2 + len(part), Date: time.Now()}
-		if j == 0 {
-			m.Images = images
+	from := len(c.msgs)
+	var parts []any
+	for _, m := range ms {
+		for j, part := range splitText(m.Text, clipMax) {
+			p := Msg{I: len(c.msgs), Kind: m.Kind, Text: part, Size: len(m.Kind) + 2 + len(part), Date: m.Date}
+			if j == 0 {
+				p.Images = m.Images
+			}
+			c.msgs = append(c.msgs, p)
+			parts = append(parts, p)
 		}
-		c.appendDay("main", m)
-		c.msgs = append(c.msgs, m)
+	}
+	c.appendDay("main", parts...)
+	for i := from; i < len(c.msgs); i++ {
 		c.need(key{0, i})
 		if c.view.push(key{0, i}, c) {
 			c.resetCview()
 		} else {
 			c.cview.push(key{0, i}, c)
 		}
-		c.saveView()
 	}
+	c.saveView()
 	clear(c.cooling) // a failed compaction is tried again at the next message
 	c.pump()
 	c.notify()
@@ -483,9 +501,10 @@ func (c *Chat) notify() {
 	c.changed = make(chan struct{})
 }
 
-// settle waits until every message is summarized, so no call sees a placeholder.
+// settle waits until every message is summarized, so no call sees a
+// placeholder. It tells waiting how many are left, then again each minute.
 func (c *Chat) settle(ctx context.Context, waiting func(n int)) error {
-	told := false
+	var told time.Time
 	for {
 		c.mu.Lock()
 		n, ch := len(c.ready0), c.changed
@@ -493,9 +512,9 @@ func (c *Chat) settle(ctx context.Context, waiting func(n int)) error {
 		if n == 0 {
 			return nil
 		}
-		if !told {
+		if time.Since(told) >= time.Minute {
 			waiting(n)
-			told = true
+			told = time.Now()
 		}
 		select {
 		case <-ch:

@@ -84,6 +84,7 @@ type block struct {
 	Input    jsontext.Value `json:"input,omitzero"`
 	Content  jsontext.Value `json:"content,omitzero"` // tool_result: a string or blocks
 	IsError  bool           `json:"is_error,omitzero"`
+	ImageURL jsontext.Value `json:"image_url,omitzero"` // Codex's input_image, read by import
 }
 
 type source struct {

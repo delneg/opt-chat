@@ -59,6 +59,7 @@ func fakeChat(t *testing.T, dir string, size int) (*Chat, *atomic.Int64) {
 		}
 		return strings.Repeat("s", size), nil
 	}
+	t.Cleanup(func() { waitIdle(t, c) }) // before the directory goes
 	return c, calls
 }
 

@@ -101,7 +101,10 @@ func TestImportClaudeCode(t *testing.T) {
 		!strings.Contains(out, "-import-tools adds them") || len(logged(c)) != 0 {
 		t.Fatalf("declined: %q, logged %q", out, logged(c))
 	}
-	importInto(t, c, filepath.Join(home, ".claude"), importOpts{skip: []string{"", "/bots", "s1"}}, "y\n") // s1 is an id, not a directory
+	out := importInto(t, c, filepath.Join(home, ".claude"), importOpts{skip: []string{"", "/bots", "s1"}}, "y\n") // s1 is an id, not a directory
+	if !strings.HasSuffix(out, "\rWriting to the log: 1 of 1 session\nImported.\n") {
+		t.Fatalf("accepted: %q", out)
+	}
 	want := []string{
 		"note: Claude Code session s1 in /work, from 2026-09-01 10:00:00 UTC (imported)",
 		"user: Fix the build",

@@ -602,9 +602,11 @@ func keeper(done map[string]time.Time, o importOpts) func(*session, pastMsg) boo
 	}
 }
 
-// logSessions logs each session, its note first, in one write per session.
-func (c *Chat) logSessions(sessions []session) {
-	for _, s := range sessions {
+// logSessions logs each session, its note first, in one write per session,
+// saying each second how far it has come: a big import takes minutes.
+func (c *Chat) logSessions(sessions []session, out io.Writer) {
+	var told time.Time
+	for i, s := range sessions {
 		ms := []Msg{{Kind: "note", Text: s.note(), Date: time.Now()}}
 		for _, m := range s.msgs {
 			var names []string
@@ -618,7 +620,12 @@ func (c *Chat) logSessions(sessions []session) {
 			ms = append(ms, Msg{Kind: m.kind, Text: m.text, Date: m.date, Images: names})
 		}
 		c.logMsgs(ms)
+		if time.Since(told) >= time.Second || i == len(sessions)-1 {
+			fmt.Fprintf(out, "\rWriting to the log: %s of %s", countN(i+1), count(len(sessions), "session"))
+			told = time.Now()
+		}
 	}
+	fmt.Fprintln(out)
 }
 
 // summaryCalls estimates the model calls that summarize messages of these
@@ -748,7 +755,7 @@ func importChats(c *Chat, path string, o importOpts, in io.Reader, out io.Writer
 	if !confirm(in, out) {
 		return errDeclined
 	}
-	c.logSessions(sessions)
+	c.logSessions(sessions, out)
 	fmt.Fprintln(out, "Imported.")
 	return nil
 }

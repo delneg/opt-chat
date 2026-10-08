@@ -78,13 +78,16 @@ func main() {
 
 	c.mu.Lock()
 	c.compact = a.Compact
-	lines := c.lines(c.view.keys)
-	fmt.Println(strings.Join(lines, "\n"))
+	for _, k := range c.view.keys {
+		if c.built(k) { // the rest are summarized before the first turn
+			fmt.Println(c.line(k))
+		}
+	}
 	backlog := ""
 	if n := len(c.ready0); n > 0 {
 		backlog = fmt.Sprintf("; %s to summarize, which turns wait for", count(n, "message"))
 	}
-	dim(fmt.Sprintf("[%d messages; the view above is %d lines, %d bytes; %s%s]", len(c.msgs), len(lines), c.view.size(c), *dir, backlog))
+	dim(fmt.Sprintf("[%d messages; the view is %d lines, %d bytes; %s%s]", len(c.msgs), len(c.view.keys), c.view.size(c), *dir, backlog))
 	c.pump()
 	c.mu.Unlock()
 

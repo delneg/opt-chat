@@ -67,8 +67,9 @@ var (
 			`zoom("Name") gives a subagent's whole chat.`,
 			schema([]string{"id"}, map[string]any{"id": map[string]any{"type": []string{"integer", "string"}}, "n": num})),
 		tool("date", "The date and time of message id.", schema([]string{"id"}, map[string]any{"id": num})),
-		tool("spawn", `Start a subagent on a task, in the background, and return at once. Its report comes back as a message starting "[Name]". Never wait for it.`,
-			schema([]string{"name", "task"}, map[string]any{"name": str, "task": str})),
+		tool("spawn", `Start a subagent on a task, in the background, and return at once. Its report comes back as a message starting "[Name]". Never wait for it. `+
+			"effort: how long it thinks first; more is smarter and slower. Leave it out for the default.",
+			schema([]string{"name", "task"}, map[string]any{"name": str, "task": str, "effort": map[string]any{"type": "string", "enum": efforts}})),
 		tool("tell", "Send a running subagent a message; it reaches the subagent between its tool calls.",
 			schema([]string{"name", "message"}, map[string]any{"name": str, "message": str})),
 	}
@@ -89,17 +90,11 @@ func mcpResult(a *Agent, method string, params jsontext.Value, fromAgent bool) (
 		return map[string]any{"tools": mcpTools}, true
 	case "tools/call":
 		var p struct {
-			Name string `json:"name"`
-			Args struct {
-				ID      jsontext.Value `json:"id"`
-				N       int            `json:"n"`
-				Name    string         `json:"name"`
-				Task    string         `json:"task"`
-				Message string         `json:"message"`
-			} `json:"arguments"`
+			Name string   `json:"name"`
+			Args toolArgs `json:"arguments"`
 		}
 		json.Unmarshal(params, &p)
-		text, images := callTool(a, fromAgent, p.Name, p.Args.ID, p.Args.N, p.Args.Name, p.Args.Task, p.Args.Message)
+		text, images := callTool(a, fromAgent, p.Name, p.Args)
 		content := []map[string]any{{"type": "text", "text": text}}
 		for _, b := range a.chat.imageBlocks(images) {
 			if b.Source == nil { // lost
@@ -113,8 +108,18 @@ func mcpResult(a *Agent, method string, params jsontext.Value, fromAgent bool) (
 	return nil, false
 }
 
+type toolArgs struct {
+	ID      jsontext.Value `json:"id"`
+	N       int            `json:"n"`
+	Name    string         `json:"name"`
+	Task    string         `json:"task"`
+	Message string         `json:"message"`
+	Effort  string         `json:"effort"`
+}
+
 // callTool runs one tool and returns its text and the images that go with it.
-func callTool(a *Agent, fromAgent bool, tool string, id jsontext.Value, n int, name, task, msg string) (string, []string) {
+func callTool(a *Agent, fromAgent bool, tool string, x toolArgs) (string, []string) {
+	id, n := x.ID, x.N
 	var s string
 	isName := json.Unmarshal(id, &s) == nil
 	i, err := strconv.Atoi(s) // a message id sent as a string
@@ -139,9 +144,9 @@ func callTool(a *Agent, fromAgent bool, tool string, id jsontext.Value, n int, n
 	case (tool == "spawn" || tool == "tell") && fromAgent:
 		return "Only Opt starts and tells subagents.", nil
 	case tool == "spawn":
-		return a.Spawn(name, task), nil
+		return a.Spawn(x.Name, x.Task, x.Effort), nil
 	case tool == "tell":
-		return a.Tell(name, msg), nil
+		return a.Tell(x.Name, x.Message), nil
 	}
 	return "No tool " + tool + ".", nil
 }

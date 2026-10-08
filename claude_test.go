@@ -246,7 +246,7 @@ func TestSubagentsAndQuit(t *testing.T) {
 	a, calls := fakeAgent(t, c)
 	reported := make(chan string, 2)
 	a.report = func(text string) { c.Log("work", text); reported <- text }
-	if got := a.Spawn("Scout", "look around"); !strings.HasPrefix(got, "Started [Scout]") {
+	if got := a.Spawn("Scout", "look around", ""); !strings.HasPrefix(got, "Started [Scout]") {
 		t.Fatal(got)
 	}
 	report := func() string {
@@ -258,20 +258,27 @@ func TestSubagentsAndQuit(t *testing.T) {
 			return ""
 		}
 	}
-	if got, want := report(), fmt.Sprintf("[Scout] answer to %q with 0 images", "<chat>\n</chat>You are subagent [Scout]. Your task:\nlook around"); got != want {
+	if got, want := report(), fmt.Sprintf("[Scout] answer to %q with 0 images\n\nFull chat: zoom(\"Scout\")", "<chat>\n</chat>You are subagent [Scout]. Your task:\nlook around"); got != want {
 		t.Fatalf("report %q, want %q", got, want)
 	}
 	if !strings.Contains(c.ZoomAgent("[Scout]"), `tool: Read {"file_path":"x.png"}`) {
 		t.Fatalf("Scout's log: %q", c.ZoomAgent("Scout"))
 	}
-	if got := a.Spawn("Scout", "again"); !strings.HasPrefix(got, "Started [Scout-2]") || !strings.HasPrefix(report(), "[Scout-2] ") {
+	if got := a.Spawn("Scout", "again", "max"); !strings.HasPrefix(got, "Started [Scout-2]") || !strings.HasPrefix(report(), "[Scout-2] ") {
 		t.Fatalf("a second Scout: %q", got)
 	}
-	if args := calls()[0]; flagOf(args, "--model") != "mid" || flagOf(args, "--mcp-config") != "agent-mcp" || flagOf(args, "--tools") != "Read" || slices.Contains(args, "--settings") {
+	if args := calls()[0]; flagOf(args, "--model") != "mid" || flagOf(args, "--mcp-config") != "agent-mcp" || flagOf(args, "--tools") != "Read" ||
+		slices.Contains(args, "--settings") || slices.Contains(args, "--effort") {
 		t.Fatalf("subagent args: %q", args)
 	}
+	if args := calls()[1]; flagOf(args, "--effort") != "max" {
+		t.Fatalf("a subagent spawned at max effort: %q", args)
+	}
+	if got := a.Spawn("Scout", "x", "huge"); !strings.HasPrefix(got, "effort must be one of") {
+		t.Fatal(got)
+	}
 
-	a.Spawn("Sleeper", "wait-for-stop")
+	a.Spawn("Sleeper", "wait-for-stop", "")
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		a.mu.Lock()
@@ -295,13 +302,13 @@ func TestSubagentsAndQuit(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("quit hung")
 	}
-	if last := c.msgs[len(c.msgs)-1]; last.Text != "[Sleeper] stopped: opt-chat quit before this subagent finished." {
+	if last := c.msgs[len(c.msgs)-1]; last.Text != "[Sleeper] stopped: opt-chat quit before this subagent finished.\n\nFull chat: zoom(\"Sleeper\")" {
 		t.Fatalf("last message: %q", last.Text)
 	}
 	if !strings.Contains(c.ZoomAgent("Sleeper"), "opt: hurry") {
 		t.Fatalf("Sleeper's log: %q", c.ZoomAgent("Sleeper"))
 	}
-	if got := a.Spawn("Late", "x"); got != "opt-chat is quitting." {
+	if got := a.Spawn("Late", "x", ""); got != "opt-chat is quitting." {
 		t.Fatal(got)
 	}
 }

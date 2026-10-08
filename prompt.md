@@ -33,7 +33,7 @@ Tools:
 - zoom(id, 1) gives message id whole, with its images
 - zoom("Name") gives an agent's whole chat
 - date(id) gives the date and time of message id
-- spawn(name, task) starts a subagent on a task, in the background
+- spawn(name, task, effort) starts a subagent on a task, in the background
 - tell(name, message) sends a running subagent a message
 
 # Turns

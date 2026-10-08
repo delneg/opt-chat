@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -24,10 +25,18 @@ func agentName(s string) string {
 
 func (a *Agent) agentLog(name string) string { return filepath.Join(a.chat.dir, "agents", name+".log") }
 
-// Spawn starts an agent and returns at once.
-func (a *Agent) Spawn(name, task string) string {
+var efforts = []string{"low", "medium", "high", "xhigh", "max"}
+
+// Spawn starts an agent and returns at once. An empty effort is -agent-effort.
+func (a *Agent) Spawn(name, task, effort string) string {
 	if strings.TrimSpace(task) == "" {
 		return "No task given."
+	}
+	if effort != "" && !slices.Contains(efforts, effort) {
+		return "effort must be one of " + strings.Join(efforts, ", ") + ", or left out."
+	}
+	if effort == "" {
+		effort = a.aeffort
 	}
 	name = agentName(name)
 	if name == "" {
@@ -50,7 +59,7 @@ func (a *Agent) Spawn(name, task string) string {
 	a.mu.Unlock()
 	go func() {
 		defer a.calls.Done() // after its report is in the chat
-		a.runAgent(name, task)
+		a.runAgent(name, task, effort)
 	}()
 	return fmt.Sprintf("Started [%s] in the background. Its report will come as a message starting \"[%s]\".", name, name)
 }
@@ -80,7 +89,7 @@ func (a *Agent) agentWrite(name, kind, text string) {
 	}
 }
 
-func (a *Agent) runAgent(name, task string) {
+func (a *Agent) runAgent(name, task, effort string) {
 	report := func(text string) {
 		a.mu.Lock()
 		delete(a.running, name)
@@ -89,7 +98,7 @@ func (a *Agent) runAgent(name, task string) {
 		if !strings.HasPrefix(text, "["+name+"]") { // as the prompt asks of a report
 			text = "[" + name + "] " + text
 		}
-		a.report(text)
+		a.report(fmt.Sprintf("%s\n\nFull chat: zoom(%q)", text, name)) // as UniiChat ends a report
 	}
 	if err := os.MkdirAll(filepath.Join(a.chat.dir, "agents"), 0o700); err != nil {
 		report("failed: " + err.Error())
@@ -111,7 +120,7 @@ func (a *Agent) runAgent(name, task string) {
 	c.mu.Lock()
 	lines := c.lines(c.view.keys)
 	c.mu.Unlock()
-	p, err := a.start(context.Background(), a.amodel, a.aeffort, roleAgent)
+	p, err := a.start(context.Background(), a.amodel, effort, roleAgent)
 	if err != nil {
 		report(failed(err))
 		return

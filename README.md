@@ -75,13 +75,14 @@ is never its own line. `zoom(id, 1)` gives the message whole, with its images.
 
 ## Subagents
 
-`spawn(name, task)` starts a subagent in the background and returns at once.
-A subagent is a fresh call with the same prompt and tools, which gets the
-view, then its task. Its steps go to `agents/<Name>.log`, which
-`zoom("Name")` opens whole (Claude Code saves a long one to a file the model
-reads). Its final reply comes back as a `work` message,
-`[Name] report`. If a turn is running, the report is injected into it;
-otherwise it starts a new turn. The chat never waits for a subagent.
+`spawn(name, task, effort)` starts a subagent in the background and returns
+at once; `effort` is optional (`-agent-effort` when left out). A subagent is
+a fresh call with the same prompt and tools, which gets the view, then its
+task. Its steps go to `agents/<Name>.log`, which `zoom("Name")` opens whole
+(Claude Code saves a long one to a file the model reads). Its final reply
+comes back as a `work` message, `[Name] report`, ending with
+`Full chat: zoom("Name")`. If a turn is running, the report is injected into
+it; otherwise it starts a new turn. The chat never waits for a subagent.
 `tell(name, message)` reaches a running subagent between its tool calls.
 Subagents can't start or tell subagents. Quitting stops them, and each one's
 report then says it was stopped.

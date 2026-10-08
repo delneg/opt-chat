@@ -494,7 +494,10 @@ func (t *Turn) Run(ctx context.Context, msgs []message) error {
 	t.mu.Lock()
 	t.open = true
 	t.mu.Unlock()
-	p, err := a.start(ctx, a.model, a.effort, roleTurn)
+	a.mu.Lock()
+	model, effort := a.model, a.effort // /model and /effort change them
+	a.mu.Unlock()
+	p, err := a.start(ctx, model, effort, roleTurn)
 	if err != nil {
 		return err
 	}

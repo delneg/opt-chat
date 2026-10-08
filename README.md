@@ -29,6 +29,10 @@ go build -o opt-chat .
   `/path/shot.png`, `'/path/my shot.png'` or `/path/my\ shot.png`. PNG,
   JPEG, GIF and WebP go with the message.
 - A message sent while a turn runs reaches it between tool calls.
+- `/model opus` and `/effort high` switch the turns' model and effort until
+  you quit (`/effort default` for the model's own); `/model` alone shows
+  them. `/agents` lists the subagents at work, `/help` the commands. A line
+  starting with any other `/word` is not sent.
 - Ctrl-C stops the turn, or the wait before it. Ctrl-C when idle, or Ctrl-D,
   quits: it stops every call and subagent underway and logs what was waiting.
 - Put your own instructions in `<dir>/AGENTS.md`: who you are, how your files

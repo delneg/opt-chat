@@ -5,11 +5,13 @@ package main
 
 import (
 	"bufio"
+	"cmp"
 	"context"
 	_ "embed"
 	"flag"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -95,7 +97,9 @@ func main() {
 				quit()
 				return
 			}
-			if strings.TrimSpace(text) != "" {
+			if out, ok := command(a, text); ok {
+				dim(out)
+			} else if strings.TrimSpace(text) != "" {
 				h.input(message{kind: "user", text: text, images: attach(c, text)})
 			}
 		case <-sig:
@@ -199,6 +203,50 @@ func (h *harness) loop() {
 		h.mu.Unlock()
 		cancel()
 	}
+}
+
+var (
+	commandWord = regexp.MustCompile(`(?s)^\s*/([A-Za-z]+)(?:\s+(.*?))?\s*$`) // "/word args", never a path like /Users/me/shot.png
+	modelName   = regexp.MustCompile(`^[\w.:\[\]-]+$`)
+)
+
+// command runs a line that starts with /word, and says what it did; false
+// for a message. A /word that is no command is not sent either, as in
+// UniiChat: a typo never reaches the chat for good.
+func command(a *Agent, line string) (string, bool) {
+	m := commandWord.FindStringSubmatch(line)
+	if m == nil {
+		return "", false
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	switch word, arg := strings.ToLower(m[1]), m[2]; {
+	case word == "model" && modelName.MatchString(arg):
+		a.model = arg
+	case word == "model" && arg != "":
+		return "A model is one word, as for -model: fable, opus, sonnet, or a full name.", true
+	case word == "effort" && arg == "default":
+		a.effort = ""
+	case word == "effort" && slices.Contains(efforts, arg):
+		a.effort = arg
+	case word == "effort" && arg != "":
+		return "effort must be one of " + strings.Join(efforts, ", ") + ", or default.", true
+	case word == "model" || word == "effort":
+	case word == "agents":
+		names := slices.Sorted(maps.Keys(a.running))
+		if len(names) == 0 {
+			return "No subagent is at work.", true
+		}
+		return "At work: [" + strings.Join(names, "], [") + "]. Each one's steps: " + filepath.Join(a.chat.dir, "agents", "<Name>.log"), true
+	case word == "help":
+		return "/model [name]       show or set the model for turns, as -model (until quit)\n" +
+			"/effort [level]     show or set their effort: " + strings.Join(efforts, ", ") + ", or default\n" +
+			"/agents             list the subagents at work\n" +
+			"Ctrl-C stops the turn; Ctrl-C when idle, or Ctrl-D, quits.", true
+	default:
+		return "/" + m[1] + " is no command; nothing was sent. /help lists the commands.", true
+	}
+	return fmt.Sprintf("Turns: %s, effort %s.", a.model, cmp.Or(a.effort, "default")), true
 }
 
 func logAll(c *Chat, msgs []message) {

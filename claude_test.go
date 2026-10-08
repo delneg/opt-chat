@@ -117,7 +117,7 @@ func fakeAgent(t *testing.T, c *Chat) (*Agent, func() [][]string) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	a := &Agent{chat: c, system: "system", mcpConfig: "turn-mcp", agentMCP: "agent-mcp", model: "big", cmodel: "small",
+	a := &Agent{chat: c, system: "system", mcpConfig: "turn-mcp", agentMCP: "agent-mcp", model: "big", amodel: "mid", cmodel: "small",
 		perm: "auto", cwd: t.TempDir(), tools: "Read", running: map[string]*proc{}, writing: map[string]chan struct{}{},
 		report: func(text string) { c.Log("work", text) }}
 	a.life, a.stop = context.WithCancel(context.Background())
@@ -267,7 +267,7 @@ func TestSubagentsAndQuit(t *testing.T) {
 	if got := a.Spawn("Scout", "again"); !strings.HasPrefix(got, "Started [Scout-2]") || !strings.HasPrefix(report(), "[Scout-2] ") {
 		t.Fatalf("a second Scout: %q", got)
 	}
-	if args := calls()[0]; flagOf(args, "--mcp-config") != "agent-mcp" || flagOf(args, "--tools") != "Read" || slices.Contains(args, "--settings") {
+	if args := calls()[0]; flagOf(args, "--model") != "mid" || flagOf(args, "--mcp-config") != "agent-mcp" || flagOf(args, "--tools") != "Read" || slices.Contains(args, "--settings") {
 		t.Fatalf("subagent args: %q", args)
 	}
 

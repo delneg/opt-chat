@@ -111,7 +111,7 @@ func (a *Agent) runAgent(name, task string) {
 	c.mu.Lock()
 	lines := c.lines(c.view.keys)
 	c.mu.Unlock()
-	p, err := a.start(context.Background(), a.model, a.effort, roleAgent)
+	p, err := a.start(context.Background(), a.amodel, a.aeffort, roleAgent)
 	if err != nil {
 		report(failed(err))
 		return

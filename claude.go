@@ -25,8 +25,9 @@ type Agent struct {
 	system          string // byte-identical across calls: the head of every cached prefix
 	mcpConfig       string // the chat's tools, for turns and compactions
 	agentMCP        string // the same tools, for subagents, which can't spawn or tell
-	model, effort   string
-	cmodel, ceffort string
+	model, effort   string // turns
+	amodel, aeffort string // subagents
+	cmodel, ceffort string // compactions
 	perm, cwd       string
 	tools           string
 

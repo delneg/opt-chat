@@ -38,8 +38,10 @@ go build -o opt-chat .
 
 | flag | default | |
 |---|---|---|
-| `-model` | `fable` | model for turns and subagents |
-| `-effort` | model default | effort for turns and subagents |
+| `-model` | `fable` | model for turns |
+| `-effort` | model default | effort for turns |
+| `-agent-model` | `opus` | model for subagents |
+| `-agent-effort` | model default | effort for subagents |
 | `-compact-model` | `haiku` | model for compactions |
 | `-compact-effort` | `xhigh` | effort for compactions |
 | `-permission-mode` | `auto` | Claude Code permission mode for turns and subagents |

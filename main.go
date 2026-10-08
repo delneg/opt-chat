@@ -27,8 +27,10 @@ func main() {
 	home, _ := os.UserHomeDir()
 	dir := flag.String("dir", filepath.Join(home, ".opt-chat"), "where the chat lives; its AGENTS.md holds your instructions")
 	cwd := flag.String("cwd", home, "where Opt's tools run")
-	model := flag.String("model", "fable", "model for turns and subagents")
-	effort := flag.String("effort", "", "effort for turns and subagents: low, medium, high, xhigh, max (empty: the model's default)")
+	model := flag.String("model", "fable", "model for turns")
+	effort := flag.String("effort", "", "effort for turns: low, medium, high, xhigh, max (empty: the model's default)")
+	amodel := flag.String("agent-model", "opus", "model for subagents")
+	aeffort := flag.String("agent-effort", "", "effort for subagents (empty: the model's default)")
 	cmodel := flag.String("compact-model", "haiku", "model for compactions")
 	ceffort := flag.String("compact-effort", "xhigh", "effort for compactions")
 	perm := flag.String("permission-mode", "auto", "Claude Code permission mode")
@@ -61,7 +63,7 @@ func main() {
 	}
 	h := &harness{}
 	a := &Agent{chat: c, system: system, model: *model, effort: *effort,
-		cmodel: *cmodel, ceffort: *ceffort, perm: *perm, cwd: *cwd, tools: *tools,
+		amodel: *amodel, aeffort: *aeffort, cmodel: *cmodel, ceffort: *ceffort, perm: *perm, cwd: *cwd, tools: *tools,
 		running: map[string]*proc{}, writing: map[string]chan struct{}{}, report: func(text string) { h.input(message{kind: "work", text: text}) }}
 	a.life, a.stop = context.WithCancel(context.Background())
 	h.agent = a

@@ -194,7 +194,14 @@ func (h *harness) loop() {
 		h.cancel = cancel
 		h.mu.Unlock()
 		// Wait until every message is summarized: no call ever sees a placeholder.
-		err := c.settle(ctx, func(n int) { dim(fmt.Sprintf("[summarizing %s first...]", count(n, "message"))) })
+		// Merges go first, so after an import n stays put for a long while.
+		err := c.settle(ctx, func(n, written int) {
+			s := "[summarizing " + count(n, "message") + " first"
+			if written > 0 {
+				s += "; " + count(written, "line") + " written so far"
+			}
+			dim(s + "...]")
+		})
 		h.mu.Lock()
 		msgs := h.queue
 		h.queue = nil

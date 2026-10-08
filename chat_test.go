@@ -102,7 +102,7 @@ func TestChatTreeZoomReload(t *testing.T) {
 	c.mu.Lock()
 	c.pump()
 	c.mu.Unlock()
-	if err := c.settle(context.Background(), func(int) {}); err != nil {
+	if err := c.settle(context.Background(), func(int, int) {}); err != nil {
 		t.Fatal(err)
 	}
 	waitIdle(t, c)
@@ -116,8 +116,8 @@ func TestChatTreeZoomReload(t *testing.T) {
 	if got := c.tree[key{1, 0}]; got != "user: hi\nopt: hello" {
 		t.Fatalf("two short lines not joined: %q", got)
 	}
-	if calls.Load() == 0 {
-		t.Fatal("no model call for a long message")
+	if calls.Load() == 0 || int64(c.written) != calls.Load() {
+		t.Fatalf("%d model calls, %d lines written: a long message needs one", calls.Load(), c.written)
 	}
 	if got, _ := c.Zoom(0, 2); got != "0+1|user: hi\n1+1|opt: hello" {
 		t.Fatalf("zoom(0, 2) = %q", got)
@@ -259,7 +259,7 @@ func TestImages(t *testing.T) {
 	c.mu.Lock()
 	c.pump()
 	c.mu.Unlock()
-	if err := c.settle(context.Background(), func(int) {}); err != nil {
+	if err := c.settle(context.Background(), func(int, int) {}); err != nil {
 		t.Fatal(err)
 	}
 	if len(seen) != 3 || !strings.HasSuffix(seen[0].Text, "<input>\nuser: look\n") || seen[1].Type != "image" ||
@@ -318,7 +318,7 @@ func TestRetryAtNextMessage(t *testing.T) {
 	c.Log("user", "next")
 	ctx, cancel := context.WithTimeout(context.Background(), retryIn/2)
 	defer cancel()
-	if err := c.settle(ctx, func(int) {}); err != nil {
+	if err := c.settle(ctx, func(int, int) {}); err != nil {
 		t.Fatal("not retried at the next message")
 	}
 }

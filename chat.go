@@ -78,6 +78,7 @@ type Chat struct {
 	failed  map[key]bool // already reported
 	ready0  []int        // messages whose line needs a model call, in order
 	readyM  []key        // merges whose line needs a model call
+	written int          // lines a model has built in this run
 	changed chan struct{}
 	// compact builds one line with a model; set before the first pump, nil
 	// again at quit.
@@ -446,6 +447,7 @@ func (c *Chat) build(k key, compact func(context.Context, []string, []block) (st
 		return
 	}
 	delete(c.failed, k)
+	c.written++
 	c.setNode(k, text)
 	c.refit()
 	c.pump()
@@ -502,18 +504,22 @@ func (c *Chat) notify() {
 }
 
 // settle waits until every message is summarized, so no call sees a
-// placeholder. It tells waiting how many are left, then again each minute.
-func (c *Chat) settle(ctx context.Context, waiting func(n int)) error {
+// placeholder. It tells waiting how many are left, and how many lines a
+// model has written since it began, then again each minute.
+func (c *Chat) settle(ctx context.Context, waiting func(n, written int)) error {
 	var told time.Time
+	c.mu.Lock()
+	from := c.written
+	c.mu.Unlock()
 	for {
 		c.mu.Lock()
-		n, ch := len(c.ready0), c.changed
+		n, written, ch := len(c.ready0), c.written-from, c.changed
 		c.mu.Unlock()
 		if n == 0 {
 			return nil
 		}
 		if time.Since(told) >= time.Minute {
-			waiting(n)
+			waiting(n, written)
 			told = time.Now()
 		}
 		select {

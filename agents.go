@@ -113,7 +113,7 @@ func (a *Agent) runAgent(name, task, effort string) {
 		}
 		return "failed: " + err.Error()
 	}
-	if err := c.settle(a.life, func(int) {}); err != nil {
+	if err := c.settle(a.life, func(int, int) {}); err != nil {
 		report(failed(err))
 		return
 	}

@@ -87,8 +87,10 @@ adds only what is new since, so a session that went on comes in where it left
 off, and a line that a forked or resumed session copied comes in once.
 
 Then the chat starts and summarizes the import, 8 compactions at a time. A
-turn waits until every message is summarized (it says how many are left, each
-minute). Quit whenever you like: the next run goes on where this one stopped.
+turn waits until every message is summarized. Each minute it says how many
+are left, and how many lines it has written so far: merges of older lines go
+first, so the count of messages stays put for hours, and then falls. Quit
+whenever you like: the next run goes on where this one stopped.
 UniiChat instead answers meanwhile from a partial tree; here a turn never sees
 a message unsummarized, as the recipe says.
 

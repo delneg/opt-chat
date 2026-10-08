@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -13,6 +14,10 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"encoding/json/v2"
+
+	"github.com/samber/lo"
 )
 
 var lineHead = regexp.MustCompile(`(?m)^(\d+)\+(\d+)\|`)
@@ -120,7 +125,7 @@ func TestChatTreeZoomReload(t *testing.T) {
 	if got, _ := c.Zoom(2, 1); got != "2+1|echo: "+strings.Repeat("x", 600) {
 		t.Fatalf("zoom(2, 1) = %.40q", got)
 	}
-	for _, bad := range [][2]int{{1, 2}, {0, 3}, {4, 8}, {-1, 1}, {5, 1}} {
+	for _, bad := range [][2]int{{1, 2}, {0, 3}, {4, 8}, {-1, 1}, {5, 1}, {math.MaxInt, 1}} {
 		if got, _ := c.Zoom(bad[0], bad[1]); !strings.HasPrefix(got, "No line") {
 			t.Fatalf("zoom%v = %q", bad, got)
 		}
@@ -345,4 +350,67 @@ func TestWriteOnce(t *testing.T) {
 		}
 	}
 	a.writeOnce("p")() // free again
+}
+
+// A backlog, as after -import: the views stay in bounds once its lines are
+// built, and no compaction sees much more than the compaction view's cap.
+func TestBacklog(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsyncs about 1,500 writes")
+	}
+	c, _ := fakeChat(t, t.TempDir(), 400)
+	inner := c.compact
+	var most atomic.Int64
+	compact := func(ctx context.Context, lines []string, task []block) (string, error) {
+		if n := int64(lo.SumBy(lines, func(l string) int { return len(l) + 1 })); n > most.Load() {
+			most.Store(n)
+		}
+		return inner(ctx, lines, task)
+	}
+	c.mu.Lock()
+	c.compact = nil // importing: nothing builds
+	c.mu.Unlock()
+	for i := range 500 {
+		c.Log("note", fmt.Sprintf("%04d %s", i, strings.Repeat("n", 600)))
+	}
+	c.mu.Lock()
+	c.compact = compact
+	c.pump()
+	c.mu.Unlock()
+	waitIdle(t, c)
+	c.mu.Lock()
+	size, csize := c.view.size(c), c.cview.size(c)
+	c.mu.Unlock()
+	if size > viewHi || csize > cviewHi {
+		t.Fatalf("after the backlog: view %d bytes, compaction view %d", size, csize)
+	}
+	if m := most.Load(); m > cviewHi+jobs*(nodeMax+16) {
+		t.Fatalf("a compaction saw %d bytes of context", m)
+	}
+}
+
+// Messages load by id, whatever day file the clock put them in, and a
+// torn view.json starts the view over instead of keeping the chat shut.
+func TestLoadOrder(t *testing.T) {
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, "main"), 0o700)
+	day := func(name string, ids ...int) {
+		for _, i := range ids {
+			b, _ := json.Marshal(Msg{I: i, Kind: "user", Text: fmt.Sprint("m", i), Size: 8, Date: time.Now()})
+			appendRaw(filepath.Join(dir, "main", name+".jsonl"), append(b, '\n'))
+		}
+	}
+	day("2026-10-08", 0, 1)
+	day("2026-10-07", 2) // the clock went back
+	os.WriteFile(filepath.Join(dir, "view.json"), []byte(`[[0,0],[0,`), 0o600)
+	c, err := openChat(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.msgs) != 3 || c.msgs[2].Text != "m2" || !slices.Equal(c.view.keys, []key{{0, 0}, {0, 1}, {0, 2}}) {
+		t.Fatalf("loaded %v, view %v", c.msgs, c.view.keys)
+	}
+	if !tiles([][2]int{{1, 0}, {0, 2}}, 3) || tiles([][2]int{{0, 0}, {0, 2}}, 3) || tiles([][2]int{{2, 0}}, 3) || tiles([][2]int{{99, 0}}, 3) {
+		t.Fatal("tiles")
+	}
 }

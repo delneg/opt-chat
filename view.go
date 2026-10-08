@@ -18,6 +18,12 @@ type view struct {
 // push appends a message's line and reports whether the view merged.
 func (v *view) push(k key, c *Chat) bool {
 	v.keys = append(v.keys, k)
+	return v.check(c)
+}
+
+// check starts a batch once the view is past hi, goes on with one cut short,
+// and reports whether the view merged.
+func (v *view) check(c *Chat) bool {
 	if v.size(c) > v.hi {
 		v.shrinking = true
 	}

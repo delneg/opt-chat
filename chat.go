@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -103,15 +104,18 @@ func openChat(dir string) (*Chat, error) {
 		cooling: map[key]bool{}, failed: map[key]bool{}, changed: make(chan struct{}),
 		view: view{lo: viewLo, hi: viewHi}, cview: view{lo: cviewLo, hi: cviewHi},
 	}
-	err = load(filepath.Join(dir, "main"), func(m Msg) {
+	// By id, not by file: a day file is named by the clock, which can go back.
+	var msgs []Msg
+	if err := load(filepath.Join(dir, "main"), func(m Msg) { msgs = append(msgs, m) }); err != nil {
+		return nil, err
+	}
+	slices.SortStableFunc(msgs, func(a, b Msg) int { return cmp.Compare(a.I, b.I) })
+	for _, m := range msgs {
 		if m.I != len(c.msgs) {
-			warn("main: message %d out of order, skipped", m.I)
-			return
+			warn("main: message %d out of sequence, skipped", m.I)
+			continue
 		}
 		c.msgs = append(c.msgs, m)
-	})
-	if err != nil {
-		return nil, err
 	}
 	if err := load(filepath.Join(dir, "tree"), func(n Node) { c.tree[key{n.L, n.I}] = n.Text }); err != nil {
 		return nil, err
@@ -119,10 +123,15 @@ func openChat(dir string) (*Chat, error) {
 	// The view is kept, never rebuilt: a rebuilt view differs and kills every cache entry.
 	if b, err := os.ReadFile(filepath.Join(dir, "view.json")); err == nil {
 		var pairs [][2]int
-		if err := json.Unmarshal(b, &pairs); err != nil {
-			return nil, fmt.Errorf("view.json: %w", err)
+		err := json.Unmarshal(b, &pairs)
+		if err == nil && !tiles(pairs, len(c.msgs)) {
+			err = errors.New("its lines don't tile the chat")
 		}
-		c.view.keys = lo.Map(pairs, func(p [2]int, _ int) key { return key{p[0], p[1]} })
+		if err != nil {
+			warn("view.json: %v; the view starts over from the log", err)
+		} else {
+			c.view.keys = lo.Map(pairs, func(p [2]int, _ int) key { return key{p[0], p[1]} })
+		}
 	}
 	end := 0
 	if n := len(c.view.keys); n > 0 {
@@ -131,13 +140,28 @@ func openChat(dir string) (*Chat, error) {
 	for i := end; i < len(c.msgs); i++ { // messages logged after the last save
 		c.view.push(key{0, i}, c)
 	}
+	c.view.check(c) // lines built after the last save
 	c.resetCview()
 	c.saveView()
 	c.enqueueMissing()
 	return c, nil
 }
 
-// load reads every day file of dir in order, skipping torn lines.
+// tiles reports whether pairs, as (l, i) keys, cover messages 0 to some
+// point at most n, each starting where the last ended.
+func tiles(pairs [][2]int, n int) bool {
+	end := 0
+	for _, p := range pairs {
+		k := key{p[0], p[1]}
+		if k.L < 0 || k.L > 62 || k.I < 0 || k.start() != end {
+			return false
+		}
+		end = k.end()
+	}
+	return end <= n
+}
+
+// load reads every day file of dir, skipping torn lines.
 func load[T any](dir string, each func(T)) error {
 	files, err := filepath.Glob(filepath.Join(dir, "*.jsonl"))
 	if err != nil {
@@ -260,7 +284,8 @@ func (c *Chat) imageBlocks(names []string) []block {
 func (c *Chat) saveView() {
 	b, _ := json.Marshal(lo.Map(c.view.keys, func(k key, _ int) [2]int { return [2]int{k.L, k.I} }))
 	tmp := filepath.Join(c.dir, "view.json.tmp")
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+	os.Remove(tmp)
+	if err := appendRaw(tmp, b); err != nil { // written and synced before it replaces the old one
 		fatal("view.json: %v", err)
 	}
 	if err := os.Rename(tmp, filepath.Join(c.dir, "view.json")); err != nil {
@@ -350,15 +375,19 @@ func (c *Chat) enqueueMissing() {
 	}
 }
 
-// next picks the next node to build: messages first, at most 8 deep, then merges.
+// next picks the next node to build: merges first, so that a batch finds the
+// parents it needs even behind a backlog, then messages, at most 8 deep.
 func (c *Chat) next() (key, bool) {
 	free := func(k key) bool { return !c.busy[k] && !c.cooling[k] }
+	if k, ok := lo.Find(c.readyM, free); ok {
+		return k, true
+	}
 	for _, i := range c.ready0[:min(jobs, len(c.ready0))] {
 		if k := (key{0, i}); free(k) {
 			return k, true
 		}
 	}
-	return lo.Find(c.readyM, free)
+	return key{}, false
 }
 
 func (c *Chat) pump() {
@@ -400,8 +429,20 @@ func (c *Chat) build(k key, compact func(context.Context, []string, []block) (st
 	}
 	delete(c.failed, k)
 	c.setNode(k, text)
+	c.refit()
 	c.pump()
 	c.notify()
+}
+
+// refit measures the views again once lines are built: a line's real size
+// shows only then, and so do the parents a batch was waiting for.
+func (c *Chat) refit() {
+	if c.view.check(c) {
+		c.resetCview()
+		c.saveView()
+	} else {
+		c.cview.check(c)
+	}
 }
 
 var ruler = strings.Repeat("-", nodeMax)
@@ -469,7 +510,7 @@ func (c *Chat) settle(ctx context.Context, waiting func(n int)) error {
 func (c *Chat) Zoom(id, n int) (string, []string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if n < 1 || n&(n-1) != 0 || id < 0 || id%n != 0 || id+n > len(c.msgs) {
+	if n < 1 || n&(n-1) != 0 || id < 0 || id%n != 0 || id > len(c.msgs)-n {
 		return fmt.Sprintf("No line %d+%d.", id, n), nil
 	}
 	if n == 1 {

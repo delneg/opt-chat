@@ -530,11 +530,15 @@ func (c *Chat) Date(id int) string {
 	return c.msgs[id].Date.Local().Format("Mon 2006-01-02 15:04:05 MST")
 }
 
-// splitText cuts s into pieces of at most n characters.
+// splitText cuts s into pieces of at most n characters, each ending at a
+// line break when one is in reach.
 func splitText(s string, n int) []string {
 	var out []string
 	for utf8.RuneCountInString(s) > n {
 		i := runeOffset(s, n)
+		if j := strings.LastIndexByte(s[:i], '\n'); j > 0 {
+			i = j + 1
+		}
 		out = append(out, s[:i])
 		s = s[i:]
 	}

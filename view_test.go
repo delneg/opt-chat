@@ -62,6 +62,13 @@ func TestSplitAndClip(t *testing.T) {
 	if strings.Join(splitText(s, 3), "") != s || len(splitText(s, 3)) != 5 {
 		t.Fatalf("split: %q", splitText(s, 3))
 	}
+	lines := strings.Repeat("ab\n", 4) // pieces end at a line break when one is in reach
+	if got := splitText(lines, 7); !slices.Equal(got, []string{"ab\nab\n", "ab\nab\n"}) {
+		t.Fatalf("split at lines: %q", got)
+	}
+	if got := splitText("\nabcdef", 3); !slices.Equal(got, []string{"\nab", "cde", "f"}) {
+		t.Fatalf("split with a break only at the start: %q", got)
+	}
 	long := strings.Repeat("é", 40_000)
 	got := clip(long, clipMax)
 	if n := utf8.RuneCountInString(got); n > clipMax || n < clipMax-2 || !strings.HasPrefix(got, "éé") || !strings.HasSuffix(got, "éé") ||

@@ -21,8 +21,8 @@ and again. So recent lines cover one message each, and older lines cover more. A
 message not summarized yet shows as "(not summarized yet: zoom it)". A text too
 long for one message is split over several in a row.
 
-The view comes in two messages. The first holds only its opening lines, with
-<chat> still open: it is not a request, so reply only "ok" to it.
+A message holding only the view's opening lines, with <chat> still open, is
+not a request: reply only "ok" to it.
 
 Tools:
 - zoom(id, n) opens line id+n into the two lines it was made from;

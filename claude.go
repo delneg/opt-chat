@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"sync"
 )
@@ -24,6 +25,18 @@ type Agent struct {
 	cmodel, ceffort string
 	perm, cwd       string
 	tools           string
+
+	mu          sync.Mutex
+	compactions int   // since the last turn's report
+	cusage      usage // their usage
+}
+
+func (a *Agent) takeCompactions() (int, usage) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	n, u := a.compactions, a.cusage
+	a.compactions, a.cusage = 0, usage{}
+	return n, u
 }
 
 type block struct {
@@ -105,6 +118,7 @@ func (a *Agent) start(ctx context.Context, model, effort string, turn bool) (*pr
 	}
 	cmd := exec.CommandContext(ctx, "claude", args...)
 	cmd.Dir = a.cwd
+	cmd.Env = childEnv()
 	p := &proc{cmd: cmd}
 	cmd.Stderr = &p.stderr
 	var err error
@@ -118,6 +132,22 @@ func (a *Agent) start(ctx context.Context, model, effort string, turn bool) (*pr
 	p.out = bufio.NewScanner(stdout)
 	p.out.Buffer(nil, 64<<20)
 	return p, cmd.Start()
+}
+
+// childEnv is this process's environment, minus what would tie a call to a
+// Claude Code session that launched opt-chat (its token budget reminders
+// and effort), plus the billing header off: that header carries a
+// per-prompt id that, on Opus and Sonnet, stops every call from reading the
+// previous one's cache entries.
+func childEnv() []string {
+	inherited := []string{"CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_CHILD_SESSION",
+		"CLAUDE_CODE_SESSION_ATTENDED", "CLAUDE_CODE_MESSAGING_SOCKET", "CLAUDE_CODE_MESSAGING_TOKEN",
+		"CLAUDE_CODE_EXECPATH", "CLAUDE_PID", "CLAUDE_EFFORT"}
+	env := slices.DeleteFunc(os.Environ(), func(kv string) bool {
+		k, _, _ := strings.Cut(kv, "=")
+		return slices.Contains(inherited, k)
+	})
+	return append(env, "CLAUDE_CODE_ATTRIBUTION_HEADER=0")
 }
 
 // send writes one user message; false once stdin is closed.
@@ -165,27 +195,31 @@ func (p *proc) wait() error {
 	return nil
 }
 
-// viewMessages splits rendered view lines in two. The first message holds
-// whole blocks of 4 lines and nothing else, so Claude Code's cache mark at
-// its end falls right after the view: the next call, whose view only grew,
-// finds that entry within the 20 blocks the API looks back. The model
-// answers it with "ok". The second message is the remaining lines, then
-// the input itself. nil first message: too few lines to bother.
+// How the view stays cached across calls. Claude Code marks for the cache
+// the end of the last message and of the one before it, and on Opus and
+// Sonnet pins its environment block right after the first message. Only an
+// exact repeat of a marked prefix reads reliably (growing a message past its
+// old mark did not, on any model tried), so a call opens with:
+//
+//	[view up to its last multiple of 64 lines] [env] ok [rest of view, input]
+//
+// The first message is byte-identical from call to call until 64 more lines
+// arrive or a batch merges: each call reads it from the cache, and writes
+// only the lines after it. The "ok" is the model's reply to it.
+const checkpoint = 64
+
+// viewMessages renders the view's two messages around input. A nil first
+// message: fewer lines than one checkpoint.
 func viewMessages(lines []string, input string) (first []string, second []string) {
-	whole := len(lines) - len(lines)%blockLen
-	for j := 0; j < whole; j += blockLen {
-		first = append(first, strings.Join(lines[j:j+blockLen], "\n")+"\n")
+	base := len(lines) / checkpoint * checkpoint
+	rest := strings.Join(lines[base:], "\n")
+	if rest != "" {
+		rest += "\n"
 	}
-	tail := strings.Join(lines[whole:], "\n")
-	if tail != "" {
-		tail += "\n"
+	if base == 0 {
+		return nil, []string{"<chat>\n" + rest + "</chat>", input}
 	}
-	if first == nil {
-		tail = "<chat>\n" + tail
-	} else {
-		first[0] = "<chat>\n" + first[0]
-	}
-	return first, []string{tail + "</chat>", input}
+	return []string{"<chat>\n" + strings.Join(lines[:base], "\n") + "\n"}, []string{rest + "</chat>", input}
 }
 
 // ack sends the view's first message and waits out the model's "ok".
@@ -194,15 +228,19 @@ func ack(p *proc, first []string, u *usage) error {
 		return nil
 	}
 	p.send(first...)
+	return awaitResult(p, u)
+}
+
+func awaitResult(p *proc, u *usage) error {
 	for {
 		e, ok := p.next()
 		if !ok {
-			return errors.New("claude exited during the view ack")
+			return fmt.Errorf("claude exited: %s", lastLine(p.stderr.String()))
 		}
 		if e.Type == "result" {
 			u.add(e.Usage)
 			if e.IsError {
-				return fmt.Errorf("view ack: %s", e.Result)
+				return errors.New(e.Result)
 			}
 			return nil
 		}
@@ -217,6 +255,12 @@ func (a *Agent) Compact(ctx context.Context, lines []string, task string) (strin
 	}
 	defer p.wait()
 	var u usage
+	defer func() {
+		a.mu.Lock()
+		a.compactions++
+		a.cusage.add(u)
+		a.mu.Unlock()
+	}()
 	first, second := viewMessages(lines, task)
 	if err := ack(p, first, &u); err != nil {
 		return "", err
@@ -231,6 +275,7 @@ func (a *Agent) Compact(ctx context.Context, lines []string, task string) (strin
 		if e.Type != "result" {
 			continue
 		}
+		u.add(e.Usage)
 		if e.IsError {
 			return "", fmt.Errorf("compaction: %s", e.Result)
 		}
@@ -266,8 +311,18 @@ func (t *Turn) Send(text string) bool {
 	if t.p == nil {
 		return false
 	}
-	t.agent.chat.Log("user", text) // logged before it is sent: the log never misses what the model saw
+	t.agent.chat.Log("user", text)
 	return t.p.send(text)
+}
+
+// detach closes the call to new messages: later ones start a new turn.
+func (t *Turn) detach() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.p != nil {
+		t.p.close()
+		t.p = nil
+	}
 }
 
 func (t *Turn) Run(ctx context.Context, texts []string) error {
@@ -275,7 +330,6 @@ func (t *Turn) Run(ctx context.Context, texts []string) error {
 	c.mu.Lock()
 	lines := c.lines(c.view.keys) // rendered before the new message is logged
 	c.mu.Unlock()
-	msg := strings.Join(texts, "\n\n")
 	for _, s := range texts {
 		c.Log("user", s)
 	}
@@ -283,9 +337,9 @@ func (t *Turn) Run(ctx context.Context, texts []string) error {
 	if err != nil {
 		return err
 	}
-	var u usage
-	first, second := viewMessages(lines, msg)
-	if err := ack(p, first, &u); err != nil {
+	var vu, u usage
+	first, second := viewMessages(lines, strings.Join(texts, "\n\n"))
+	if err := ack(p, first, &vu); err != nil {
 		p.wait()
 		return err
 	}
@@ -293,11 +347,6 @@ func (t *Turn) Run(ctx context.Context, texts []string) error {
 	p.send(second...)
 	t.p = p
 	t.mu.Unlock()
-	defer func() {
-		t.mu.Lock()
-		t.p = nil
-		t.mu.Unlock()
-	}()
 	for {
 		e, ok := p.next()
 		if !ok {
@@ -336,15 +385,15 @@ func (t *Turn) Run(ctx context.Context, texts []string) error {
 			if e.IsError {
 				warn("turn: %s", e.Result)
 			}
-			// Done after this result: messages sent later start a new turn.
-			// One sent before is already queued in Claude Code, which runs it before exiting.
-			t.mu.Lock()
-			p.close()
-			t.mu.Unlock()
+			// Claude Code delivers a message sent mid-run into this same result,
+			// so the call is done: close it to new messages and let it exit.
+			t.detach()
 		}
 	}
+	t.detach()
 	err = p.wait()
-	dim("[" + u.String() + "]")
+	n, cu := a.takeCompactions()
+	dim(fmt.Sprintf("[view: %s | turn: %s | %d compactions: %s]", vu, u, n, cu))
 	return err
 }
 

@@ -17,16 +17,17 @@ import (
 )
 
 const (
-	nodeMax  = 512     // target bytes of one summary line
-	viewLo   = 64_000  // the chat's view drops back to this...
-	viewHi   = 128_000 // ...once it passes this
-	cviewLo  = 16_000  // same sawtooth for the compactions' view
-	cviewHi  = 32_000
-	jobs     = 8 // compactions running at once
-	clipMax  = 30_000
-	retryIn  = 10 * time.Second
-	unbuilt  = "(not summarized yet: zoom it)"
-	blockLen = 4 // view lines per cache block
+	nodeMax = 512     // target bytes of one summary line
+	viewLo  = 64_000  // the chat's view drops back to this...
+	viewHi  = 128_000 // ...once it passes this
+	cviewLo = 16_000  // same sawtooth for the compactions' view
+	cviewHi = 32_000
+	jobs    = 8 // compactions running at once
+	clipMax = 30_000
+	retryIn = 10 * time.Second
+	// A stuck compaction must not hold a job slot forever.
+	compactTimeout = 5 * time.Minute
+	unbuilt        = "(not summarized yet: zoom it)"
 )
 
 // key names tree node (l, i): the 2^l messages from i·2^l on.
@@ -322,7 +323,9 @@ func (c *Chat) pump() {
 }
 
 func (c *Chat) build(k key, ctxLines []string, task string) {
-	text, err := c.compact(context.Background(), ctxLines, task)
+	ctx, cancel := context.WithTimeout(context.Background(), compactTimeout)
+	text, err := c.compact(ctx, ctxLines, task)
+	cancel()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if err != nil {

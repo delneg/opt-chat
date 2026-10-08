@@ -617,6 +617,9 @@ func importChats(c *Chat, path string, since time.Time, tools bool, in io.Reader
 	if err != nil {
 		return err
 	}
+	if found == 0 {
+		return fmt.Errorf("no chats in %s", path)
+	}
 	if len(sessions) == 0 {
 		fmt.Fprintf(out, "Nothing new in the %s found: all in the chat already, or older than -import-since.\n", count(found, "session"))
 		return nil

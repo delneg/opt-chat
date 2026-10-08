@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"encoding/base64"
 	"encoding/json/v2"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -86,6 +87,11 @@ func TestImportClaudeCode(t *testing.T) {
 	jsonl(t, filepath.Join(home, ".claude", "other.jsonl"), claudeLine("user", "2026-09-01T10:00:00Z", "not a session"))
 
 	c, _ := fakeChat(t, t.TempDir(), 100)
+	empty := filepath.Join(home, "empty")
+	os.Mkdir(empty, 0o700)
+	if err := importChats(c, empty, time.Time{}, false, strings.NewReader("y\n"), io.Discard); err == nil || err.Error() != "no chats in "+empty {
+		t.Fatalf("a directory with no session: %v", err)
+	}
 	if out := importInto(t, c, filepath.Join(home, ".claude"), time.Time{}, false, "n\n"); !strings.Contains(out, "4 messages (0.0 MB) from 1 session, ") ||
 		!strings.Contains(out, "-import-tools adds them") || len(logged(c)) != 0 {
 		t.Fatalf("declined: %q, logged %q", out, logged(c))

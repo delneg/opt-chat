@@ -2,7 +2,9 @@ package main
 
 import (
 	"slices"
+	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // The gist's claim: with the push list's length as the budget, mostDue picks
@@ -56,7 +58,15 @@ func TestSplitAndClip(t *testing.T) {
 			t.Fatalf("bad piece %q", p)
 		}
 	}
-	if got := clip("0123456789", 4); got != "01\n[... 6 bytes cut ...]\n89" {
-		t.Fatalf("clip: %q", got)
+	if strings.Join(splitText(s, 3), "") != s {
+		t.Fatal("split lost bytes")
+	}
+	long := strings.Repeat("é", 40_000)
+	got := clip(long, clipMax)
+	if len(got) > clipMax || !strings.HasPrefix(got, "éé") || !strings.HasSuffix(got, "éé") || !utf8.ValidString(got) {
+		t.Fatalf("clip: %d bytes, %.20q...%.20q", len(got), got, got[len(got)-20:])
+	}
+	if clip("short", clipMax) != "short" || len(clip(long, 4)) == 0 {
+		t.Fatal("clip edge cases")
 	}
 }

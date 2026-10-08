@@ -311,7 +311,7 @@ func (c *Chat) next() (key, bool) {
 }
 
 func (c *Chat) pump() {
-	for len(c.busy) < jobs {
+	for c.compact != nil && len(c.busy) < jobs { // nil: importing, the next run builds
 		k, ok := c.next()
 		if !ok {
 			return
@@ -451,14 +451,18 @@ func splitText(s string, n int) []string {
 
 func utf8Start(b byte) bool { return b&0xC0 != 0x80 }
 
-// clip keeps the head and tail of a tool output, n bytes in all.
+// clip keeps the head and tail of a tool output, at most n bytes in all.
 func clip(s string, n int) string {
 	if len(s) <= n {
 		return s
 	}
-	head, tail := splitText(s, n/2)[0], s[len(s)-n/2:]
-	for len(tail) > 0 && !utf8Start(tail[0]) {
-		tail = tail[1:]
+	half := max(0, (n-len(fmt.Sprintf("\n[... %d bytes cut ...]\n", len(s))))/2)
+	h, t := half, len(s)-half // never inside a UTF-8 character
+	for h > 0 && !utf8Start(s[h]) {
+		h--
 	}
-	return fmt.Sprintf("%s\n[... %d bytes cut ...]\n%s", head, len(s)-len(head)-len(tail), tail)
+	for t < len(s) && !utf8Start(s[t]) {
+		t++
+	}
+	return fmt.Sprintf("%s\n[... %d bytes cut ...]\n%s", s[:h], t-h, s[t:])
 }

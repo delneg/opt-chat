@@ -149,20 +149,18 @@ func (a *Agent) start(ctx context.Context, model, effort string, r role) (*proc,
 	return p, cmd.Start()
 }
 
-// childEnv is this process's environment, minus what would tie a call to a
-// Claude Code session that launched opt-chat (its token budget reminders
-// and effort), plus the billing header off: that header carries a
-// per-prompt id that, on Opus and Sonnet, stops every call from reading the
-// previous one's cache entries.
+// childEnv is this process's environment minus the variables that tie a
+// call to a Claude Code session that launched opt-chat. With them, calls
+// got that session's token-budget reminder in some requests and not in
+// others, so no two prompts matched, and inherited its effort.
 func childEnv() []string {
 	inherited := []string{"CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_CHILD_SESSION",
 		"CLAUDE_CODE_SESSION_ATTENDED", "CLAUDE_CODE_MESSAGING_SOCKET", "CLAUDE_CODE_MESSAGING_TOKEN",
 		"CLAUDE_CODE_EXECPATH", "CLAUDE_PID", "CLAUDE_EFFORT"}
-	env := slices.DeleteFunc(os.Environ(), func(kv string) bool {
+	return slices.DeleteFunc(os.Environ(), func(kv string) bool {
 		k, _, _ := strings.Cut(kv, "=")
 		return slices.Contains(inherited, k)
 	})
-	return append(env, "CLAUDE_CODE_ATTRIBUTION_HEADER=0")
 }
 
 // send writes one user message; false once stdin is closed.
@@ -211,10 +209,13 @@ func (p *proc) wait() error {
 }
 
 // How the view stays cached across calls. Claude Code marks for the cache
-// the end of the last message and of the one before it, and on Opus and
-// Sonnet pins its environment block right after the first message. Only an
-// exact repeat of a marked prefix reads reliably (growing a message past its
-// old mark did not, on any model tried), so a call opens with:
+// the end of the last message and of the one before it, and on models with
+// mid-conversation system messages pins its environment block, itself
+// marked, right after the first message. The API documents a 20-block
+// lookback that should find a message's old end after it grew, but through
+// Claude Code that never read back in our measurements (Opus 5.5, Sonnet
+// 5.5, Haiku 4.5), while an exact repeat of a marked prefix always did. So a
+// call opens with:
 //
 //	[view up to its last multiple of 64 lines] [env] ok [rest of the view] [input]
 //

@@ -103,23 +103,25 @@ func mcpResult(a *Agent, method string, params jsontext.Value) (any, bool) {
 }
 
 func callTool(a *Agent, tool string, id jsontext.Value, n int, name, task, msg string) string {
+	var s string
+	isName := json.Unmarshal(id, &s) == nil
+	i, err := strconv.Atoi(s) // a message id sent as a string
+	if !isName {
+		err = json.Unmarshal(id, &i)
+	} else if err == nil {
+		isName = false
+	}
 	switch tool {
 	case "zoom":
-		var agent string
-		if json.Unmarshal(id, &agent) == nil {
-			if i, err := strconv.Atoi(agent); err == nil { // a message id sent as a string
-				return a.chat.Zoom(i, n)
-			}
-			return a.chat.ZoomAgent(agent)
+		if isName {
+			return a.chat.ZoomAgent(s)
 		}
-		var i int
-		if json.Unmarshal(id, &i) != nil {
+		if err != nil {
 			return "id must be a message id or an agent's name."
 		}
 		return a.chat.Zoom(i, n)
 	case "date":
-		var i int
-		if json.Unmarshal(id, &i) != nil {
+		if isName || err != nil {
 			return "id must be a message id."
 		}
 		return a.chat.Date(i)

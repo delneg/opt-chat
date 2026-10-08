@@ -31,11 +31,27 @@ func main() {
 	ceffort := flag.String("compact-effort", "xhigh", "effort for compactions")
 	perm := flag.String("permission-mode", "auto", "Claude Code permission mode for turns")
 	tools := flag.String("tools", "Bash,Read,Edit,Write,WebSearch,WebFetch", "Claude Code tools for turns")
+	importFile := flag.String("import", "", "log each line of this file as a note (memories from before the chat), then exit")
 	flag.Parse()
 
 	c, err := openChat(*dir)
 	if err != nil {
 		fatal("%v", err)
+	}
+	if *importFile != "" {
+		b, err := os.ReadFile(*importFile)
+		if err != nil {
+			fatal("%v", err)
+		}
+		n := 0
+		for line := range strings.Lines(string(b)) {
+			if line = strings.TrimSpace(line); line != "" {
+				c.Log("note", line)
+				n++
+			}
+		}
+		fmt.Printf("imported %d notes; the next run summarizes them\n", n)
+		return
 	}
 	system := prompt
 	if b, err := os.ReadFile(filepath.Join(*dir, "AGENTS.md")); err == nil {

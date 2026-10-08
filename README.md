@@ -184,6 +184,15 @@ the compaction tasks with ruler, cut and five tries, 8 parallel compactions,
 ready-node queues (one pass at start finds the work the last run left), and
 waiting for summaries before every call.
 
+## From UniiChat itself
+
+Beyond the recipe, a few things follow UniiChat as it ships (its web
+client's code): importing past chats; a long text split at a line break
+when one is in reach; `spawn`'s `effort`; a report ending with
+`Full chat: zoom("Name")`; `/model` and `/effort` mid-chat, and a line
+starting with an unknown `/word` held back; the chat's own tools logged by
+their names (`zoom`, not `mcp__opt__zoom`).
+
 ## Test
 
 ```sh

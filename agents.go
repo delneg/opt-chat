@@ -135,7 +135,7 @@ func (a *Agent) runAgent(name, task, effort string) {
 			case e.Type == "assistant" && b.Type == "text" && !acking:
 				a.agentWrite(name, "agent", b.Text)
 			case e.Type == "assistant" && b.Type == "tool_use":
-				a.agentWrite(name, "tool", b.Name+" "+string(b.Input))
+				a.agentWrite(name, "tool", toolCall(b))
 			case e.Type == "user" && b.Type == "tool_result":
 				out, _ := resultContent(b.Content)
 				a.agentWrite(name, "echo", clip(out, clipMax))

@@ -524,7 +524,7 @@ func (t *Turn) Run(ctx context.Context, msgs []message) error {
 						c.Log("opt", b.Text)
 					}
 				case "tool_use":
-					call := b.Name + " " + string(b.Input)
+					call := toolCall(b)
 					dim("→ " + oneLine(call, 200))
 					c.Log("tool", call)
 				}
@@ -609,6 +609,12 @@ func resultContent(v jsontext.Value) (string, [][]byte) {
 		}
 	}
 	return strings.Join(parts, "\n"), imgs
+}
+
+// toolCall is a tool_use as the log keeps it: its name and JSON input, the
+// chat's own tools by the names the prompt gives them.
+func toolCall(b block) string {
+	return strings.TrimPrefix(b.Name, "mcp__opt__") + " " + string(b.Input)
 }
 
 func oneLine(s string, n int) string {

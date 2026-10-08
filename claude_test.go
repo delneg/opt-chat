@@ -96,7 +96,7 @@ func fakeClaude() {
 			<-stop
 			os.Exit(143)
 		default:
-			say(block{Type: "tool_use", Name: "Read", Input: []byte(`{"file_path":"x.png"}`)})
+			say(block{Type: "tool_use", Name: "Read", Input: []byte(`{"file_path":"x.png"}`)}, block{Type: "tool_use", Name: "mcp__opt__date", Input: []byte(`{"id":0}`)})
 			img, _ := json.Marshal([]block{{Type: "image", Source: &source{Type: "base64", MediaType: "image/png", Data: "iVBORw0KGgoAAAANSUhEUg=="}}})
 			emit(map[string]any{"type": "user", "message": map[string]any{"content": []block{{Type: "tool_result", Content: img}}}})
 			result(fmt.Sprintf("answer to %q with %d images", text, images))
@@ -158,7 +158,7 @@ func TestTurn(t *testing.T) {
 		got = append(got, fmt.Sprintf("%s: %s %d", m.Kind, m.Text, len(m.Images)))
 	}
 	rest := "<chat>\n64+1|note: note 64\n65+1|note: note 65\n66+1|note: note 66\n67+1|note: note 67\n68+1|note: note 68\n69+1|note: note 69\n</chat>"
-	want := []string{"user: hi 1", `tool: Read {"file_path":"x.png"} 0`, "echo: [image] 1", fmt.Sprintf("opt: answer to %q with 1 images 0", rest+"hi")}
+	want := []string{"user: hi 1", `tool: Read {"file_path":"x.png"} 0`, `tool: date {"id":0} 0`, "echo: [image] 1", fmt.Sprintf("opt: answer to %q with 1 images 0", rest+"hi")}
 	if !slices.Equal(got, want) {
 		t.Fatalf("logged:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
@@ -261,7 +261,7 @@ func TestSubagentsAndQuit(t *testing.T) {
 	if got, want := report(), fmt.Sprintf("[Scout] answer to %q with 0 images\n\nFull chat: zoom(\"Scout\")", "<chat>\n</chat>You are subagent [Scout]. Your task:\nlook around"); got != want {
 		t.Fatalf("report %q, want %q", got, want)
 	}
-	if !strings.Contains(c.ZoomAgent("[Scout]"), `tool: Read {"file_path":"x.png"}`) {
+	if !strings.Contains(c.ZoomAgent("[Scout]"), `tool: Read {"file_path":"x.png"}`+"\n\ntool: date {\"id\":0}") {
 		t.Fatalf("Scout's log: %q", c.ZoomAgent("Scout"))
 	}
 	if got := a.Spawn("Scout", "again", "max"); !strings.HasPrefix(got, "Started [Scout-2]") || !strings.HasPrefix(report(), "[Scout-2] ") {

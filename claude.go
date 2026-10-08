@@ -26,9 +26,12 @@ type Agent struct {
 	perm, cwd       string
 	tools           string
 
+	report func(text string) // hands an agent's report to the chat
+
 	mu          sync.Mutex
-	compactions int   // since the last turn's report
-	cusage      usage // their usage
+	compactions int              // since the last turn's report
+	cusage      usage            // their usage
+	running     map[string]*proc // agents by name; nil while starting or finished
 }
 
 func (a *Agent) takeCompactions() (int, usage) {
@@ -100,7 +103,15 @@ type proc struct {
 	stderr strings.Builder
 }
 
-func (a *Agent) start(ctx context.Context, model, effort string, turn bool) (*proc, error) {
+type role int
+
+const (
+	roleCompact role = iota
+	roleTurn
+	roleAgent
+)
+
+func (a *Agent) start(ctx context.Context, model, effort string, r role) (*proc, error) {
 	args := []string{"-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
 		"--model", model, "--system-prompt", a.system,
 		// Nothing of the user's Claude Code setup leaks in: no hooks, plugins, CLAUDE.md or MCP servers.
@@ -108,10 +119,14 @@ func (a *Agent) start(ctx context.Context, model, effort string, turn bool) (*pr
 	if effort != "" {
 		args = append(args, "--effort", effort)
 	}
-	if turn {
-		args = append(args, "--tools", a.tools, "--mcp-config", a.mcpConfig,
-			"--allowedTools", "mcp__opt__zoom,mcp__opt__date", "--permission-mode", a.perm)
-	} else {
+	switch r {
+	case roleTurn:
+		args = append(args, "--tools", a.tools, "--mcp-config", a.mcpConfig, "--permission-mode", a.perm,
+			"--allowedTools", "mcp__opt__zoom,mcp__opt__date,mcp__opt__spawn,mcp__opt__tell")
+	case roleAgent: // agents don't spawn agents
+		args = append(args, "--tools", a.tools, "--mcp-config", a.mcpConfig, "--permission-mode", a.perm,
+			"--allowedTools", "mcp__opt__zoom,mcp__opt__date", "--disallowedTools", "mcp__opt__spawn,mcp__opt__tell")
+	default:
 		// A compaction calls no tools. It runs on another model, so it could
 		// not read the turns' cache entries anyway.
 		args = append(args, "--tools", "", "--mcp-config", `{"mcpServers":{}}`)
@@ -249,7 +264,7 @@ func awaitResult(p *proc, u *usage) error {
 
 // Compact builds one tree line, enforcing the size with the ruler, the cut, and retries.
 func (a *Agent) Compact(ctx context.Context, lines []string, task string) (string, error) {
-	p, err := a.start(ctx, a.cmodel, a.ceffort, false)
+	p, err := a.start(ctx, a.cmodel, a.ceffort, roleCompact)
 	if err != nil {
 		return "", err
 	}
@@ -296,6 +311,9 @@ func (a *Agent) Compact(ctx context.Context, lines []string, task string) (strin
 	}
 }
 
+// message is one the chat hands a turn: the user's (kind user) or an agent's report (kind work).
+type message struct{ kind, text string }
+
 // Turn is one fresh `claude -p` call: [system] [view] [message], logging
 // each reply, tool call and result as it happens.
 type Turn struct {
@@ -305,14 +323,14 @@ type Turn struct {
 }
 
 // Send hands a message to the running call, between its tool calls.
-func (t *Turn) Send(text string) bool {
+func (t *Turn) Send(m message) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.p == nil {
 		return false
 	}
-	t.agent.chat.Log("user", text)
-	return t.p.send(text)
+	t.agent.chat.Log(m.kind, m.text)
+	return t.p.send(m.text)
 }
 
 // detach closes the call to new messages: later ones start a new turn.
@@ -325,15 +343,17 @@ func (t *Turn) detach() {
 	}
 }
 
-func (t *Turn) Run(ctx context.Context, texts []string) error {
+func (t *Turn) Run(ctx context.Context, msgs []message) error {
 	a, c := t.agent, t.agent.chat
 	c.mu.Lock()
-	lines := c.lines(c.view.keys) // rendered before the new message is logged
+	lines := c.lines(c.view.keys) // rendered before the new messages are logged
 	c.mu.Unlock()
-	for _, s := range texts {
-		c.Log("user", s)
+	texts := make([]string, len(msgs))
+	for j, m := range msgs {
+		c.Log(m.kind, m.text)
+		texts[j] = m.text
 	}
-	p, err := a.start(ctx, a.model, a.effort, true)
+	p, err := a.start(ctx, a.model, a.effort, roleTurn)
 	if err != nil {
 		return err
 	}

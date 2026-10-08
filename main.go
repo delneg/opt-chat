@@ -30,23 +30,25 @@ func main() {
 	cmodel := flag.String("compact-model", "haiku", "model for compactions")
 	ceffort := flag.String("compact-effort", "xhigh", "effort for compactions")
 	perm := flag.String("permission-mode", "auto", "Claude Code permission mode for turns")
-	tools := flag.String("tools", "Bash,Read,Edit,Write,WebSearch,WebFetch,Agent", "Claude Code tools for turns")
+	tools := flag.String("tools", "Bash,Read,Edit,Write,WebSearch,WebFetch", "Claude Code tools for turns")
 	flag.Parse()
 
 	c, err := openChat(*dir)
 	if err != nil {
 		fatal("%v", err)
 	}
-	mcp, err := serveMCP(c)
-	if err != nil {
-		fatal("mcp: %v", err)
-	}
 	system := prompt
 	if b, err := os.ReadFile(filepath.Join(*dir, "AGENTS.md")); err == nil {
 		system += "\n# The user's instructions\n\n" + string(b)
 	}
-	a := &Agent{chat: c, system: system, mcpConfig: mcp, model: *model, effort: *effort,
-		cmodel: *cmodel, ceffort: *ceffort, perm: *perm, cwd: *cwd, tools: *tools}
+	h := &harness{}
+	a := &Agent{chat: c, system: system, model: *model, effort: *effort,
+		cmodel: *cmodel, ceffort: *ceffort, perm: *perm, cwd: *cwd, tools: *tools,
+		running: map[string]*proc{}, report: func(text string) { h.input(message{"work", text}) }}
+	h.agent = a
+	if a.mcpConfig, err = serveMCP(a); err != nil {
+		fatal("mcp: %v", err)
+	}
 
 	c.mu.Lock()
 	c.compact = a.Compact
@@ -56,7 +58,6 @@ func main() {
 	c.pump()
 	c.mu.Unlock()
 
-	h := &harness{agent: a}
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt)
 	in := readInput(os.Stdin)
@@ -68,7 +69,7 @@ func main() {
 				return
 			}
 			if strings.TrimSpace(text) != "" {
-				h.input(text)
+				h.input(message{"user", text})
 			}
 		case <-sig:
 			if !h.stop() {
@@ -84,19 +85,19 @@ func main() {
 type harness struct {
 	agent   *Agent
 	mu      sync.Mutex
-	queue   []string
+	queue   []message
 	turn    *Turn
 	cancel  context.CancelFunc
 	running bool
 }
 
-func (h *harness) input(text string) {
+func (h *harness) input(m message) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.turn != nil && h.turn.Send(text) {
+	if h.turn != nil && h.turn.Send(m) {
 		return
 	}
-	h.queue = append(h.queue, text)
+	h.queue = append(h.queue, m)
 	if !h.running {
 		h.running = true
 		go h.loop()
@@ -130,7 +131,7 @@ func (h *harness) loop() {
 		// Wait until every message is summarized: no call ever sees a placeholder.
 		err := c.settle(ctx, func(n int) { dim(fmt.Sprintf("[summarizing %d messages...]", n)) })
 		h.mu.Lock()
-		texts := h.queue
+		msgs := h.queue
 		h.queue = nil
 		t := &Turn{agent: h.agent}
 		if err == nil {
@@ -138,10 +139,10 @@ func (h *harness) loop() {
 		}
 		h.mu.Unlock()
 		if err != nil {
-			for _, s := range texts {
-				c.Log("user", s) // stays in the log, unanswered
+			for _, m := range msgs {
+				c.Log(m.kind, m.text) // stays in the log, unanswered
 			}
-		} else if err := t.Run(ctx, texts); err != nil && ctx.Err() == nil {
+		} else if err := t.Run(ctx, msgs); err != nil && ctx.Err() == nil {
 			warn("turn: %v", err)
 		}
 		h.mu.Lock()

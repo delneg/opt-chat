@@ -16,6 +16,12 @@ import (
 
 var badName = regexp.MustCompile(`[^A-Za-z0-9_-]+`)
 
+// agentName is s as a subagent's name, the same however it is written:
+// "[My agent]" is My-agent.
+func agentName(s string) string {
+	return strings.Trim(badName.ReplaceAllString(strings.Trim(s, "[] "), "-"), "-")
+}
+
 func (a *Agent) agentLog(name string) string { return filepath.Join(a.chat.dir, "agents", name+".log") }
 
 // Spawn starts an agent and returns at once.
@@ -23,7 +29,7 @@ func (a *Agent) Spawn(name, task string) string {
 	if strings.TrimSpace(task) == "" {
 		return "No task given."
 	}
-	name = strings.Trim(badName.ReplaceAllString(name, "-"), "-")
+	name = agentName(name)
 	if name == "" {
 		name = "agent"
 	}
@@ -51,11 +57,15 @@ func (a *Agent) Spawn(name, task string) string {
 
 // Tell hands a running agent a message, between its tool calls.
 func (a *Agent) Tell(name, text string) string {
+	name = agentName(name)
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	p := a.running[name]
-	if p == nil {
+	p, ok := a.running[name]
+	if !ok {
 		return fmt.Sprintf("No subagent [%s] is taking messages.", name)
+	}
+	if p == nil {
+		return fmt.Sprintf("[%s] is starting: tell it again in a moment.", name)
 	}
 	a.agentWrite(name, "opt", text)
 	if !p.send(textBlock(text)) {
@@ -72,9 +82,6 @@ func (a *Agent) agentWrite(name, kind, text string) {
 
 func (a *Agent) runAgent(name, task string) {
 	report := func(text string) {
-		if a.life.Err() != nil {
-			text = "stopped: opt-chat quit before this subagent finished."
-		}
 		a.mu.Lock()
 		delete(a.running, name)
 		a.mu.Unlock()
@@ -91,8 +98,14 @@ func (a *Agent) runAgent(name, task string) {
 	a.agentWrite(name, "task", task)
 	dim(fmt.Sprintf("[%s] started", name))
 	c := a.chat
-	if c.settle(a.life, func(int) {}) != nil {
-		report("")
+	failed := func(err error) string {
+		if a.life.Err() != nil {
+			return "stopped: opt-chat quit before this subagent finished."
+		}
+		return "failed: " + err.Error()
+	}
+	if err := c.settle(a.life, func(int) {}); err != nil {
+		report(failed(err))
 		return
 	}
 	c.mu.Lock()
@@ -100,7 +113,7 @@ func (a *Agent) runAgent(name, task string) {
 	c.mu.Unlock()
 	p, err := a.start(context.Background(), a.model, a.effort, roleAgent)
 	if err != nil {
-		report("failed to start: " + err.Error())
+		report(failed(err))
 		return
 	}
 	acking := true
@@ -124,7 +137,7 @@ func (a *Agent) runAgent(name, task string) {
 	first, second := viewMessages(lines, []block{textBlock(fmt.Sprintf("You are subagent [%s]. Your task:\n%s", name, task))})
 	if err := a.ack(p, first, &u, each); err != nil {
 		p.wait()
-		report("failed: " + err.Error())
+		report(failed(err))
 		return
 	}
 	acking = false
@@ -132,7 +145,7 @@ func (a *Agent) runAgent(name, task string) {
 	p.send(second...)
 	a.running[name] = p
 	a.mu.Unlock()
-	final := ""
+	final, replied := "", false
 	for {
 		e, ok := p.next()
 		if !ok {
@@ -142,26 +155,27 @@ func (a *Agent) runAgent(name, task string) {
 			each(e)
 			continue
 		}
-		final = e.Result
+		final, replied = e.Result, true
 		if e.IsError {
 			final = "failed: " + final
 		}
 		a.mu.Lock() // done: Tell now answers that it is not taking messages
-		a.running[name] = nil
+		delete(a.running, name)
 		p.close()
 		a.mu.Unlock()
 	}
-	if err := p.wait(); err != nil && final == "" {
-		final = "failed: " + err.Error()
+	if err := p.wait(); !replied {
+		final = failed(fmt.Errorf("no reply: %v", err))
 	}
 	report(final)
 }
 
 // ZoomAgent gives a subagent's whole chat.
 func (c *Chat) ZoomAgent(name string) string {
-	b, err := os.ReadFile(filepath.Join(c.dir, "agents", badName.ReplaceAllString(name, "-")+".log"))
-	if err != nil {
+	name = agentName(name)
+	b, err := os.ReadFile(filepath.Join(c.dir, "agents", name+".log"))
+	if name == "" || err != nil {
 		return fmt.Sprintf("No subagent [%s].", name)
 	}
-	return clip(string(b), clipMax)
+	return string(b)
 }

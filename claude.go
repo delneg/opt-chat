@@ -389,18 +389,21 @@ func (a *Agent) Compact(ctx context.Context, lines []string, task []block) (stri
 	best := ""
 	for try := 1; ; try++ {
 		e, ok := p.next()
-		if !ok {
+		if !ok && best != "" {
+			return best, nil // the shortest line so far
+		} else if !ok {
 			return "", p.exited()
 		}
 		if e.Type != "result" {
 			continue
 		}
 		u.add(e.Usage)
-		if e.IsError {
-			return "", fmt.Errorf("compaction: %s", e.Result)
-		}
 		line := strings.TrimSpace(e.Result)
-		if line == "" {
+		if (e.IsError || line == "") && best != "" {
+			return best, nil
+		} else if e.IsError {
+			return "", fmt.Errorf("compaction: %s", e.Result)
+		} else if line == "" {
 			return "", errors.New("empty compaction")
 		}
 		if best == "" || len(line) < len(best) {
@@ -420,6 +423,7 @@ func (a *Agent) Compact(ctx context.Context, lines []string, task []block) (stri
 type message struct {
 	kind, text string
 	images     []string // saved with Chat.saveImage
+	logged     bool     // by a call that died before it could answer
 }
 
 // content is m as a call gets it: its text, then its images.
@@ -430,33 +434,48 @@ func (c *Chat) content(m message) []block {
 // Turn is one fresh `claude -p` call: [system] [view] [message], logging
 // each reply, tool call and result as it happens.
 type Turn struct {
-	agent *Agent
-	mu    sync.Mutex
-	p     *proc // set once the message is sent; messages can join until it closes
+	agent   *Agent
+	mu      sync.Mutex
+	open    bool      // taking messages: from its own until its result
+	p       *proc     // set once the view and input are sent
+	pending []message // taken while the view was being sent
 }
 
-// Send hands a message to the running call, between its tool calls.
-func (t *Turn) Send(m message) bool {
+// Send hands a message to the running call, between its tool calls. When it
+// returns false, a call that has just died may have logged m (m.logged).
+func (t *Turn) Send(m *message) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if t.p == nil {
+	if !t.open {
 		return false
 	}
-	t.agent.chat.Log(m.kind, m.text, m.images...)
-	// Handled even if the write fails (the call just died): the message is
-	// logged, so it stays in the chat, unanswered, rather than logged twice.
-	t.p.send(t.agent.chat.content(m)...)
+	c := t.agent.chat
+	c.Log(m.kind, m.text, m.images...)
+	m.logged = true
+	if t.p == nil {
+		t.pending = append(t.pending, *m)
+		return true
+	}
+	if !t.p.send(c.content(*m)...) {
+		t.open = false
+		return false
+	}
 	return true
 }
 
-// detach closes the call to new messages: later ones start a new turn.
-func (t *Turn) detach() {
+// detach closes the call to new messages, and returns those it took but
+// never sent: later ones start a new turn.
+func (t *Turn) detach() []message {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	t.open = false
 	if t.p != nil {
 		t.p.close()
 		t.p = nil
 	}
+	left := t.pending
+	t.pending = nil
+	return left
 }
 
 func (t *Turn) Run(ctx context.Context, msgs []message) error {
@@ -466,9 +485,14 @@ func (t *Turn) Run(ctx context.Context, msgs []message) error {
 	c.mu.Unlock()
 	var input []block
 	for _, m := range msgs {
-		c.Log(m.kind, m.text, m.images...)
+		if !m.logged {
+			c.Log(m.kind, m.text, m.images...)
+		}
 		input = append(input, c.content(m)...)
 	}
+	t.mu.Lock()
+	t.open = true
+	t.mu.Unlock()
 	p, err := a.start(ctx, a.model, a.effort, roleTurn)
 	if err != nil {
 		return err
@@ -526,7 +550,10 @@ func (t *Turn) Run(ctx context.Context, msgs []message) error {
 	acking = false
 	t.mu.Lock()
 	p.send(second...)
-	t.p = p
+	for _, m := range t.pending {
+		p.send(c.content(m)...)
+	}
+	t.p, t.pending = p, nil
 	t.mu.Unlock()
 	for {
 		e, ok := p.next()

@@ -126,7 +126,7 @@ func (h *harness) input(m message) {
 		h.agent.chat.Log(m.kind, m.text, m.images...)
 		return
 	}
-	if h.turn != nil && h.turn.Send(m) {
+	if h.turn != nil && h.turn.Send(&m) {
 		return
 	}
 	h.queue = append(h.queue, m)
@@ -168,9 +168,7 @@ func (h *harness) loop() {
 		ctx, cancel := context.WithCancel(context.Background())
 		h.mu.Lock()
 		if len(h.queue) == 0 || h.quitting {
-			for _, m := range h.queue {
-				c.Log(m.kind, m.text, m.images...) // stays in the log, unanswered
-			}
+			logAll(c, h.queue) // stays in the log, unanswered
 			h.queue, h.running, h.cancel = nil, false, nil
 			h.mu.Unlock()
 			cancel()
@@ -189,16 +187,23 @@ func (h *harness) loop() {
 		}
 		h.mu.Unlock()
 		if err != nil {
-			for _, m := range msgs {
-				c.Log(m.kind, m.text, m.images...) // stays in the log, unanswered
-			}
+			logAll(c, msgs) // stays in the log, unanswered
 		} else if err := t.Run(ctx, msgs); err != nil && ctx.Err() == nil {
 			warn("turn: %v", err)
 		}
 		h.mu.Lock()
 		h.turn = nil
+		h.queue = append(t.detach(), h.queue...) // taken, but the call ended before it got them
 		h.mu.Unlock()
 		cancel()
+	}
+}
+
+func logAll(c *Chat, msgs []message) {
+	for _, m := range msgs {
+		if !m.logged {
+			c.Log(m.kind, m.text, m.images...)
+		}
 	}
 }
 

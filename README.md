@@ -76,7 +76,8 @@ is never its own line. `zoom(id, 1)` gives the message whole, with its images.
 `spawn(name, task)` starts a subagent in the background and returns at once.
 A subagent is a fresh call with the same prompt and tools, which gets the
 view, then its task. Its steps go to `agents/<Name>.log`, which
-`zoom("Name")` opens. Its final reply comes back as a `work` message,
+`zoom("Name")` opens whole (Claude Code saves a long one to a file the model
+reads). Its final reply comes back as a `work` message,
 `[Name] report`. If a turn is running, the report is injected into it;
 otherwise it starts a new turn. The chat never waits for a subagent.
 `tell(name, message)` reaches a running subagent between its tool calls.
@@ -86,7 +87,7 @@ report then says it was stopped.
 ## Where it departs from the recipe, and why
 
 The recipe assumes direct API calls. Running through `claude -p` changed four
-things, each measured through a logging proxy:
+things, each measured through a logging proxy, and testing changed two more:
 
 1. **How the view is cached.** The recipe splits the view into blocks of 4
    lines, marks the last whole block, and relies on the API's 20-block
@@ -118,18 +119,30 @@ things, each measured through a logging proxy:
    with its reply, so a command left running in the background died unseen,
    after the model had promised to report its result. Long work goes to
    subagents, as in the recipe.
+5. **A batch also goes on as lines get built**, not only at each new
+   message, and the view's size counts each line as built. Measured at each
+   new message alone, with its newest lines still placeholders, the view
+   passed 128 KB unseen once they were built, and after an import of 500
+   long notes it reached 203 KB. For the same reason merges build before
+   messages: behind a backlog of messages, the parents a batch needs never
+   came.
+6. **A view.json that can't be read** (a crash mid-write on a system that
+   lost it) starts the view over from the log, with a warning, instead of
+   keeping the chat shut. It is written whole and synced before it replaces
+   the last one, so this should never happen.
 
 The prompt is the recipe's, with Unii renamed Opt and the paragraph on
-computers dropped (opt-chat has no device tools), plus three additions: the
-two-part view, the `spawn` and `tell` tools, and a section for subagent
-calls.
+computers dropped (opt-chat has no device tools), plus additions: subagent
+calls in its opening sentence and in a section of their own, the two-part
+view, and the `spawn` and `tell` tools.
 
 Everything else follows the recipe: the log and its kinds, the free nodes,
 512-byte lines, tool output clipped to 30,000 characters, the merge order
 (`TestMostDueMatchesPush` checks it against Taelin's rollback push over
 20,001 steps), the 128 KB → 64 KB sawtooth, the 16–32 KB compaction view,
 the compaction tasks with ruler, cut and five tries, 8 parallel compactions,
-ready-node queues, and waiting for summaries before every call.
+ready-node queues (one pass at start finds the work the last run left), and
+waiting for summaries before every call.
 
 ## Test
 

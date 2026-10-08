@@ -65,11 +65,17 @@ func fakeClaude() {
 		}
 		return text, images
 	}
+	failRetry := false
 	for line := range lines {
 		text, images := read(line)
 		switch {
 		case strings.HasSuffix(text, viewGoesOn):
+			if strings.Contains(text, "slow-ack") {
+				time.Sleep(300 * time.Millisecond)
+			}
 			result("ok")
+		case strings.Contains(text, "Too long:") && failRetry:
+			emit(map[string]any{"type": "result", "is_error": true, "result": "overloaded"})
 		case strings.Contains(text, "Too long:"):
 			if strings.Contains(text, "your line is 600 bytes") && strings.Contains(text, strings.Repeat("x", nodeMax)+"| ← LIMIT") {
 				result("short line")
@@ -77,6 +83,7 @@ func fakeClaude() {
 				result("bad retry: " + text)
 			}
 		case strings.Contains(text, "Compaction:") && strings.Contains(text, "make-it-long"):
+			failRetry = strings.Contains(text, "then-fail")
 			result(strings.Repeat("x", 600))
 		case strings.Contains(text, "Compaction:"):
 			result(fmt.Sprintf("line with %d images", images))
@@ -185,7 +192,11 @@ func TestCompact(t *testing.T) {
 		flagOf(args, "--tools") != "Read" || flagOf(args, "--system-prompt") != "system" || flagOf(args, "--settings") != noTools {
 		t.Fatalf("compaction args: %q", args)
 	}
-	if n, u := a.takeCompactions(); n != 2 || u.Read == 0 {
+	got, err = a.Compact(context.Background(), nil, []block{textBlock("Compaction: make-it-long then-fail")})
+	if err != nil || got != strings.Repeat("x", 600) {
+		t.Fatalf("a failed retry lost the line in hand: %q, %v", got, err)
+	}
+	if n, u := a.takeCompactions(); n != 3 || u.Read == 0 {
 		t.Fatalf("compactions counted: %d, %v", n, u)
 	}
 }
@@ -210,13 +221,13 @@ func TestMidRun(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if !turn.Send(message{kind: "user", text: "banana"}) {
+	if !turn.Send(&message{kind: "user", text: "banana"}) {
 		t.Fatal("the running turn took no message")
 	}
 	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
-	if turn.Send(message{kind: "user", text: "late"}) {
+	if turn.Send(&message{kind: "user", text: "late"}) {
 		t.Fatal("a finished turn took a message")
 	}
 	var got []string
@@ -250,7 +261,7 @@ func TestSubagentsAndQuit(t *testing.T) {
 	if got, want := report(), fmt.Sprintf("[Scout] answer to %q with 0 images", "<chat>\n</chat>You are subagent [Scout]. Your task:\nlook around"); got != want {
 		t.Fatalf("report %q, want %q", got, want)
 	}
-	if !strings.Contains(c.ZoomAgent("Scout"), `tool: Read {"file_path":"x.png"}`) {
+	if !strings.Contains(c.ZoomAgent("[Scout]"), `tool: Read {"file_path":"x.png"}`) {
 		t.Fatalf("Scout's log: %q", c.ZoomAgent("Scout"))
 	}
 	if got := a.Spawn("Scout", "again"); !strings.HasPrefix(got, "Started [Scout-2]") || !strings.HasPrefix(report(), "[Scout-2] ") {
@@ -274,7 +285,7 @@ func TestSubagentsAndQuit(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if got := a.Tell("Sleeper", "hurry"); got != "Sent." {
+	if got := a.Tell("[Sleeper]", "hurry"); got != "Sent." {
 		t.Fatal(got)
 	}
 	quit := make(chan struct{})
@@ -308,5 +319,98 @@ func TestChildEnv(t *testing.T) {
 		return strings.HasPrefix(kv, "CLAUDECODE=") || strings.HasPrefix(kv, "CLAUDE_CODE_SESSION_ID=")
 	}) || has("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=0") || !has("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1") || !has("OPT_KEEP=yes") {
 		t.Fatalf("childEnv: %q", env)
+	}
+}
+
+// A message that comes while the view's first part is being answered is
+// taken by the turn, and sent right after its input.
+func TestSendDuringAck(t *testing.T) {
+	c, _ := fakeChat(t, t.TempDir(), 100)
+	c.Log("note", "slow-ack")
+	for i := range 69 {
+		c.Log("note", fmt.Sprint("note ", i))
+	}
+	a, _ := fakeAgent(t, c)
+	turn := &Turn{agent: a}
+	done := make(chan error)
+	go func() { done <- turn.Run(context.Background(), []message{{kind: "user", text: "hi"}}) }()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		turn.mu.Lock()
+		acking := turn.open && turn.p == nil
+		turn.mu.Unlock()
+		if acking {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the turn never started")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if !turn.Send(&message{kind: "user", text: "early"}) {
+		t.Fatal("the turn took no message during its ack")
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, m := range c.msgs[70:] {
+		got = append(got, m.Kind+": "+m.Text)
+	}
+	if len(got) < 2 || got[0] != "user: hi" || got[1] != "user: early" || !strings.Contains(got[len(got)-1], `answer to "early"`) {
+		t.Fatalf("logged: %q", got)
+	}
+}
+
+func TestAgentName(t *testing.T) {
+	for in, want := range map[string]string{"[Scout]": "Scout", "My agent": "My-agent", " [a/b] ": "a-b", "[]": "", "x_y-2": "x_y-2"} {
+		if got := agentName(in); got != want {
+			t.Errorf("agentName(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// The harness: a message starts a turn, one sent meanwhile joins it, and
+// quit logs what still waits.
+func TestHarness(t *testing.T) {
+	c, _ := fakeChat(t, t.TempDir(), 100)
+	a, _ := fakeAgent(t, c)
+	h := &harness{agent: a}
+	a.report = func(text string) { h.input(message{kind: "work", text: text}) }
+	h.input(message{kind: "user", text: "wait-for-message"})
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		c.mu.Lock()
+		n := len(c.msgs)
+		c.mu.Unlock()
+		if n == 2 { // its "waiting"
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("no turn")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	h.input(message{kind: "user", text: "banana"})
+	for {
+		h.mu.Lock()
+		idle := !h.running
+		h.mu.Unlock()
+		if idle {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the turn never ended")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	h.quit()
+	h.input(message{kind: "user", text: "after quit"})
+	var got []string
+	for _, m := range c.msgs {
+		got = append(got, m.Kind+": "+m.Text)
+	}
+	if !slices.Equal(got, []string{"user: wait-for-message", "opt: waiting", "user: banana", "opt: got: banana", "user: after quit"}) {
+		t.Fatalf("logged: %q", got)
 	}
 }

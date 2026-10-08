@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json/v2"
 	"fmt"
+	"math/bits"
 	"os"
 	"path/filepath"
 	"slices"
@@ -57,6 +58,7 @@ type Node struct {
 // Chat is the log, the tree and both views. All fields are guarded by mu.
 type Chat struct {
 	dir     string
+	lock    *os.File // held for the life of the process: if collected, its finalizer would unlock
 	mu      sync.Mutex
 	msgs    []Msg
 	tree    map[key]string
@@ -82,12 +84,13 @@ func openChat(dir string) (*Chat, error) {
 	if err != nil {
 		return nil, err
 	}
-	// The lock file stays open for the life of the process; the OS frees it on death.
+	// The OS frees the lock when the process dies: no stale locks.
 	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		lock.Close()
 		return nil, fmt.Errorf("another opt-chat owns %s", dir)
 	}
 	c := &Chat{
-		dir: dir, tree: map[key]string{}, queued: map[key]bool{}, busy: map[key]bool{},
+		dir: dir, lock: lock, tree: map[key]string{}, queued: map[key]bool{}, busy: map[key]bool{},
 		failed: map[key]bool{}, changed: make(chan struct{}),
 		view: view{lo: viewLo, hi: viewHi}, cview: view{lo: cviewLo, hi: cviewHi},
 	}
@@ -418,11 +421,7 @@ func (c *Chat) Zoom(id, n int) string {
 		m := c.msgs[id]
 		return fmt.Sprintf("%d+1|%s: %s", id, m.Kind, m.Text)
 	}
-	l := 0
-	for 1<<l < n {
-		l++
-	}
-	a, b := key{l, id / n}.kids()
+	a, b := key{bits.TrailingZeros(uint(n)), id / n}.kids()
 	return c.line(a) + "\n" + c.line(b)
 }
 

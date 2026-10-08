@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -79,6 +80,8 @@ func waitIdle(t *testing.T, c *Chat) {
 func TestChatTreeZoomReload(t *testing.T) {
 	dir := t.TempDir()
 	c, calls := fakeChat(t, dir, 100)
+	runtime.GC() // the lock must survive collection
+	runtime.GC()
 	if _, err := openChat(dir); err == nil {
 		t.Fatal("a second process got the same chat")
 	}

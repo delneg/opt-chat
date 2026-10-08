@@ -343,7 +343,10 @@ func (t *Turn) Send(m message) bool {
 		return false
 	}
 	t.agent.chat.Log(m.kind, m.text)
-	return t.p.send(m.text)
+	// Handled even if the write fails (the call just died): the message is
+	// logged, so it stays in the chat, unanswered, rather than logged twice.
+	t.p.send(m.text)
+	return true
 }
 
 // detach closes the call to new messages: later ones start a new turn.

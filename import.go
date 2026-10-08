@@ -71,16 +71,19 @@ func (s *session) add(keep func(*session, pastMsg) bool, msgs []pastMsg) {
 	}
 }
 
+// slashCommand is a Claude Code command with at most two words after it
+// (/compact, /model opus), not a path (/Users/me/x).
+const slashCommand = `\s*/[\w:.-]+(\s+\S+){0,2}\s*$`
+
 var (
 	// Claude Code's own lines in the user's turn: commands and their output,
-	// interruptions, background-task notices.
-	claudeSkip = regexp.MustCompile(`^(<command-|<local-command|<task-notification|\[Request interrupted)`)
+	// shell lines (!ls) and theirs, interruptions, background-task notices.
+	claudeSkip = regexp.MustCompile(`^(<command-|<local-command|<bash-|<task-notification|\[Request interrupted|` + slashCommand + `)`)
 	// Codex's injected context: <environment_context>, AGENTS.md, ...
 	codexSkip   = regexp.MustCompile(`^(<[a-z_]+[ >]|# AGENTS\.md)`)
 	sessionFile = regexp.MustCompile(`(^|/)(projects|sessions|archived_sessions)/`)
-	// In Claude Code's history: a shell command, or a command with at most
-	// two words after it (/clear, /model opus), not a path (/Users/me/x).
-	historySkip = regexp.MustCompile(`^\s*(!|/[\w:.-]+(\s+\S+){0,2}\s*$)`)
+	// In Claude Code's history: a shell line, or a command.
+	historySkip = regexp.MustCompile(`^(!|` + slashCommand + `)`)
 	pasted      = regexp.MustCompile(`\[Pasted text #(\d+)(?: \+\d+ lines)?\]`)
 )
 

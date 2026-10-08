@@ -78,6 +78,9 @@ func TestImportClaudeCode(t *testing.T) {
 		claudeLine("assistant", "2026-09-01T10:00:04Z", "a step of another agent", "isSidechain", true),
 		claudeLine("user", "2026-09-01T10:00:05Z", "<command-name>/clear</command-name>"),
 		claudeLine("user", "2026-09-01T10:00:06Z", []obj{{"type": "text", "text": "[Request interrupted by user]"}}),
+		claudeLine("user", "2026-09-01T10:00:06Z", "/compact"),
+		claudeLine("user", "2026-09-01T10:00:06Z", "<bash-input>pwd</bash-input>"),
+		claudeLine("user", "2026-09-01T10:00:06Z", "<bash-stdout>/work</bash-stdout><bash-stderr></bash-stderr>"),
 		claudeLine("user", "2026-09-01T10:00:07Z", []obj{
 			{"type": "text", "text": "See [Image #1]"},
 			{"type": "image", "source": obj{"type": "base64", "media_type": "image/png", "data": img}},

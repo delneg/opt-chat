@@ -41,6 +41,7 @@ func main() {
 	importPath := flag.String("import", "", "import past chats, then exit: a ~/.claude or ~/.codex directory, a session's .jsonl, a Claude or ChatGPT export (.zip), or a text file whose lines become notes")
 	importSince := flag.String("import-since", "", "import only messages from this day on (YYYY-MM-DD)")
 	importTools := flag.Bool("import-tools", false, "import tool calls and results too")
+	importSkip := flag.String("import-skip", "", "skip sessions whose directory (or a chat's title) contains any of these, comma-separated")
 	flag.Parse()
 
 	c, err := openChat(*dir)
@@ -48,13 +49,13 @@ func main() {
 		fatal("%v", err)
 	}
 	if *importPath != "" {
-		var since time.Time
+		o := importOpts{tools: *importTools, skip: strings.Split(*importSkip, ",")}
 		if *importSince != "" {
-			if since, err = time.ParseInLocation(time.DateOnly, *importSince, time.Local); err != nil {
+			if o.since, err = time.ParseInLocation(time.DateOnly, *importSince, time.Local); err != nil {
 				fatal("-import-since: %v", err)
 			}
 		}
-		switch err := importChats(c, *importPath, since, *importTools, os.Stdin, os.Stdout); {
+		switch err := importChats(c, *importPath, o, os.Stdin, os.Stdout); {
 		case errors.Is(err, errDeclined):
 			fmt.Println("Nothing imported.")
 		case err != nil:

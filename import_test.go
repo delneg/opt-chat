@@ -48,10 +48,10 @@ func logged(c *Chat) []string {
 	return out
 }
 
-func importInto(t *testing.T, c *Chat, path string, since time.Time, tools bool, answer string) string {
+func importInto(t *testing.T, c *Chat, path string, o importOpts, answer string) string {
 	t.Helper()
 	var out strings.Builder
-	if err := importChats(c, path, since, tools, strings.NewReader(answer), &out); err != nil && err != errDeclined {
+	if err := importChats(c, path, o, strings.NewReader(answer), &out); err != nil && err != errDeclined {
 		t.Fatal(err)
 	}
 	return out.String()
@@ -85,18 +85,19 @@ func TestImportClaudeCode(t *testing.T) {
 	)
 	jsonl(t, filepath.Join(home, ".claude", "projects", "-work", "s1", "subagents", "a.jsonl"), claudeLine("user", "2026-09-01T10:00:00Z", "sub"))
 	jsonl(t, filepath.Join(home, ".claude", "other.jsonl"), claudeLine("user", "2026-09-01T10:00:00Z", "not a session"))
+	jsonl(t, filepath.Join(home, ".claude", "projects", "-bots", "b.jsonl"), claudeLine("user", "2026-09-01T11:00:00Z", "a bot's prompt", "cwd", "/bots/run"))
 
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	empty := filepath.Join(home, "empty")
 	os.Mkdir(empty, 0o700)
-	if err := importChats(c, empty, time.Time{}, false, strings.NewReader("y\n"), io.Discard); err == nil || err.Error() != "no chats in "+empty {
+	if err := importChats(c, empty, importOpts{}, strings.NewReader("y\n"), io.Discard); err == nil || err.Error() != "no chats in "+empty {
 		t.Fatalf("a directory with no session: %v", err)
 	}
-	if out := importInto(t, c, filepath.Join(home, ".claude"), time.Time{}, false, "n\n"); !strings.Contains(out, "4 messages (0.0 MB) from 1 session, ") ||
+	if out := importInto(t, c, filepath.Join(home, ".claude"), importOpts{}, "n\n"); !strings.Contains(out, "5 messages (0.0 MB) from 2 sessions, ") ||
 		!strings.Contains(out, "-import-tools adds them") || len(logged(c)) != 0 {
 		t.Fatalf("declined: %q, logged %q", out, logged(c))
 	}
-	importInto(t, c, filepath.Join(home, ".claude"), time.Time{}, false, "y\n")
+	importInto(t, c, filepath.Join(home, ".claude"), importOpts{skip: []string{"", "/bots"}}, "y\n")
 	want := []string{
 		"note: Claude Code session in /work, from 2026-09-01 10:00:00 UTC (imported)",
 		"user: Fix the build",
@@ -110,7 +111,7 @@ func TestImportClaudeCode(t *testing.T) {
 	if m := c.msgs[3]; len(m.Images) != 1 || !m.Date.Equal(time.Date(2026, 9, 1, 10, 0, 7, 0, time.UTC)) {
 		t.Fatalf("the image message: %+v", m)
 	}
-	if out := importInto(t, c, filepath.Join(home, ".claude"), time.Time{}, false, "y\n"); !strings.HasPrefix(out, "Nothing new in the 1 session found") {
+	if out := importInto(t, c, filepath.Join(home, ".claude"), importOpts{skip: []string{"/bots"}}, "y\n"); !strings.HasPrefix(out, "Nothing new in the 2 sessions found") {
 		t.Fatalf("a second import: %q", out)
 	}
 
@@ -120,13 +121,13 @@ func TestImportClaudeCode(t *testing.T) {
 		claudeLine("assistant", "2026-09-02T09:00:00Z", []obj{{"type": "text", "text": "Done."}, {"type": "tool_use", "name": "Read", "input": obj{"file_path": "a"}}}),
 		claudeLine("user", "2026-09-02T09:00:01Z", []obj{{"type": "tool_result", "content": "contents of " + strings.Repeat("y", 40_000)}}),
 	)
-	importInto(t, c, file, time.Time{}, true, "y\n")
+	importInto(t, c, file, importOpts{tools: true}, "y\n")
 	got := logged(c)[6:]
 	if len(got) != 4 || got[0] != want[0] || got[1] != "opt: Done." || got[2] != `tool: Read {"file_path":"a"}` ||
 		!strings.HasPrefix(got[3], "echo: contents of ") || !strings.Contains(got[3], " characters cut ...]") {
 		t.Fatalf("the rest: %q", got)
 	}
-	if out := importInto(t, c, file, time.Date(2026, 9, 3, 0, 0, 0, 0, time.UTC), true, "y\n"); !strings.HasPrefix(out, "Nothing new") {
+	if out := importInto(t, c, file, importOpts{since: time.Date(2026, 9, 3, 0, 0, 0, 0, time.UTC), tools: true}, "y\n"); !strings.HasPrefix(out, "Nothing new") {
 		t.Fatalf("-import-since past the end: %q", out)
 	}
 }
@@ -149,7 +150,7 @@ func TestImportCodex(t *testing.T) {
 		item("2026-09-01T09:00:01Z", obj{"type": "message", "role": "user", "content": []obj{{"type": "input_text", "text": "review it"}}}),
 	)
 	c, _ := fakeChat(t, t.TempDir(), 100)
-	importInto(t, c, filepath.Join(home, ".codex"), time.Time{}, true, "yes\n")
+	importInto(t, c, filepath.Join(home, ".codex"), importOpts{tools: true}, "yes\n")
 	want := []string{
 		"note: Codex session in /code, from 2026-09-01 08:00:02 UTC (imported)",
 		"user: list files",
@@ -204,8 +205,8 @@ func TestImportExports(t *testing.T) {
 	os.WriteFile(gptPath, b, 0o600)
 
 	c, _ := fakeChat(t, t.TempDir(), 100)
-	importInto(t, c, gptPath, time.Time{}, true, "y\n")
-	importInto(t, c, zipPath, time.Time{}, false, "y\n")
+	importInto(t, c, gptPath, importOpts{tools: true}, "y\n")
+	importInto(t, c, zipPath, importOpts{}, "y\n")
 	want := []string{
 		"note: ChatGPT chat \"Code\", from 2023-11-14 22:13:21 UTC (imported)",
 		"user: write a poem",
@@ -226,10 +227,10 @@ func TestImportNotes(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "memories.txt")
 	os.WriteFile(path, []byte("I like F#\n\n  I dislike Haskell  \n"), 0o600)
 	c, _ := fakeChat(t, t.TempDir(), 100)
-	if out := importInto(t, c, path, time.Time{}, false, "\n"); !strings.HasPrefix(out, "2 notes, one per line.") || len(logged(c)) != 0 {
+	if out := importInto(t, c, path, importOpts{}, "\n"); !strings.HasPrefix(out, "2 notes, one per line.") || len(logged(c)) != 0 {
 		t.Fatalf("declined: %q, logged %q", out, logged(c))
 	}
-	importInto(t, c, path, time.Time{}, false, "y\n")
+	importInto(t, c, path, importOpts{}, "y\n")
 	if got := logged(c); !slices.Equal(got, []string{"note: I like F#", "note: I dislike Haskell"}) {
 		t.Fatal(got)
 	}

@@ -476,12 +476,21 @@ func (c *Chat) imported() map[string]time.Time {
 	return done
 }
 
-// keeper takes the messages to import: from since on, past what an earlier
-// import logged, and tool calls and results only with tools.
-func keeper(done map[string]time.Time, since time.Time, tools bool) func(*session, pastMsg) bool {
+// importOpts picks what an import takes: messages from since on, tool calls
+// and results with tools, and no session whose directory (or a chat's title)
+// contains one of skip.
+type importOpts struct {
+	since time.Time
+	tools bool
+	skip  []string
+}
+
+// keeper takes the messages to import, past what an earlier import logged.
+func keeper(done map[string]time.Time, o importOpts) func(*session, pastMsg) bool {
 	return func(s *session, m pastMsg) bool {
 		last, seen := done[s.note()]
-		return (tools || m.kind != "tool" && m.kind != "echo") && !m.date.Before(since) && (!seen || m.date.After(last))
+		return (o.tools || m.kind != "tool" && m.kind != "echo") && !m.date.Before(o.since) && (!seen || m.date.After(last)) &&
+			!slices.ContainsFunc(o.skip, func(x string) bool { return x != "" && strings.Contains(s.where, x) })
 	}
 }
 
@@ -586,7 +595,7 @@ var errDeclined = errors.New("nothing imported")
 
 // importChats imports the chats at path, or a text file's lines as notes,
 // after saying what that adds and asking: the log is append-only.
-func importChats(c *Chat, path string, since time.Time, tools bool, in io.Reader, out io.Writer) error {
+func importChats(c *Chat, path string, o importOpts, in io.Reader, out io.Writer) error {
 	fi, err := os.Stat(path)
 	if err != nil {
 		return err
@@ -613,7 +622,7 @@ func importChats(c *Chat, path string, since time.Time, tools bool, in io.Reader
 		fmt.Fprintln(out, "Imported: the next run summarizes them.")
 		return nil
 	}
-	sessions, found, err := readSessions(path, keeper(c.imported(), since, tools))
+	sessions, found, err := readSessions(path, keeper(c.imported(), o))
 	if err != nil {
 		return err
 	}
@@ -621,11 +630,11 @@ func importChats(c *Chat, path string, since time.Time, tools bool, in io.Reader
 		return fmt.Errorf("no chats in %s", path)
 	}
 	if len(sessions) == 0 {
-		fmt.Fprintf(out, "Nothing new in the %s found: all in the chat already, or older than -import-since.\n", count(found, "session"))
+		fmt.Fprintf(out, "Nothing new in the %s found: all in the chat already, older than -import-since, or skipped.\n", count(found, "session"))
 		return nil
 	}
 	fmt.Fprintln(out, importPlan(c, sessions))
-	if !tools {
+	if !o.tools {
 		fmt.Fprintln(out, "Without tool calls and results: -import-tools adds them.")
 	}
 	if !confirm(in, out) {

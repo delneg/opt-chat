@@ -39,7 +39,8 @@ import (
 const (
 	imageEdge  = 2000      // pixels: the longest side an image keeps; the API's limit with many images
 	imageBytes = 3_750_000 // and the most bytes, 5 MB in base64
-	pdfBytes   = 30 << 20  // a bigger PDF goes as a path: a request holds 32 MB
+	pdfBytes   = 20 << 20  // a bigger PDF goes as a path: a request holds 32 MB, and base64 adds a third
+	imagePix   = 80e6      // pixels: a bigger image is a file, never decoded (4 bytes each)
 	textMax    = 2 << 20   // a bigger file is never read as text
 	inlineMax  = 25_000    // characters of text files one message holds, with its own text
 	uploadMax  = 2 << 30
@@ -156,6 +157,9 @@ func fitImage(b []byte) ([]byte, string, error) {
 	cfg, format, err := image.DecodeConfig(bytes.NewReader(b))
 	if err != nil {
 		return nil, "", err
+	}
+	if cfg.Width*cfg.Height > imagePix {
+		return nil, "", fmt.Errorf("%dx%d pixels: too big to shrink", cfg.Width, cfg.Height)
 	}
 	if cfg.Width <= imageEdge && cfg.Height <= imageEdge && len(b) <= imageBytes {
 		return b, map[string]string{"jpeg": "jpeg", "png": "png", "gif": "gif", "webp": "webp"}[format], nil

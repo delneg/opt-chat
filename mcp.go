@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"path/filepath"
 	"strconv"
 )
 
@@ -96,10 +97,13 @@ func mcpResult(a *Agent, method string, params jsontext.Value, fromAgent bool) (
 		json.Unmarshal(params, &p)
 		text, images := callTool(a, fromAgent, p.Name, p.Args)
 		content := []map[string]any{{"type": "text", "text": text}}
-		for _, b := range a.chat.fileBlocks(images) {
-			if b.Source == nil { // lost
+		for i, b := range a.chat.fileBlocks(images) {
+			switch {
+			case b.Source == nil: // lost
 				content = append(content, map[string]any{"type": "text", "text": b.Text})
-			} else {
+			case b.Type == "document": // a tool result carries no PDF: Read opens it
+				content = append(content, map[string]any{"type": "text", "text": "[PDF: " + filepath.Join(a.chat.dir, images[i]) + "]"})
+			default:
 				content = append(content, map[string]any{"type": "image", "data": b.Source.Data, "mimeType": b.Source.MediaType})
 			}
 		}

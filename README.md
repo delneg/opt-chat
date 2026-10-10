@@ -181,8 +181,10 @@ message gets a mark for it, which the model and its summaries see:
 - Images go to the model with the message, at most 2000 pixels a side and
   3.75 MB (5 MB in base64, the API's limit), shrunk when bigger: a Retina
   screenshot stays a PNG, a photo becomes a JPEG. HEIC photos, as iPhones
-  and macOS take them, become JPEGs (with macOS's `sips`).
-- PDFs up to 30 MB go to the model as documents.
+  and macOS take them, become JPEGs (with macOS's `sips`). An image over
+  80 megapixels is a path, never decoded.
+- PDFs up to 20 MB go to the model as documents (a request holds 32 MB,
+  and base64 adds a third); a bigger one is a path.
 - Text files are inlined in the mark, up to 25,000 characters in one
   message in all; a longer one is a path, which Read opens.
 - Any other file is a path the model's tools can read.

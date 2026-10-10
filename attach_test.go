@@ -53,6 +53,11 @@ func TestFitImage(t *testing.T) {
 	if r, g, bl, _ := img.At(10, 10).RGBA(); r < 0xe000 || g < 0xe000 || bl < 0xe000 {
 		t.Fatalf("transparency is not white: %v", img.At(10, 10))
 	}
+	var huge bytes.Buffer // a header claiming 10000x10000 pixels: never decoded
+	png.Encode(&huge, image.NewGray(image.Rect(0, 0, 10000, 10000)))
+	if _, _, err := fitImage(huge.Bytes()); err == nil || !strings.Contains(err.Error(), "too big") {
+		t.Fatalf("a 100-megapixel image: %v", err)
+	}
 	if _, _, err := fitImage([]byte("not an image")); err == nil {
 		t.Fatal("text taken for an image")
 	}

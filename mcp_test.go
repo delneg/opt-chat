@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json/v2"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -15,6 +16,11 @@ func TestMCP(t *testing.T) {
 		t.Fatal(err)
 	}
 	c.Log("user", "see", png)
+	pdf, _, err := c.saveFile(strings.NewReader("%PDF-1.4\n"), "pdf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Log("user", "read", pdf)
 	a := &Agent{chat: c, running: map[string]*proc{}, writing: map[string]chan struct{}{}}
 	cfg, agentCfg, err := serveMCP(a)
 	if err != nil {
@@ -75,6 +81,10 @@ func TestMCP(t *testing.T) {
 	if img := content(out); len(img) != 2 || text(out) != "1+1|user: see" || img[1].(map[string]any)["type"] != "image" ||
 		img[1].(map[string]any)["mimeType"] != "image/png" {
 		t.Fatalf("zoom of a message with an image: %v", out)
+	}
+	_, out = call(`{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"zoom","arguments":{"id":2,"n":1}}}`)
+	if c := content(out); len(c) != 2 || c[1].(map[string]any)["type"] != "text" || c[1].(map[string]any)["text"] != "[PDF: "+filepath.Join(a.chat.dir, pdf)+"]" {
+		t.Fatalf("zoom of a message with a PDF: %v", out)
 	}
 	for _, args := range []string{`{"name":"spawn","arguments":{"name":"X","task":"t"}}`, `{"name":"tell","arguments":{"name":"X","message":"m"}}`} {
 		if _, out := post(agentURL, `{"jsonrpc":"2.0","id":7,"method":"tools/call","params":`+args+`}`); text(out) != "Only Opt starts and tells subagents." {

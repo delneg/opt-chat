@@ -325,14 +325,14 @@ func TestRetryAtNextMessage(t *testing.T) {
 
 func TestWriteOnce(t *testing.T) {
 	a := &Agent{writing: map[string]chan struct{}{}}
-	release := a.writeOnce("p")
-	other := a.writeOnce("q") // another prefix never waits
+	release := a.writeOnce(t.Context(), "p")
+	other := a.writeOnce(t.Context(), "q") // another prefix never waits
 	other()
 	var waited atomic.Int64
 	done := make(chan struct{})
 	for range 3 {
 		go func() {
-			a.writeOnce("p")() // waits for the writer, then goes on with the rest at once
+			a.writeOnce(t.Context(), "p")() // waits for the writer, then goes on with the rest at once
 			waited.Add(1)
 			done <- struct{}{}
 		}()
@@ -349,7 +349,19 @@ func TestWriteOnce(t *testing.T) {
 			t.Fatal("waiters stuck after the writer finished")
 		}
 	}
-	a.writeOnce("p")() // free again
+	a.writeOnce(t.Context(), "p")() // free again
+
+	// A call stopped while it waits goes on at once.
+	release = a.writeOnce(t.Context(), "p")
+	defer release()
+	ctx, cancel := context.WithCancel(t.Context())
+	go func() { a.writeOnce(ctx, "p")(); close(done) }()
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("a stopped call still waits for the writer")
+	}
 }
 
 // A backlog, as after -import: the views stay in bounds once its lines are

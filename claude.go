@@ -50,11 +50,14 @@ type Agent struct {
 // reply, then reads the entry instead of paying to write it too (gist §3.3;
 // compactions start up to 8 at once on one prefix). The first caller gets
 // a release func to call once its reply is in; the others get a no-op.
-func (a *Agent) writeOnce(prefix string) (release func()) {
+func (a *Agent) writeOnce(ctx context.Context, prefix string) (release func()) {
 	a.mu.Lock()
 	if ch, ok := a.writing[prefix]; ok {
 		a.mu.Unlock()
-		<-ch
+		select {
+		case <-ch:
+		case <-ctx.Done(): // stopped meanwhile: no use waiting
+		}
 		return func() {}
 	}
 	ch := make(chan struct{})
@@ -166,7 +169,8 @@ func (e event) blocks() []block {
 
 // proc is one `claude -p` process speaking stream-json both ways.
 type proc struct {
-	prefix string // what its cache prefix depends on besides the messages
+	prefix string          // what its cache prefix depends on besides the messages
+	ctx    context.Context // done once the call is stopped
 	cmd    *exec.Cmd
 	mu     sync.Mutex
 	stdin  io.WriteCloser // nil once closed
@@ -236,7 +240,7 @@ func (a *Agent) start(ctx context.Context, model, effort string, r role) (p *pro
 	cmd.WaitDelay = 5 * time.Second
 	cmd.Dir = a.cwd
 	cmd.Env = childEnv()
-	p = &proc{prefix: model + " " + effort, cmd: cmd, done: done}
+	p = &proc{prefix: model + " " + effort, ctx: ctx, cmd: cmd, done: done}
 	cmd.Stderr = &p.stderr
 	if p.stdin, err = cmd.StdinPipe(); err != nil {
 		return nil, err
@@ -250,7 +254,21 @@ func (a *Agent) start(ctx context.Context, model, effort string, r role) (p *pro
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
+	pid := cmd.Process.Pid
+	children.Store(pid, true)
+	p.done = func() { children.Delete(pid); done() }
 	return p, nil
+}
+
+// children are the calls running, by pid. In process groups of their own,
+// they would outlive opt-chat dying on an error: fatal stops them first.
+var children sync.Map
+
+func stopChildren() {
+	children.Range(func(pid, _ any) bool {
+		syscall.Kill(pid.(int), syscall.SIGTERM)
+		return true
+	})
 }
 
 // begin counts a call or subagent about to start; false once quitting.
@@ -381,7 +399,7 @@ func (a *Agent) ack(p *proc, first []block, u *usage, each func(event)) error {
 	if first == nil {
 		return nil
 	}
-	defer a.writeOnce(p.prefix + "\x00" + first[0].Text)()
+	defer a.writeOnce(p.ctx, p.prefix+"\x00"+first[0].Text)()
 	p.send(first...)
 	return awaitResult(p, u, each)
 }

@@ -93,7 +93,7 @@ type liveTurn struct {
 	Backlog  int    `json:"backlog,omitzero"` // settling: messages left to summarize
 	Written  int    `json:"written,omitzero"` // settling: lines written since it began
 	Partial  int    `json:"partial,omitzero"` // messages the turn sees unsummarized
-	From     int    `json:"from,omitzero"`    // the turn's first message: a tool call after it, unanswered, is running
+	From     int    `json:"from"`             // the turn's first message: a tool call after it, unanswered, is running
 	Text     string `json:"text,omitzero"`    // in a hello only: the reply being written
 	Thinking string `json:"thinking,omitzero"`
 }
@@ -208,7 +208,7 @@ func (h *hub) join(c *Chat, after, page int) *client {
 	from := after + 1
 	reset := after < 0 || after >= len(c.msgs) || len(c.msgs)-from > page
 	if reset {
-		from = max(0, len(c.msgs)-page)
+		from = c.whole(max(0, len(c.msgs)-page))
 	}
 	hello := helloUpdate{T: "hello", Msgs: c.msgs[from:], Total: len(c.msgs), Reset: reset, Turn: h.turn,
 		Queue: h.queue, Status: h.status, Last: h.last, Inputs: c.recentInputs(100)}
@@ -226,6 +226,15 @@ func (h *hub) join(c *Chat, after, page int) *client {
 	cl.out <- b
 	h.clients[cl] = true
 	return cl
+}
+
+// whole moves i back to the first part of its message, so that a page of
+// the log starts with a whole one. Call with c.mu held.
+func (c *Chat) whole(i int) int {
+	for i > 0 && i < len(c.msgs) && c.msgs[i].Part > 0 {
+		i--
+	}
+	return i
 }
 
 func (h *hub) logged(ms []Msg) {
@@ -344,7 +353,8 @@ func (h *hub) thought(s string) {
 		dim(s)
 		return
 	}
-	h.send(thoughtUpdate{T: "thought", S: s})
+	// Done thinking: a page that joins from now on is not shown it as underway.
+	h.change(func() { h.turn.Thinking = "" }, thoughtUpdate{T: "thought", S: s})
 }
 
 // recentInputs is the user's last n messages, newest last, without

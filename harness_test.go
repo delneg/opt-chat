@@ -477,6 +477,61 @@ func TestHubJoinMidReply(t *testing.T) {
 	}
 }
 
+// A page joining after a thinking block is done is not shown it as
+// thinking underway.
+func TestHubThoughtDone(t *testing.T) {
+	c, _ := fakeChat(t, t.TempDir(), 100)
+	h := newHub()
+	h.delta("thinking", "hmm")
+	h.thought("hmm")
+	var hello helloUpdate
+	json.Unmarshal(<-h.join(c, -1, 10).out, &hello)
+	if hello.Turn.Thinking != "" {
+		t.Fatalf("hello after the thought: %q", hello.Turn.Thinking)
+	}
+}
+
+// Send now landing just as the wait for summaries ends: the turn still runs,
+// on a call of its own, not on the wait's canceled one.
+func TestSendNowAsSettleEnds(t *testing.T) {
+	runs := 30 // it lands in the window about one run in three
+	if testing.Short() {
+		runs = 10
+	}
+	for range runs {
+		c, _ := fakeChat(t, t.TempDir(), 100)
+		building(t, c) // nothing builds till the end: ready0 keeps the backlog
+		c.Log("note", strings.Repeat("n", 700))
+		r := record(c)
+		h := newHarness(t, c)
+		var once sync.Once
+		inner := c.hub.print
+		c.hub.print = func(v any) {
+			inner(v)
+			if u, ok := v.(turnUpdate); ok && u.Turn.Phase == "settling" && u.Turn.Backlog == 1 {
+				once.Do(func() {
+					h.sendNow()
+					// The line is built as send now cancels: settle may
+					// see either first. (c.mu under hub.mu: nothing else runs.)
+					c.mu.Lock()
+					c.setNode(key{0, 0}, "built")
+					c.notify()
+					c.mu.Unlock()
+				})
+			}
+		}
+		h.input(message{kind: "user", text: "hello"})
+		h.input(message{kind: "user", text: "second"})
+		waitFor(t, "an answer", func() bool {
+			return slices.ContainsFunc(logged(c), func(s string) bool { return strings.HasPrefix(s, "opt: answer to") })
+		})
+		waitFor(t, "idle", h.idle)
+		if w := r.warnings(); len(w) > 0 {
+			t.Fatalf("warned: %q", w)
+		}
+	}
+}
+
 // Esc while the turn sends its view: a report it took then stays in the
 // log, unanswered, and starts no turn.
 func TestStopKeepsReportsLogged(t *testing.T) {

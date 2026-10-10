@@ -258,28 +258,32 @@ func (h *harness) publish() {
 }
 
 // flush hands the turn underway what waits in the queue, as a tool call
-// starts: it reaches the model with the call's result.
+// starts: it reaches the model with the call's result. One at a time, so
+// that a stop meanwhile hands back all but the one on its way.
 func (h *harness) flush() {
-	h.mu.Lock()
-	t, q := h.turn, h.queue
-	if t == nil || len(q) == 0 {
-		h.mu.Unlock()
-		return
-	}
-	h.queue = nil
-	h.publish()
-	h.mu.Unlock()
-	var left []queued
-	for _, it := range q {
-		if !t.Send(&it.message) {
-			left = append(left, it)
-		}
-	}
-	if len(left) > 0 { // the call ended first: they start the next turn
+	for {
 		h.mu.Lock()
-		h.queue = append(left, h.queue...)
+		t := h.turn
+		if t == nil || len(h.queue) == 0 || h.stopped || h.quitting {
+			h.mu.Unlock()
+			return
+		}
+		it := h.queue[0]
+		h.queue = h.queue[1:]
 		h.publish()
 		h.mu.Unlock()
+		if t.Send(&it.message) {
+			continue
+		}
+		h.mu.Lock()
+		if h.stopped || h.quitting { // it was on its way: in the log, unanswered, as stop says
+			logAll(h.agent.chat, []message{it.message})
+		} else { // the call ended first: it starts the next turn
+			h.queue = append([]queued{it}, h.queue...)
+			h.publish()
+		}
+		h.mu.Unlock()
+		return
 	}
 }
 
@@ -390,12 +394,14 @@ func (h *harness) loop() {
 		hurry := h.hurry
 		h.hurry = false
 		h.mu.Unlock()
-		c.hub.setTurn(func(lt *liveTurn) { *lt = liveTurn{Phase: "settling", Since: time.Now().UnixMilli()} })
-		var err error
+		c.mu.Lock()
+		from := len(c.msgs) // no tool call before it runs now
+		c.mu.Unlock()
+		c.hub.setTurn(func(lt *liveTurn) { *lt = liveTurn{Phase: "settling", Since: time.Now().UnixMilli(), From: from} })
 		if !hurry {
 			// Wait until every message is summarized: no call sees a
 			// placeholder, unless behind a backlog (see settle).
-			err = c.settle(ctx, func(n, written int) {
+			c.settle(ctx, func(n, written int) {
 				c.hub.setTurn(func(lt *liveTurn) { lt.Backlog, lt.Written = n, written })
 			})
 		}
@@ -405,7 +411,9 @@ func (h *harness) loop() {
 			cancel()
 			continue
 		}
-		if err != nil { // sent now while it waited: on at once
+		// Sent now while it waited, or as the wait ended: on at once, with a
+		// call of its own (the canceled ctx was the wait's).
+		if ctx.Err() != nil {
 			cancel()
 			ctx, cancel = context.WithCancel(context.Background())
 			h.cancel = cancel
@@ -596,5 +604,6 @@ func warn(f string, a ...any) { fmt.Fprintf(os.Stderr, "\x1b[33m"+f+"\x1b[0m\n",
 
 func fatal(f string, a ...any) {
 	warn(f, a...)
+	stopChildren()
 	os.Exit(1)
 }

@@ -4,9 +4,9 @@
   --bg: #faf9f5;
   --fg: #1f1e1b;
   --dim: #6f6d66;
-  --faint: #a9a79f;
-  --accent: #c6613f;
-  --green: #3f8f45;
+  --faint: #85837b;
+  --accent: #b4552f;
+  --green: #2f7a37;
   --red: #c2414b;
   --yellow: #9a7417;
   --blue: #2f68b5;
@@ -80,7 +80,8 @@ a { color: var(--blue); }
 .cut-note { color: var(--red); }
 @keyframes blink { to { visibility: hidden; } }
 
-/* markdown */
+/* markdown: a reply's own markup stays inside it (contain), whatever it is */
+.md { contain: paint; }
 .md > :first-child { margin-top: 0; }
 .md > :last-child { margin-bottom: 0; }
 .md p, .md ul, .md ol, .md pre, .md table, .md blockquote { margin: .55em 0; }
@@ -93,7 +94,8 @@ a { color: var(--blue); }
 .md .code { position: relative; }
 .md pre { background: var(--code-bg); border: 1px solid var(--border); border-radius: 4px; padding: .6em .8em; overflow-x: auto; }
 .md .copy { position: absolute; top: .35em; right: .5em; font-size: .8em; color: var(--faint); opacity: 0; }
-.md .code:hover .copy { opacity: 1; }
+.md .code:hover .copy, .md .copy:focus-visible { opacity: 1; }
+.md .copy { cursor: pointer; user-select: none; }
 .md .copy:hover { color: var(--fg); }
 .md blockquote { border-left: 3px solid var(--border); padding-left: 1.5ch; color: var(--dim); }
 .md table { border-collapse: collapse; display: block; overflow-x: auto; max-width: 100%; }
@@ -120,6 +122,8 @@ a { color: var(--blue); }
 .chip .bar { width: 6ch; height: 3px; background: var(--border); border-radius: 2px; overflow: hidden; }
 .chip .bar i { display: block; height: 100%; background: var(--accent); }
 .chip.path { border-style: dashed; }
+.chip.off { color: var(--dim); }
+.chip.off .name { text-decoration: line-through; }
 .attach-text { width: 100%; }
 
 /* live turn */
@@ -136,8 +140,8 @@ a { color: var(--blue); }
 .queue { padding: .1em 0 .3em; }
 .queue .item { display: grid; grid-template-columns: 2ch 1fr auto; color: var(--dim); align-items: start; padding: .1em 0; }
 .queue .item .text { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 6em; overflow: hidden; }
-.queue .item .acts { display: flex; gap: 1.2ch; padding-left: 2ch; visibility: hidden; font-size: .9em; }
-.queue .item:hover .acts, .queue .item:focus-within .acts { visibility: visible; }
+.queue .item .acts { display: flex; gap: 1.2ch; padding-left: 2ch; opacity: 0; font-size: .9em; }
+.queue .item:hover .acts, .queue .item:focus-within .acts { opacity: 1; }
 .queue .acts button { color: var(--dim); }
 .queue .acts button:hover { color: var(--fg); }
 .queue .acts .now { color: var(--accent); }

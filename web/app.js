@@ -29,7 +29,8 @@ const S = {
   notices: [],
   atts: [], // attachments in the input
   paths: [], // files the input names by path
-  skipped: new Set(), // of those, the ones the user took off
+  skipped: new Set(), // of those, the ones not to attach
+  chosen: new Set(), // and the hidden ones the user attached
   lightbox: null,
   dragging: false,
   help: false,
@@ -104,6 +105,7 @@ function onUpdate(u) {
     case 'hello': {
       retries = 0;
       const msgs = u.reset ? u.msgs : S.msgs.concat(u.msgs.filter(m => m.i > lastI));
+      if (u.reset) toEnd = true; // pages loaded above are gone: show the end
       lastI = msgs.length ? msgs[msgs.length - 1].i : -1;
       set({
         conn: 'open', msgs, total: u.total, turn: u.turn, turnChars: 0, live: u.turn.text || '', thinking: u.turn.thinking || '',
@@ -132,6 +134,7 @@ function onUpdate(u) {
       set(u.turn.phase ? { turn: u.turn, turnChars: 0 } : { turn: u.turn, turnChars: 0, live: '', thinking: '' });
       break;
     case 'queue': set({ queue: u.queue }); break;
+    case 'thought': set({ thinking: '' }); break;
     case 'status': set({ status: u.status }); break;
     case 'end': set({ last: u.end }); break;
     case 'notice': notice(u.level, u.s); break;
@@ -140,8 +143,14 @@ function onUpdate(u) {
       set({ msgs: u.msgs.filter(m => m.i < first).concat(S.msgs), older: false });
       break;
     }
-    case 'paths': if (u.seq === pathSeq) set({ paths: u.found }); break;
-    case 'restore': restore(u.text, u.files); break;
+    case 'paths': {
+      if (u.seq !== pathSeq || pathsDone) break;
+      pathsDone = true;
+      const off = u.found.filter(p => secret(p.path) && !S.chosen.has(p.path)).map(p => p.path);
+      set({ paths: u.found, skipped: new Set([...S.skipped, ...off]) });
+      break;
+    }
+    case 'restore': if (u.note) notice('info', u.note); restore(u.text, u.files); break;
     case 'sent': sending.delete(u.seq); break;
     case 'failed': {
       const s = sending.get(u.seq);
@@ -169,7 +178,7 @@ function loadOlder() {
 
 // ---------------------------------------------------------------- input
 
-let inputEl = null, histPos = -1, draft = '', pathTimer = 0, uploadSeq = 0;
+let inputEl = null, histPos = -1, histList = [], draft = '', pathTimer = 0, uploadSeq = 0;
 
 function autosize() {
   if (!inputEl) return;
@@ -192,10 +201,17 @@ function restore(text, files) {
   set({ atts: back.concat(S.atts) });
 }
 
+// secret is a path in a hidden folder or to a hidden file (~/.ssh, ~/.zshrc):
+// naming one does not send it, only the chip's + does.
+function secret(p) { return /\/\.[^/]/.test(p); }
+
+let pathsDone = true; // S.paths are the input's as it is
+
 function lookForPaths() {
   clearTimeout(pathTimer);
   const text = inputEl.value;
-  if (!/(^|[\s'"])(\/|~\/)/.test(text)) { pathSeq++; if (S.paths.length) set({ paths: [] }); return; }
+  if (!/(^|[\s'"(\[`]|\]\()(\/|~\/)/.test(text)) { pathSeq++; pathsDone = true; if (S.paths.length) set({ paths: [] }); return; }
+  pathsDone = false;
   pathTimer = setTimeout(() => send({ t: 'paths', text, seq: ++pathSeq }), 250);
 }
 
@@ -214,21 +230,22 @@ function suggestions(text) {
 let submitting = false; // waiting for uploads: a second Enter sends nothing more
 
 async function submit(now) {
-  const text = inputEl.value;
-  const atts = S.atts;
   if (submitting) return;
-  if (!text.trim() && !atts.length) {
+  if (!inputEl.value.trim() && !S.atts.length) {
     if (now && S.queue.length) send({ t: 'now' });
     return;
   }
   if (S.conn !== 'open') { notice('warn', 'Not connected: your message stays in the input until opt-chat is back.'); return; }
-  if (atts.some(a => a.status === 'uploading')) {
+  if (S.atts.some(a => a.status === 'uploading')) {
     submitting = true;
-    try { await Promise.all(atts.map(a => a.promise)); } finally { submitting = false; }
+    try { await Promise.all(S.atts.map(a => a.promise)); } finally { submitting = false; }
   }
   if (S.atts.some(a => a.status === 'error')) { notice('warn', 'An attachment failed: take it off (×) and send again.'); return; }
+  const text = inputEl.value; // as it is now: typing went on while the uploads finished
+  if (!text.trim() && !S.atts.length) return;
   const files = S.atts.map(({ name, orig, kind, size }) => ({ name, orig, kind, size }));
-  const paths = S.paths.map(p => p.path).filter(p => !S.skipped.has(p));
+  // Sent before the paths in it were looked for: the server looks.
+  const paths = pathsDone ? S.paths.map(p => p.path).filter(p => !S.skipped.has(p)) : null;
   const seq = ++sendSeq;
   const payload = { t: 'send', text, files, paths, now, seq, key: pageKey + ':' + seq };
   if (!send(payload)) return;
@@ -236,21 +253,25 @@ async function submit(now) {
   if (text.trim() && !text.startsWith('/')) set({ inputs: mergeInputs(S.inputs, [text.trim()]) });
   if (inputEl.value === text) setInput('');
   histPos = -1;
-  set({ atts: [], paths: [], skipped: new Set() });
+  set({ atts: [], paths: [], skipped: new Set(), chosen: new Set() });
 }
 
 function escape() {
   if (S.lightbox) { set({ lightbox: null }); return; }
-  if (S.help) { set({ help: false }); return; }
+  if (S.help) set({ help: false });
   if (S.turn.phase) send({ t: 'stop' });
 }
 
 function caretFirstLine(el) { return !el.value.slice(0, el.selectionStart).includes('\n'); }
 function caretLastLine(el) { return !el.value.slice(el.selectionEnd).includes('\n'); }
 
+let composedAt = -1e9; // Safari sends the Enter that ends a composition after compositionend
+
 function onKey(e) {
   const el = e.target;
   if (e.isComposing || e.keyCode === 229) return;
+  if (e.key === 'Enter' && e.timeStamp - composedAt < 100) { e.preventDefault(); return; }
+  if (e.key === '?' && !el.value) { e.preventDefault(); set({ help: !S.help }); return; }
   const sugg = suggestions(el.value);
   if (e.key === 'Tab' && sugg.length) {
     e.preventDefault();
@@ -263,27 +284,29 @@ function onKey(e) {
     return;
   }
   if (e.key === 'Escape') { e.preventDefault(); escape(); return; }
-  if (e.key === 'ArrowUp' && !e.shiftKey && caretFirstLine(el)) {
+  // An entry recalled and left as it is walks on either way; once edited, the
+  // arrows move in it first.
+  const recalled = histPos >= 0 && el.value === histList[histPos];
+  if (e.key === 'ArrowUp' && !e.shiftKey && (recalled || caretFirstLine(el))) {
     if (!el.value && S.queue.length && histPos < 0) { // edit the last queued, as Claude Code does
       e.preventDefault();
       send({ t: 'pull', id: S.queue[S.queue.length - 1].id });
       return;
     }
-    if (histPos < 0) draft = el.value;
-    const list = S.inputs;
-    const next = histPos < 0 ? list.length - 1 : histPos - 1;
-    if (next >= 0 && next < list.length) {
+    if (histPos < 0) { draft = el.value; histList = S.inputs.slice(); } // as it is now: more come in as Opt works
+    const next = histPos < 0 ? histList.length - 1 : histPos - 1;
+    if (next >= 0 && next < histList.length) {
       e.preventDefault();
       histPos = next;
-      setInput(list[next]);
+      setInput(histList[next]);
       el.setSelectionRange(0, 0);
     }
     return;
   }
-  if (e.key === 'ArrowDown' && !e.shiftKey && caretLastLine(el) && histPos >= 0) {
+  if (e.key === 'ArrowDown' && !e.shiftKey && histPos >= 0 && (recalled || caretLastLine(el))) {
     e.preventDefault();
     histPos++;
-    if (histPos >= S.inputs.length) { histPos = -1; setInput(draft); } else setInput(S.inputs[histPos]);
+    if (histPos >= histList.length) { histPos = -1; setInput(draft); } else setInput(histList[histPos]);
   }
 }
 
@@ -307,8 +330,11 @@ function upload(file) {
     url: file.type.startsWith('image/') ? URL.createObjectURL(file) : null,
   };
   const update = patch => set({ atts: S.atts.map(a => a.id === id ? Object.assign(a, patch) : a) });
+  const blob = att.url;
   att.promise = new Promise(resolve => {
-    const xhr = new XMLHttpRequest();
+    const xhr = att.xhr = new XMLHttpRequest();
+    xhr.onloadend = () => { if (blob) URL.revokeObjectURL(blob); resolve(); };
+    xhr.onabort = () => update({ status: 'error', error: 'taken off' });
     xhr.open('POST', '/upload');
     xhr.setRequestHeader('X-Name', encodeURIComponent(orig));
     xhr.upload.onprogress = e => e.lengthComputable && update({ progress: e.loaded / e.total });
@@ -317,9 +343,8 @@ function upload(file) {
         const r = JSON.parse(xhr.responseText);
         update({ status: 'done', name: r.name, kind: r.kind, size: r.size, orig: r.orig, url: r.kind === 'image' ? '/' + r.name : null });
       } else update({ status: 'error', error: xhr.responseText.trim() || `upload failed (${xhr.status})` });
-      resolve();
     };
-    xhr.onerror = () => { update({ status: 'error', error: 'upload failed' }); resolve(); };
+    xhr.onerror = () => update({ status: 'error', error: 'upload failed' });
     xhr.send(file);
   });
   set({ atts: S.atts.concat(att) });
@@ -333,7 +358,11 @@ function onPaste(e) {
   if (!cd) return;
   let files = [...cd.files];
   if (!files.length) files = [...cd.items].filter(i => i.kind === 'file').map(i => i.getAsFile()).filter(Boolean);
-  if (files.length) {
+  // Cells copied from Excel, Numbers or Word come as rich text with a
+  // picture of themselves: the text wins. (An image copied from a page or a
+  // screenshot has no rich text.)
+  const rich = cd.getData('text/plain') && cd.types.includes('text/rtf') && files.every(f => f.type.startsWith('image/'));
+  if (files.length && !rich) {
     e.preventDefault();
     addFiles(files);
     inputEl?.focus();
@@ -374,13 +403,14 @@ marked.use({
   breaks: true, // a line break shows, as in Claude Code
   renderer: {
     code({ text, lang }) {
+      // Only a named language is highlighted, as Claude Code does: a guess
+      // costs much and would change the colours when the reply is done.
       const language = (lang || '').split(/\s/)[0];
       let body;
       try {
-        body = language && hljs.getLanguage(language) ? hljs.highlight(text, { language }).value
-          : !streaming && text.length < 20000 ? hljs.highlightAuto(text).value : esc(text);
+        body = language && hljs.getLanguage(language) ? hljs.highlight(text, { language }).value : esc(text);
       } catch { body = esc(text); }
-      return `<div class="code"><button class="copy" type="button">copy</button><pre><code class="hljs">${body}</code></pre></div>`;
+      return `<div class="code"><span class="copy" role="button" tabindex="0">copy</span><pre><code class="hljs">${body}</code></pre></div>`;
     },
   },
 });
@@ -389,19 +419,45 @@ DOMPurify.addHook('afterSanitizeAttributes', node => {
   if (node.tagName === 'A') { node.setAttribute('target', '_blank'); node.setAttribute('rel', 'noopener noreferrer'); }
 });
 
+// What a reply may not hold: anything that could restyle or overlay the
+// page, or pass for its controls. (Our own copy control is a span.)
+const PURE = {
+  FORBID_TAGS: ['style', 'form', 'input', 'button', 'textarea', 'select', 'dialog', 'template'],
+  FORBID_ATTR: ['style', 'id'],
+  ADD_ATTR: ['role'],
+};
+const pure = s => DOMPurify.sanitize(s, PURE);
+
 const mdCache = new Map();
-let streaming = false; // rendering the reply being written: no guessing languages each frame
-function md(text, live) {
+function md(text) {
   let out = mdCache.get(text);
   if (out === undefined) {
-    streaming = !!live;
-    out = DOMPurify.sanitize(marked.parse(text));
-    streaming = false;
-    if (!live && text.length < 100000) {
+    out = pure(marked.parse(text));
+    if (text.length < 100000) {
       mdCache.set(text, out);
       if (mdCache.size > 2000) mdCache.delete(mdCache.keys().next().value);
     }
   }
+  return out;
+}
+
+// mdLive renders the reply being written: each block once, when done, so a
+// frame costs the block underway, not the whole reply again.
+const blockCache = new Map();
+function mdLive(text) {
+  const tokens = marked.lexer(text);
+  let out = '';
+  tokens.forEach((t, j) => {
+    let h = blockCache.get(t.raw);
+    if (h === undefined) {
+      const one = [t];
+      one.links = tokens.links;
+      h = pure(marked.parser(one));
+      if (j < tokens.length - 1) blockCache.set(t.raw, h); // the last may still grow
+    }
+    out += h;
+  });
+  if (blockCache.size > 500) blockCache.clear();
   return out;
 }
 
@@ -492,7 +548,7 @@ function items(msgs) {
   for (const m of joined) {
     if (paired.has(m.i)) continue;
     const d = day(m.date);
-    if (d && d !== lastDay) { out.push({ sep: d, key: 'd' + m.i }); lastDay = d; }
+    if (d && d !== lastDay) { out.push({ sep: d, key: 'd' + m.i, i: m.i }); lastDay = d; }
     out.push({ m, echo: echoOf.get(m.i), key: m.i });
   }
   return out;
@@ -502,20 +558,19 @@ function items(msgs) {
 // underway made it (from on), else it was cut short.
 const Log = memo(function Log({ msgs, phase, from, notices }) {
   const list = useMemo(() => items(msgs), [msgs]);
-  const byAfter = useMemo(() => {
-    const m = new Map();
-    for (const n of notices) m.set(n.after, (m.get(n.after) || []).concat(n));
-    return m;
-  }, [notices]);
-  const first = msgs.length ? msgs[0].i : 0;
+  const notes = useMemo(() => notices.slice().sort((a, b) => a.after - b.after), [notices]);
   const out = [];
-  for (const n of notices) if (n.after < first) out.push(html`<${Notice} key=${'n' + n.id} n=${n}/>`);
+  let j = 0;
+  const flush = before => { // a notice shows after the message it followed, wherever that one shows
+    for (; j < notes.length && notes[j].after < before; j++) out.push(html`<${Notice} key=${'n' + notes[j].id} n=${notes[j]}/>`);
+  };
   for (const it of list) {
+    flush(it.sep ? it.i : it.m.i);
     if (it.sep) { out.push(html`<div class="sep" key=${it.key}><span class="lbl">${it.sep}</span></div>`); continue; }
     const state = it.m.kind !== 'tool' ? '' : it.echo ? 'done' : phase && it.m.i >= from ? 'run' : 'cut';
     out.push(html`<${MsgView} key=${it.key} m=${it.m} echo=${it.echo} state=${state}/>`);
-    for (const n of byAfter.get(it.m.last) || []) out.push(html`<${Notice} key=${'n' + n.id} n=${n}/>`);
   }
+  flush(Infinity);
   return out;
 });
 
@@ -539,7 +594,7 @@ const MsgView = memo(({ m, echo, state }) => {
 });
 
 function Markdown({ text, live }) {
-  return html`<div class="md" dangerouslySetInnerHTML=${{ __html: md(text, live) }}/>`;
+  return html`<div class="md" dangerouslySetInnerHTML=${{ __html: live ? mdLive(text) : md(text) }}/>`;
 }
 
 function UserMsg({ m }) {
@@ -568,7 +623,7 @@ function Attached({ marks = [], images = [] }) {
     const base = mk.path.split('/').pop();
     if (url && images.some(n => n.endsWith('/' + base)) && /\.(png|jpe?g|gif|webp)$/.test(base)) {
       shown.add(base);
-      return html`<img class="thumb" src=${url} alt=${mk.name} title=${mk.name + ' · ' + mk.size} loading="lazy" onClick=${() => set({ lightbox: url })}/>`;
+      return html`<img class="thumb" src=${url} alt=${mk.name} title=${mk.name + ' · ' + mk.size} loading="lazy" role="button" tabindex="0" onClick=${() => set({ lightbox: url })}/>`;
     }
     if (url && images.some(n => n.endsWith('/' + base))) shown.add(base);
     if (mk.content !== undefined) {
@@ -582,7 +637,7 @@ function Attached({ marks = [], images = [] }) {
     const url = '/files/' + base;
     parts.push(/\.pdf$/.test(base)
       ? html`<a class="chip" href=${url} target="_blank" rel="noopener">📕 <span class="name">${base}</span></a>`
-      : html`<img class="thumb" src=${url} loading="lazy" onClick=${() => set({ lightbox: url })}/>`);
+      : html`<img class="thumb" src=${url} alt="" loading="lazy" role="button" tabindex="0" onClick=${() => set({ lightbox: url })}/>`);
   }
   return html`<div class="atts">${parts}</div>
     ${open >= 0 && marks[open] && html`<div class="attach-text"><pre>${marks[open].content}</pre></div>`}`;
@@ -683,9 +738,9 @@ function ToolMsg({ m, echo, state }) {
   return html`<div class=${cls} title=${when((m || echo).date)}>
     <span class="mark">●</span>
     <div class="body">
-      ${tool && html`<div class="head" onClick=${toggle}><span class="name">${tool.name}</span><span class="args">(${toolArgs(tool.name, tool.input, tool.raw)})</span></div>`}
-      ${echo && !open && sum && html`<div class="result" onClick=${toggle}><span>  ⎿</span><span class="lines">${sum} <span class="more">(click to expand)</span></span></div>`}
-      ${echo && !open && !sum && html`<div class="result" onClick=${toggle}><span>  ⎿</span><span class="lines">${lines.slice(0, 3).map(l => oneLine(l, 160)).join('\n') || '(no output)'}${lines.length > 3 && html`<span class="more">${'\n'}… +${lines.length - 3} lines (click to expand)</span>`}</span></div>`}
+      ${tool && html`<div class="head" role="button" tabindex="0" aria-expanded=${open} onClick=${toggle}><span class="name">${tool.name}</span><span class="args">(${toolArgs(tool.name, tool.input, tool.raw)})</span></div>`}
+      ${echo && !open && sum && html`<div class="result" role="button" tabindex=${tool ? -1 : 0} onClick=${toggle}><span>  ⎿</span><span class="lines">${sum} <span class="more">(click to expand)</span></span></div>`}
+      ${echo && !open && !sum && html`<div class="result" role="button" tabindex=${tool ? -1 : 0} onClick=${toggle}><span>  ⎿</span><span class="lines">${lines.slice(0, 3).map(l => oneLine(l, 160)).join('\n') || '(no output)'}${lines.length > 3 && html`<span class="more">${'\n'}… +${lines.length - 3} lines (click to expand)</span>`}</span></div>`}
       ${state === 'cut' && !echo && html`<div class="result"><span>  ⎿</span><span class="cut-note">Interrupted</span></div>`}
       ${open && html`<div class="full">
         ${tool && html`<div class="label">input</div><${ToolInput} name=${tool.name} x=${tool.input} raw=${tool.raw}/>`}
@@ -732,7 +787,9 @@ function Queue({ queue }) {
       <span>></span>
       ${editing === q.id
         ? html`<textarea rows="2" ref=${el => el && !el.dataset.ready && (el.dataset.ready = '1', el.value = q.text, el.focus())}
+            onCompositionEnd=${e => { composedAt = e.timeStamp; }}
             onKeyDown=${e => {
+              if (e.isComposing || e.keyCode === 229 || e.timeStamp - composedAt < 100) return;
               if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send({ t: 'edit', id: q.id, text: e.target.value }); setEditing(null); inputEl?.focus(); }
               if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); setEditing(null); inputEl?.focus(); }
             }}/>`
@@ -747,21 +804,33 @@ function Queue({ queue }) {
   </div>`;
 }
 
+function takeOff(a) {
+  if (a.xhr && a.xhr.readyState < 4) a.xhr.abort(); // not uploaded for nothing
+  set({ atts: S.atts.filter(x => x.id !== a.id) });
+  inputEl?.focus();
+}
+
 function Chips() {
   const { atts, paths, skipped } = S;
-  const shownPaths = paths.filter(p => !skipped.has(p.path));
-  if (!atts.length && !shownPaths.length) return null;
+  if (!atts.length && !paths.length) return null;
+  const attach = p => { const s = new Set(S.skipped); s.delete(p); set({ skipped: s, chosen: new Set([...S.chosen, p]) }); inputEl?.focus(); };
+  const leave = p => { set({ skipped: new Set([...S.skipped, p]) }); inputEl?.focus(); };
   return html`<div class="atts">
     ${atts.map(a => html`<span class=${'chip' + (a.status === 'error' ? ' err' : '')} key=${a.id} title=${a.error || a.orig}>
       ${a.url ? html`<img src=${a.url} alt=""/>` : icon(kindOf(a))}
       <span class="name">${a.orig}</span>
-      ${a.status === 'uploading' ? html`<span class="bar"><i style=${'width:' + Math.round((a.progress || 0) * 100) + '%'}/></span>` : html`<span class="size">${a.status === 'error' ? a.error : size(a.size)}</span>`}
-      <button class="x" title="remove" onClick=${() => set({ atts: S.atts.filter(x => x.id !== a.id) })}>×</button>
+      ${a.status === 'uploading' ? html`<span class="bar"><i style=${{ width: Math.round((a.progress || 0) * 100) + '%' }}/></span>` : html`<span class="size">${a.status === 'error' ? a.error : size(a.size)}</span>`}
+      <button class="x" title="remove" onClick=${() => takeOff(a)}>×</button>
     </span>`)}
-    ${shownPaths.map(p => html`<span class="chip path" key=${p.path} title=${'attaches ' + p.path}>
-      ↳ <span class="name">${p.name}</span><span class="size">${size(p.size)}</span>
-      <button class="x" title="leave it as text" onClick=${() => set({ skipped: new Set([...S.skipped, p.path]) })}>×</button>
-    </span>`)}
+    ${paths.map(p => skipped.has(p.path)
+      ? html`<span class="chip path off" key=${p.path} title=${p.path + ': not attached'}>
+          ↳ <span class="name">${p.name}</span><span class="size">not attached</span>
+          <button class="x" title="attach it" onClick=${() => attach(p.path)}>+</button>
+        </span>`
+      : html`<span class="chip path" key=${p.path} title=${'attaches ' + p.path}>
+          ↳ <span class="name">${p.name}</span><span class="size">${size(p.size)}</span>
+          <button class="x" title="leave it as text" onClick=${() => leave(p.path)}>×</button>
+        </span>`)}
   </div>`;
 }
 
@@ -816,6 +885,7 @@ function Input() {
       <textarea ref=${ref} rows="1" spellcheck="false" aria-label="Message Opt" placeholder=${S.turn.phase ? 'Queue a message for Opt…' : 'Message Opt'}
         onInput=${() => { histPos = -1; autosize(); lookForPaths(); tick(n => n + 1); }}
         onKeyDown=${onKey}
+        onCompositionEnd=${e => { composedAt = e.timeStamp; }}
         onPaste=${onPaste}/>
       <span class="tools">
         <button title="attach files" onClick=${() => pick.current.click()}>📎</button>
@@ -823,6 +893,8 @@ function Input() {
       </span>
     </div>`;
 }
+
+let toEnd = false; // scroll to the end at the next render
 
 function Scroller() {
   const ref = useRef(), inner = useRef();
@@ -832,7 +904,8 @@ function Scroller() {
   useLayoutEffect(() => {
     const el = ref.current;
     const first = S.msgs.length ? S.msgs[0].i : -1;
-    if (was.current.first >= 0 && first >= 0 && first < was.current.first) el.scrollTop += el.scrollHeight - was.current.height; // older messages came in above
+    if (toEnd) { toEnd = false; stick.current = true; setNewer(false); el.scrollTop = el.scrollHeight; }
+    else if (was.current.first >= 0 && first >= 0 && first < was.current.first) el.scrollTop += el.scrollHeight - was.current.height; // older messages came in above
     else if (stick.current) el.scrollTop = el.scrollHeight;
     else if (el.scrollHeight > was.current.height + 4) setNewer(true);
     was.current = { height: el.scrollHeight, first };
@@ -840,6 +913,7 @@ function Scroller() {
   useEffect(() => {
     const ro = new ResizeObserver(() => { if (stick.current) toBottom(); was.current.height = ref.current.scrollHeight; });
     ro.observe(inner.current);
+    ro.observe(ref.current); // the input growing makes the log shorter
     return () => ro.disconnect();
   }, []);
   const onScroll = () => {
@@ -877,17 +951,28 @@ function App() {
       <${Footer}/>
     </div></div>
     ${S.dragging && html`<div class="drop"><div>Drop to attach</div></div>`}
-    ${S.lightbox && html`<div class="lightbox" onClick=${() => set({ lightbox: null })}><img src=${S.lightbox}/></div>`}
+    ${S.lightbox && html`<div class="lightbox" role="dialog" aria-label="image; Esc or a click closes it" onClick=${() => set({ lightbox: null })}><img src=${S.lightbox} alt=""/></div>`}
   </div>`;
 }
 
 // ---------------------------------------------------------------- wiring
 
 addEventListener('dragenter', e => { if (hasFiles(e)) { e.preventDefault(); dragDepth++; set({ dragging: true }); } });
-addEventListener('dragover', e => { if (hasFiles(e)) e.preventDefault(); });
+addEventListener('dragover', e => { if (hasFiles(e) || e.target.tagName !== 'TEXTAREA') e.preventDefault(); });
 addEventListener('dragleave', e => { if (hasFiles(e) && --dragDepth <= 0) { dragDepth = 0; set({ dragging: false }); } });
-addEventListener('drop', e => { if (hasFiles(e)) onDrop(e); });
+addEventListener('drop', e => {
+  if (hasFiles(e)) { onDrop(e); return; }
+  if (e.target.tagName === 'TEXTAREA') return; // text dropped on an input goes in, as ever
+  e.preventDefault(); // a link dropped elsewhere would take the tab away from the chat: into the input
+  const text = e.dataTransfer.getData('text/plain');
+  if (text && inputEl) { inputEl.focus(); document.execCommand('insertText', false, text); }
+});
 addEventListener('keydown', e => {
+  if ((e.key === 'Enter' || e.key === ' ') && e.target.getAttribute?.('role') === 'button' && e.target.tagName !== 'BUTTON') {
+    e.preventDefault(); // a card, a thumbnail or a copy, from the keyboard
+    e.target.click();
+    return;
+  }
   if (e.key === 'Escape' && e.target !== inputEl && e.target.tagName !== 'TEXTAREA') { escape(); return; }
   if (e.target === inputEl || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'INPUT') return;
   if (e.metaKey || e.ctrlKey || e.altKey || e.key.length !== 1) return;

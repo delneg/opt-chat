@@ -308,6 +308,9 @@ func TestSettle(t *testing.T) {
 // callView: with every line built, the view itself; behind a backlog, a
 // partial tree that fits and tiles, the newest messages by their heads.
 func TestCallView(t *testing.T) {
+	if testing.Short() {
+		t.Skip("fsyncs about 1,200 writes")
+	}
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	building(t, c)
 	for i := range 400 {

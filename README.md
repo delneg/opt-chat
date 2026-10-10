@@ -300,8 +300,8 @@ their names (`zoom`, not `mcp__opt__zoom`).
 ## Test
 
 ```sh
-go test ./...          # ~30 s: the sawtooth test fsyncs ~2,000 writes
-go test -short ./...   # skips it
+go test ./...          # ~50 s: three tests fsync thousands of writes
+go test -short ./...   # skips them: ~10 s
 ```
 
 The tests run turns, compactions and subagents against a fake `claude`: the

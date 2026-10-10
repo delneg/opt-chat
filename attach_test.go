@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"encoding/binary"
+	"hash/crc32"
 	"image"
 	"image/jpeg"
 	"image/png"
@@ -53,14 +55,24 @@ func TestFitImage(t *testing.T) {
 	if r, g, bl, _ := img.At(10, 10).RGBA(); r < 0xe000 || g < 0xe000 || bl < 0xe000 {
 		t.Fatalf("transparency is not white: %v", img.At(10, 10))
 	}
-	var huge bytes.Buffer // a header claiming 10000x10000 pixels: never decoded
-	png.Encode(&huge, image.NewGray(image.Rect(0, 0, 10000, 10000)))
-	if _, _, err := fitImage(huge.Bytes()); err == nil || !strings.Contains(err.Error(), "too big") {
+	if _, _, err := fitImage(pngHeader(10000, 10000)); err == nil || !strings.Contains(err.Error(), "too big") {
 		t.Fatalf("a 100-megapixel image: %v", err)
 	}
 	if _, _, err := fitImage([]byte("not an image")); err == nil {
 		t.Fatal("text taken for an image")
 	}
+}
+
+// pngHeader is the start of a PNG of w x h pixels: enough to read its size.
+func pngHeader(w, h uint32) []byte {
+	chunk := []byte("IHDR")
+	chunk = binary.BigEndian.AppendUint32(chunk, w)
+	chunk = binary.BigEndian.AppendUint32(chunk, h)
+	chunk = append(chunk, 8, 0, 0, 0, 0) // 8-bit gray
+	b := []byte("\x89PNG\r\n\x1a\n")
+	b = binary.BigEndian.AppendUint32(b, 13)
+	b = append(b, chunk...)
+	return binary.BigEndian.AppendUint32(b, crc32.ChecksumIEEE(chunk))
 }
 
 // What a file is, from its content: the name only gives the extension.
@@ -81,6 +93,7 @@ func TestSaveClassify(t *testing.T) {
 		{"latin1.txt", []byte("caf\xe9"), "file", ".txt"},
 		{"no-ext", []byte("plain"), "text", ""},
 		{"odd.ex t!", []byte("plain"), "text", ""},
+		{"scan.png", append(pngHeader(20000, 20000), make([]byte, 1<<20)...), "file", ".png"}, // never read whole
 	} {
 		at, err := c.save(bytes.NewReader(f.body), f.name)
 		if err != nil || at.Kind != f.kind || filepath.Ext(at.Name) != f.ext || at.Orig != f.name || !safeName.MatchString(at.Name) {

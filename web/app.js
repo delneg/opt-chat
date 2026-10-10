@@ -72,7 +72,8 @@ function memo(fn) {
 // ---------------------------------------------------------------- server
 
 let ws = null, lastI = -1, retries = 0, sendSeq = 0, pathSeq = 0, noticeSeq = 0;
-const sending = new Map(); // seq → what was sent, to put back if it fails
+const sending = new Map(); // seq → a send not acknowledged yet: sent again after a reconnect, put back if it fails
+const pageKey = crypto.randomUUID ? crypto.randomUUID() : String(Math.random()).slice(2) + Date.now();
 
 function connect() {
   ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws?after=${lastI}`);
@@ -107,6 +108,7 @@ function onUpdate(u) {
         conn: 'open', msgs, total: u.total, turn: u.turn, turnChars: 0, live: u.turn.text || '', thinking: u.turn.thinking || '',
         queue: u.queue, status: u.status, last: u.last, inputs: mergeInputs(S.inputs, u.inputs), older: false,
       });
+      for (const s of sending.values()) send(s.payload); // the connection may have dropped it: the key makes it once
       break;
     }
     case 'msgs': {
@@ -116,7 +118,7 @@ function onUpdate(u) {
       lastI = fresh[fresh.length - 1].i;
       const patch = { msgs: S.msgs.concat(fresh), total: lastI + 1 };
       if (fresh.some(m => m.kind === 'opt')) patch.live = '';
-      const typed = fresh.filter(m => m.kind === 'user').map(m => splitMarks(m.text).body).filter(Boolean);
+      const typed = fresh.filter(m => m.kind === 'user' && !m.part).map(m => splitMarks(m.text).body).filter(Boolean);
       if (typed.length) patch.inputs = mergeInputs(S.inputs, typed);
       set(patch);
       break;
@@ -227,8 +229,9 @@ async function submit(now) {
   const files = S.atts.map(({ name, orig, kind, size }) => ({ name, orig, kind, size }));
   const paths = S.paths.map(p => p.path).filter(p => !S.skipped.has(p));
   const seq = ++sendSeq;
-  if (!send({ t: 'send', text, files, paths, now, seq })) return;
-  sending.set(seq, { text, files: S.atts });
+  const payload = { t: 'send', text, files, paths, now, seq, key: pageKey + ':' + seq };
+  if (!send(payload)) return;
+  sending.set(seq, { payload, text, files: S.atts });
   if (text.trim() && !text.startsWith('/')) set({ inputs: mergeInputs(S.inputs, [text.trim()]) });
   if (inputEl.value === text) setInput('');
   histPos = -1;
@@ -462,7 +465,8 @@ function items(msgs) {
   const joined = [];
   for (const m of msgs) {
     const p = joined[joined.length - 1];
-    if (p && p.kind === m.kind && p.date === m.date && p.text.length >= 25000 && p.last + 1 === m.i) {
+    // part marks the parts after the first; logs from before it had none
+    if (p && p.kind === m.kind && p.last + 1 === m.i && (m.part > 0 || (p.date === m.date && p.text.length >= 25000))) {
       joined[joined.length - 1] = { ...p, text: p.text + m.text, images: (p.images || []).concat(m.images || []), last: m.i };
       continue;
     }

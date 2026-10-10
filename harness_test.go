@@ -12,6 +12,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/samber/lo"
 )
 
 // recorder keeps every update a chat's hub sends.
@@ -438,5 +440,103 @@ func TestHubJoin(t *testing.T) {
 	}
 	if n != outbox || h.clients[cl] {
 		t.Fatalf("a slow page got %d updates, still joined: %v", n, h.clients[cl])
+	}
+}
+
+// A page that joins mid-reply gets each piece of it once: in its hello, or
+// as a delta after.
+func TestHubJoinMidReply(t *testing.T) {
+	c, _ := fakeChat(t, t.TempDir(), 100)
+	h := newHub()
+	const n = 2000
+	done := make(chan struct{})
+	go func() {
+		for range n {
+			h.delta("text", "x")
+		}
+		close(done)
+	}()
+	var clients []*client
+	for range 20 {
+		clients = append(clients, h.join(c, -1, 10))
+		time.Sleep(50 * time.Microsecond)
+	}
+	<-done
+	for _, cl := range clients {
+		var hello helloUpdate
+		json.Unmarshal(<-cl.out, &hello)
+		got := len(hello.Turn.Text)
+		for len(cl.out) > 0 {
+			var d deltaUpdate
+			json.Unmarshal(<-cl.out, &d)
+			got += len(d.S)
+		}
+		if got != n {
+			t.Fatalf("a page joining mid-reply saw %d characters of %d", got, n)
+		}
+	}
+}
+
+// Esc while the turn sends its view: a report it took then stays in the
+// log, unanswered, and starts no turn.
+func TestStopKeepsReportsLogged(t *testing.T) {
+	c, _ := fakeChat(t, t.TempDir(), 100)
+	c.Log("note", "slow-ack")
+	for i := range 69 {
+		c.Log("note", fmt.Sprint("note ", i))
+	}
+	record(c)
+	h := newHarness(t, c)
+	h.input(message{kind: "user", text: "hi"})
+	waitFor(t, "the ack", func() bool {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		if h.turn == nil {
+			return false
+		}
+		h.turn.mu.Lock()
+		defer h.turn.mu.Unlock()
+		return h.turn.open && h.turn.p == nil
+	})
+	h.input(message{kind: "work", text: "[Scout] found it"})
+	if _, ok := h.stop(); !ok {
+		t.Fatal("stop")
+	}
+	waitFor(t, "idle", h.idle)
+	time.Sleep(100 * time.Millisecond)
+	if !h.idle() || !hasLogged(c, "work: [Scout] found it") || slices.ContainsFunc(logged(c), func(s string) bool { return strings.Contains(s, "answer to") }) {
+		t.Fatalf("after the stop: idle %v, logged %q", h.idle(), logged(c)[70:])
+	}
+}
+
+// Send now while a tool call runs stops the turn, rather than slipping the
+// message into it.
+func TestSendNowDuringTool(t *testing.T) {
+	c, _ := fakeChat(t, t.TempDir(), 100)
+	record(c)
+	h := newHarness(t, c)
+	h.input(message{kind: "user", text: "wait-for-message"})
+	waitFor(t, "the tool call", func() bool { return hasLogged(c, `tool: Bash {"command":"wait"}`) })
+	h.inputNow(message{kind: "user", text: "right now"})
+	waitFor(t, "the next turn", func() bool {
+		return slices.ContainsFunc(logged(c), func(s string) bool { return strings.HasPrefix(s, "opt: answer to") && strings.Contains(s, "right now") })
+	})
+	if hasLogged(c, "opt: got: right now") {
+		t.Fatal("send now went into the running turn")
+	}
+}
+
+// A text too long for one message is logged in parts, the later ones
+// marked, and the input's history keeps only its first.
+func TestParts(t *testing.T) {
+	c, _ := fakeChat(t, t.TempDir(), 100)
+	c.Log("user", "head\n"+strings.Repeat("y", clipMax+5))
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.msgs) != 3 || c.msgs[0].Part != 0 || c.msgs[1].Part != 1 || c.msgs[2].Part != 2 {
+		t.Fatalf("parts: %d messages, %+v", len(c.msgs), lo.Map(c.msgs, func(m Msg, _ int) int { return m.Part }))
+	}
+	if in := c.recentInputs(10); len(in) != 1 || in[0] != "head" {
+		t.Fatalf("recentInputs: %q", in)
 	}
 }

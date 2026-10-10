@@ -100,6 +100,9 @@ func (c *Chat) classify(at *attachment) (string, error) {
 		}
 		return c.saveImageFit(at, b)
 	case slices.Contains([]string{"image/png", "image/jpeg", "image/gif", "image/webp"}, mime):
+		if !decodable(path) {
+			return "file", nil // too big to shrink: read whole, it could take gigabytes
+		}
 		b, err := os.ReadFile(path)
 		if err != nil {
 			return "", err
@@ -114,6 +117,18 @@ func (c *Chat) classify(at *attachment) (string, error) {
 		}
 	}
 	return "file", nil
+}
+
+// decodable reports whether the image at path is one fitImage takes: its
+// header read alone.
+func decodable(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	cfg, _, err := image.DecodeConfig(f)
+	return err == nil && cfg.Width*cfg.Height <= imagePix
 }
 
 func (c *Chat) saveImageFit(at *attachment, b []byte) (string, error) {

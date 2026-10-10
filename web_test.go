@@ -7,9 +7,11 @@ import (
 	"image"
 	"image/png"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -294,4 +296,41 @@ func TestWebStopRestores(t *testing.T) {
 	}
 	ws.send(map[string]any{"t": "stop"})
 	waitFor(t, "idle", wt.h.idle)
+}
+
+// The page listens on 127.0.0.1 only, whatever -addr says.
+func TestListen(t *testing.T) {
+	for _, bad := range []string{"0.0.0.0:0", "[::1]:0", "192.168.1.1:0", "example.com:0", "nope"} {
+		if ln, err := listen(bad, 0); err == nil {
+			ln.Close()
+			t.Errorf("listen(%q) took it", bad)
+		}
+	}
+	ln, err := listen("localhost:0", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	if ip := ln.Addr().(*net.TCPAddr).IP; !ip.Equal(net.IPv4(127, 0, 0, 1)) {
+		t.Fatalf("localhost listened on %v", ip)
+	}
+}
+
+// A send the page makes again after a reconnect, with the same key, is
+// taken once.
+func TestWebSendOnce(t *testing.T) {
+	wt := startWeb(t)
+	ws, err := wt.dial(-1, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws.next("hello", typ("hello"))
+	for seq := range 2 {
+		ws.send(map[string]any{"t": "send", "text": "only once", "seq": seq, "key": "page:1"})
+		ws.next("sent", func(u map[string]any) bool { return u["t"] == "sent" && u["seq"].(float64) == float64(seq) })
+	}
+	waitFor(t, "idle", wt.h.idle)
+	if n := len(slices.DeleteFunc(logged(wt.c), func(s string) bool { return s != "user: only once" })); n != 1 {
+		t.Fatalf("logged %d times", n)
+	}
 }

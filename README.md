@@ -160,7 +160,7 @@ Like every flag, it lasts until you quit.
 
 ```
 <dir>/
-  main/YYYY-MM-DD.jsonl   messages: {i, kind, text, size, date, images, ref}, append-only, fsynced
+  main/YYYY-MM-DD.jsonl   messages: {i, kind, text, size, date, images, ref, part}, append-only, fsynced
   tree/YYYY-MM-DD.jsonl   summary nodes: {l, i, text, size}, append-only, fsynced
   view.json               the view, as [l, i] pairs, kept across restarts
   files/<hash>.<ext>      attachments and tool results' images, named by their content

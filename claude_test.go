@@ -99,8 +99,13 @@ func fakeClaude() {
 			result(fmt.Sprintf("line with %d images", images))
 		case strings.Contains(in, "wait-for-message"):
 			say(textBlock("waiting"), block{Type: "tool_use", ID: "w1", Name: "Bash", Input: []byte(`{"command":"wait"}`)})
-			next, _ := read(<-lines)
-			result("got: " + next)
+			select {
+			case l := <-lines:
+				next, _ := read(l)
+				result("got: " + next)
+			case <-stop: // as Claude Code, stopped mid-tool
+				os.Exit(143)
+			}
 		case strings.Contains(in, "tool-after-pause"):
 			say(textBlock("pausing"))
 			time.Sleep(400 * time.Millisecond)

@@ -211,9 +211,29 @@ func (h *harness) input(m message) {
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	h.enqueue(m)
+}
+
+// inputNow queues m and stops the turn underway, or the wait before it, so
+// that m goes at once: send now.
+func (h *harness) inputNow(m message) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if !h.enqueue(m) {
+		return
+	}
+	h.hurry = true
+	if h.cancel != nil {
+		h.cancel()
+	}
+}
+
+// enqueue adds m to the queue and starts the turns' loop if it is idle;
+// false when quitting. Caller holds h.mu.
+func (h *harness) enqueue(m message) bool {
 	if h.quitting { // a report from a subagent being stopped
 		logAll(h.agent.chat, []message{m})
-		return
+		return false
 	}
 	h.lastID++
 	h.queue = append(h.queue, queued{h.lastID, m})
@@ -223,6 +243,7 @@ func (h *harness) input(m message) {
 		h.loops.Add(1)
 		go h.loop()
 	}
+	return true
 }
 
 // publish shows the pages the user's messages waiting in the queue.
@@ -406,11 +427,13 @@ func (h *harness) loop() {
 		h.mu.Lock()
 		h.turn = nil
 		var left []queued
-		for _, m := range t.detach() { // taken, but the call ended before it got them
+		for _, m := range t.detach() { // taken, and logged, but the call ended before it got them
 			h.lastID++
 			left = append(left, queued{h.lastID, m})
 		}
-		h.queue = append(left, h.queue...)
+		if !h.stopped { // stopped: they stay in the log, unanswered, as stop says
+			h.queue = append(left, h.queue...)
+		}
 		h.mu.Unlock()
 		cancel()
 	}

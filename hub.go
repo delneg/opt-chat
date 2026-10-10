@@ -144,10 +144,33 @@ func (h *hub) send(v any) {
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	h.sendLocked(v, b)
+}
+
+// sendLocked sends v, b its JSON, with h.mu held: what changed the hub's
+// state goes out in the same hold, so a page that joins gets each change
+// once, in its hello or as an update.
+func (h *hub) sendLocked(v any, b []byte) {
 	h.fanout(b)
 	if h.print != nil {
 		h.print(v)
 	}
+}
+
+// change applies f to the hub's state and sends v in one hold of h.mu.
+func (h *hub) change(f func(), v any) {
+	if h == nil {
+		return
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		warn("hub: %v", err)
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	f()
+	h.sendLocked(v, b)
 }
 
 func (h *hub) fanout(b []byte) {
@@ -210,17 +233,16 @@ func (h *hub) logged(ms []Msg) {
 
 // delta adds to the reply or the thinking being written.
 func (h *hub) delta(k, s string) {
-	if h == nil || s == "" {
+	if s == "" {
 		return
 	}
-	h.mu.Lock()
-	if k == "text" {
-		h.turn.Text += s
-	} else {
-		h.turn.Thinking += s
-	}
-	h.mu.Unlock()
-	h.send(deltaUpdate{T: "delta", K: k, S: s})
+	h.change(func() {
+		if k == "text" {
+			h.turn.Text += s
+		} else {
+			h.turn.Thinking += s
+		}
+	}, deltaUpdate{T: "delta", K: k, S: s})
 }
 
 // setTurn changes the turn underway and tells the pages; the text and
@@ -244,17 +266,13 @@ func (h *hub) setTurn(f func(*liveTurn)) {
 // restart empties the reply or the thinking being written, as a new block
 // of it starts.
 func (h *hub) restart(k string) {
-	if h == nil {
-		return
-	}
-	h.mu.Lock()
-	if k == "text" {
-		h.turn.Text = ""
-	} else {
-		h.turn.Thinking = ""
-	}
-	h.mu.Unlock()
-	h.send(deltaUpdate{T: "delta", K: k, R: true})
+	h.change(func() {
+		if k == "text" {
+			h.turn.Text = ""
+		} else {
+			h.turn.Thinking = ""
+		}
+	}, deltaUpdate{T: "delta", K: k, R: true})
 }
 
 // clearText drops the reply being written as it goes into the log, which
@@ -333,7 +351,7 @@ func (h *hub) thought(s string) {
 func (c *Chat) recentInputs(n int) []string {
 	var out []string
 	for i := len(c.msgs) - 1; i >= 0 && len(out) < n; i-- {
-		if m := c.msgs[i]; m.Kind == "user" {
+		if m := c.msgs[i]; m.Kind == "user" && m.Part == 0 {
 			if s := stripAttachments(m.Text); s != "" && !slices.Contains(out, s) {
 				out = append(out, s)
 			}

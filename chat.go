@@ -56,6 +56,7 @@ type Msg struct {
 	Date   time.Time `json:"date"`
 	Images []string  `json:"images,omitzero"` // files/<hash>.<ext>, named by content: images and PDFs, which go to the model
 	Ref    string    `json:"ref,omitzero"`    // a tool call's id, on it and on its echo
+	Part   int       `json:"part,omitzero"`   // of a text too long for one message: 1 on, the parts after its first
 }
 
 type Node struct {
@@ -247,7 +248,7 @@ func (c *Chat) logMsgs(ms []Msg) {
 	var parts []any
 	for _, m := range ms {
 		for j, part := range splitText(m.Text, clipMax) {
-			p := Msg{I: len(c.msgs), Kind: m.Kind, Text: part, Size: len(m.Kind) + 2 + len(part), Date: m.Date, Ref: m.Ref}
+			p := Msg{I: len(c.msgs), Kind: m.Kind, Text: part, Size: len(m.Kind) + 2 + len(part), Date: m.Date, Ref: m.Ref, Part: j}
 			if j == 0 {
 				p.Images = m.Images
 			}

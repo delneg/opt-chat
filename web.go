@@ -17,6 +17,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/coder/websocket"
@@ -38,6 +39,28 @@ type webServer struct {
 	token string
 	hosts []string // the Host headers it answers: 127.0.0.1:port, localhost:port
 	url   string
+
+	mu   sync.Mutex
+	keys map[string]bool // the last sends' keys: a page sends again what a dropped connection may have lost
+	seen []string
+}
+
+const keysKept = 1000
+
+// firstSend reports whether a send with this key is new, and notes it.
+func (w *webServer) firstSend(key string) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.keys[key] {
+		return false
+	}
+	w.keys[key] = true
+	w.seen = append(w.seen, key)
+	if len(w.seen) > keysKept {
+		delete(w.keys, w.seen[0])
+		w.seen = w.seen[1:]
+	}
+	return true
 }
 
 type webState struct {
@@ -65,7 +88,7 @@ func serveWeb(h *harness, addr string) (*webServer, error) {
 		return nil, err
 	}
 	port := strconv.Itoa(st.Port)
-	w := &webServer{h: h, c: c, token: st.Token, hosts: []string{"127.0.0.1:" + port, "localhost:" + port},
+	w := &webServer{h: h, c: c, token: st.Token, hosts: []string{"127.0.0.1:" + port, "localhost:" + port}, keys: map[string]bool{},
 		url: "http://127.0.0.1:" + port + "/?t=" + st.Token}
 	go (&http.Server{Handler: w.routes(), ReadHeaderTimeout: 10 * time.Second}).Serve(ln)
 	return w, nil
@@ -75,14 +98,14 @@ func serveWeb(h *harness, addr string) (*webServer, error) {
 // when free, or any.
 func listen(addr string, last int) (net.Listener, error) {
 	if addr != "" {
-		host, _, err := net.SplitHostPort(addr)
+		host, port, err := net.SplitHostPort(addr)
 		if err != nil {
 			return nil, err
 		}
-		if ip := net.ParseIP(host); host != "localhost" && (ip == nil || !ip.IsLoopback()) {
+		if host != "127.0.0.1" && host != "localhost" { // the names guard answers to
 			return nil, fmt.Errorf("-addr %s: the web chat listens on this machine only, as 127.0.0.1:port", addr)
 		}
-		return net.Listen("tcp", addr)
+		return net.Listen("tcp", "127.0.0.1:"+port)
 	}
 	if last > 0 {
 		if ln, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(last)); err == nil {
@@ -229,6 +252,7 @@ type request struct {
 	ID     int          `json:"id"`
 	Before int          `json:"before"`
 	Seq    int          `json:"seq"`
+	Key    string       `json:"key"` // send: the same on a send again after a reconnect
 }
 
 type (
@@ -339,6 +363,9 @@ func (w *webServer) serve(req request) any {
 	c, h := w.c, w.h
 	switch req.T {
 	case "send":
+		if req.Key != "" && !w.firstSend(req.Key) {
+			return sentReply{T: "sent", Seq: req.Seq} // got it before the connection dropped
+		}
 		if out, ok := command(h.agent, req.Text); ok {
 			return noticeUpdate{T: "notice", Level: "info", S: out}
 		}
@@ -355,9 +382,10 @@ func (w *webServer) serve(req request) any {
 		}
 		m := c.compose(req.Text, append(ups, typed...))
 		m.uploads = ups
-		h.input(m)
 		if req.Now {
-			h.sendNow()
+			h.inputNow(m)
+		} else {
+			h.input(m)
 		}
 		return sentReply{T: "sent", Seq: req.Seq}
 	case "edit":

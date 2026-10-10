@@ -117,6 +117,7 @@ type status struct {
 	Effort    string   `json:"effort"`
 	Agents    []string `json:"agents"`
 	Dir       string   `json:"dir"`
+	Cwd       string   `json:"cwd"` // where Opt's tools run
 }
 
 type turnEnd struct {
@@ -387,7 +388,7 @@ func watchStatus(c *Chat, a *Agent, h *hub, stop <-chan struct{}) {
 
 func currentStatus(c *Chat, a *Agent) status {
 	a.mu.Lock()
-	s := status{Model: a.model, Effort: a.effort, Agents: sortedKeys(a.running)}
+	s := status{Model: a.model, Effort: a.effort, Agents: sortedKeys(a.running), Cwd: a.cwd}
 	a.mu.Unlock()
 	c.mu.Lock()
 	defer c.mu.Unlock()

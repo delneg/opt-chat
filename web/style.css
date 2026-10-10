@@ -27,6 +27,7 @@ body {
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
 }
+pre, code { tab-size: 4; }
 button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
 a { color: var(--blue); }
 
@@ -64,7 +65,8 @@ a { color: var(--blue); }
 .tool .head { cursor: pointer; }
 .tool .name { font-weight: 600; }
 .tool .args { color: var(--dim); }
-.tool .result { color: var(--dim); display: grid; grid-template-columns: 4ch 1fr; cursor: pointer; }
+.result { color: var(--dim); display: grid; grid-template-columns: 4ch 1fr; }
+.tool .result { cursor: pointer; }
 .tool .result .lines { white-space: pre-wrap; min-width: 0; }
 .tool .more { color: var(--faint); }
 .tool .full { margin: .4em 0 0; }
@@ -121,7 +123,6 @@ a { color: var(--blue); }
 .attach-text { width: 100%; }
 
 /* live turn */
-.live .cursor { display: inline-block; width: .6ch; height: 1.1em; background: var(--fg); vertical-align: text-bottom; animation: blink 1s steps(2, start) infinite; margin-left: .2ch; }
 .thinking { color: var(--dim); font-style: italic; white-space: pre-wrap; max-height: 9em; overflow: hidden; display: flex; flex-direction: column-reverse; margin: 0 0 1em 2ch; border-left: 2px solid var(--border); padding-left: 1.5ch; }
 .notice { color: var(--dim); margin: 0 0 1em; white-space: pre-wrap; display: grid; grid-template-columns: 2ch 1fr; }
 .notice.warn { color: var(--yellow); }
@@ -131,6 +132,7 @@ a { color: var(--blue); }
 .spinner { color: var(--accent); padding: .35em 0 .15em; display: flex; gap: 1ch; flex-wrap: wrap; }
 .spinner .glyph { display: inline-block; width: 1.5ch; }
 .spinner .meta { color: var(--dim); }
+.spinner .meta button:hover { color: var(--fg); }
 .queue { padding: .1em 0 .3em; }
 .queue .item { display: grid; grid-template-columns: 2ch 1fr auto; color: var(--dim); align-items: start; padding: .1em 0; }
 .queue .item .text { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 6em; overflow: hidden; }
@@ -156,8 +158,11 @@ a { color: var(--blue); }
 .box .tools { display: flex; gap: 1ch; color: var(--dim); padding-left: 1ch; }
 .box .tools button:hover { color: var(--fg); }
 .box .atts { grid-column: 2 / 4; margin: 0 0 .4em; }
-.footer { display: flex; justify-content: space-between; gap: 2ch; color: var(--faint); font-size: .85em; padding: .3em 1ch 0; flex-wrap: wrap; }
-.footer .right { text-align: right; }
+/* one line of segments, wrapping whole; the dot before a line's first is clipped */
+.footer { color: var(--faint); font-size: .85em; padding: .3em 1ch 0; overflow: hidden; }
+.footer .segs { display: flex; flex-wrap: wrap; margin-left: -3ch; }
+.footer .seg { white-space: nowrap; padding-left: 3ch; position: relative; }
+.footer .seg::before { content: "·"; position: absolute; left: 1ch; color: var(--faint); }
 .footer .conn.ok { color: var(--green); }
 .footer .conn.bad { color: var(--red); }
 .footer .busy { color: var(--accent); }
@@ -169,8 +174,8 @@ a { color: var(--blue); }
 .cmds .cmd { color: var(--dim); padding: 0 3ch; }
 .cmds .cmd.sel { color: var(--fg); background: var(--chip); }
 .banner { background: var(--red); color: var(--bg); text-align: center; padding: .25em; font-size: .9em; }
-.newer { position: sticky; bottom: .5em; display: flex; justify-content: center; pointer-events: none; height: 0; overflow: visible; }
-.newer button { pointer-events: auto; transform: translateY(-100%); background: var(--chip); border: 1px solid var(--border); border-radius: 999px; padding: .2em 1.5ch; color: var(--fg); font-size: .9em; }
+.newer { position: sticky; bottom: .5em; display: flex; justify-content: center; align-items: flex-end; pointer-events: none; height: 0; overflow: visible; }
+.newer button { pointer-events: auto; background: var(--chip); border: 1px solid var(--border); border-radius: 999px; padding: .2em 1.5ch; color: var(--fg); font-size: .9em; }
 
 /* overlays */
 .drop {

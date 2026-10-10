@@ -33,6 +33,7 @@ const S = {
   lightbox: null,
   dragging: false,
   help: false,
+  unseen: false, // Opt replied while the tab was in the background
 };
 
 // set changes the state and renders it once per frame; in a tab in the
@@ -46,7 +47,7 @@ function set(patch) {
   const draw = () => { frame = 0; for (const f of views) f(); };
   frame = document.hidden ? setTimeout(draw, 200) : requestAnimationFrame(draw);
 }
-document.addEventListener('visibilitychange', () => { if (!document.hidden) set({}); });
+document.addEventListener('visibilitychange', () => { if (!document.hidden) set({ unseen: false }); });
 function useStore() {
   const [, force] = useState(0);
   useEffect(() => {
@@ -117,7 +118,7 @@ function onUpdate(u) {
       if (fresh[0].i !== lastI + 1) { ws.close(); break; } // a gap: the reconnect catches up
       lastI = fresh[fresh.length - 1].i;
       const patch = { msgs: S.msgs.concat(fresh), total: lastI + 1 };
-      if (fresh.some(m => m.kind === 'opt')) patch.live = '';
+      if (fresh.some(m => m.kind === 'opt')) { patch.live = ''; if (document.hidden) patch.unseen = true; }
       const typed = fresh.filter(m => m.kind === 'user' && !m.part).map(m => splitMarks(m.text).body).filter(Boolean);
       if (typed.length) patch.inputs = mergeInputs(S.inputs, typed);
       set(patch);
@@ -436,8 +437,11 @@ function size(n) {
 
 function k(n) { return n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n || 0); }
 
+// tilde shortens a path: relative to where Opt's tools run, as Claude Code
+// shows it, or else from ~.
 function tilde(p) {
-  const home = S.status?.dir?.match(/^\/(Users|home)\/[^/]+/)?.[0];
+  const cwd = S.status?.cwd, home = S.status?.dir?.match(/^\/(Users|home)\/[^/]+/)?.[0];
+  if (cwd && cwd !== home && p?.startsWith(cwd + '/')) return p.slice(cwd.length + 1);
   return home && p?.startsWith(home + '/') ? '~' + p.slice(home.length) : p;
 }
 
@@ -522,7 +526,11 @@ function Notice({ n }) {
 const MsgView = memo(({ m, echo, state }) => {
   switch (m.kind) {
     case 'user': return html`<${UserMsg} m=${m}/>`;
-    case 'opt': return html`<div class="msg opt" title=${when(m.date)}><span class="mark">●</span><div class="body"><${Markdown} text=${m.text}/></div></div>`;
+    case 'opt': {
+      const cut = m.text.endsWith(' [interrupted]'); // a reply stopped midway, as Turn.Run logs it
+      return html`<div class="msg opt" title=${when(m.date)}><span class="mark">●</span><div class="body"><${Markdown} text=${cut ? m.text.slice(0, -14) : m.text}/>
+        ${cut && html`<div class="result"><span>  ⎿</span><span class="cut-note">Interrupted</span></div>`}</div></div>`;
+    }
     case 'tool': return html`<${ToolMsg} m=${m} echo=${echo} state=${state}/>`;
     case 'echo': return html`<${ToolMsg} echo=${m} state="done"/>`;
     case 'work': return html`<${WorkMsg} m=${m}/>`;
@@ -638,6 +646,31 @@ function ToolInput({ name, x, raw }) {
   return html`<pre>${JSON.stringify(x, null, 2)}</pre>`;
 }
 
+// brief is the one line Claude Code shows for a tool whose output says
+// little at a glance: a file read, written or edited.
+function brief(name, x, lines, echo) {
+  switch (name) {
+    case 'Read': return echo.images?.length ? 'Read an image' : `Read ${count(lines.length, 'line')}`;
+    case 'Write': return typeof x?.content === 'string' ? `Wrote ${count(x.content.replace(/\n$/, '').split('\n').length, 'line')}` : '';
+    case 'Edit': {
+      if (typeof x?.old_string !== 'string' || typeof x.new_string !== 'string') return '';
+      const [add, del] = changed(x.old_string, x.new_string);
+      return `Updated with ${count(add, 'addition')} and ${count(del, 'removal')}${x.replace_all ? ', everywhere' : ''}`;
+    }
+  }
+  return '';
+}
+
+// changed counts the lines added and removed between a and b, past the
+// lines they start and end with alike.
+function changed(a, b) {
+  const x = a.split('\n'), y = b.split('\n');
+  let p = 0, q = 0;
+  while (p < x.length && p < y.length && x[p] === y[p]) p++;
+  while (q < x.length - p && q < y.length - p && x[x.length - 1 - q] === y[y.length - 1 - q]) q++;
+  return [y.length - p - q, x.length - p - q];
+}
+
 function ToolMsg({ m, echo, state }) {
   const [open, setOpen] = useState(false);
   const tool = m ? parseTool(m.text) : null;
@@ -645,12 +678,14 @@ function ToolMsg({ m, echo, state }) {
   const lines = out ? out.replace(/\n+$/, '').split('\n') : [];
   const failed = /^(<tool_use_error>|Error\b|error:)/i.test(out.trim());
   const cls = 'msg tool ' + (state === 'run' ? 'run' : state === 'cut' || failed ? 'cut' : '');
-  const toggle = () => setOpen(!open);
+  const toggle = () => { if (!getSelection().toString()) setOpen(!open); }; // not when selecting its text
+  const sum = echo && !failed && tool ? brief(tool.name, tool.input, lines, echo) : '';
   return html`<div class=${cls} title=${when((m || echo).date)}>
     <span class="mark">●</span>
     <div class="body">
       ${tool && html`<div class="head" onClick=${toggle}><span class="name">${tool.name}</span><span class="args">(${toolArgs(tool.name, tool.input, tool.raw)})</span></div>`}
-      ${echo && !open && html`<div class="result" onClick=${toggle}><span>  ⎿</span><span class="lines">${lines.slice(0, 3).map(l => oneLine(l, 160)).join('\n') || '(no output)'}${lines.length > 3 && html`<span class="more">${'\n'}… +${lines.length - 3} lines (click to expand)</span>`}</span></div>`}
+      ${echo && !open && sum && html`<div class="result" onClick=${toggle}><span>  ⎿</span><span class="lines">${sum} <span class="more">(click to expand)</span></span></div>`}
+      ${echo && !open && !sum && html`<div class="result" onClick=${toggle}><span>  ⎿</span><span class="lines">${lines.slice(0, 3).map(l => oneLine(l, 160)).join('\n') || '(no output)'}${lines.length > 3 && html`<span class="more">${'\n'}… +${lines.length - 3} lines (click to expand)</span>`}</span></div>`}
       ${state === 'cut' && !echo && html`<div class="result"><span>  ⎿</span><span class="cut-note">Interrupted</span></div>`}
       ${open && html`<div class="full">
         ${tool && html`<div class="label">input</div><${ToolInput} name=${tool.name} x=${tool.input} raw=${tool.raw}/>`}
@@ -683,9 +718,9 @@ function Spinner({ turn, chars, queued }) {
   const tokens = (turn.tokens || 0) + Math.round(chars / 4);
   if (tokens) meta.push(`↓ ${k(tokens)} tokens`);
   if (turn.phase === 'settling' && turn.written) meta.push(`${count(turn.written, 'line')} written`);
-  meta.push('esc to interrupt');
-  if (queued || turn.phase === 'settling') meta.push('⌘⏎ send now');
-  return html`<div class="spinner"><span><span class="glyph">${g}</span>${verb}…</span><span class="meta">(${meta.join(' · ')})</span>
+  meta.push(html`<button title="stop the turn" onClick=${() => send({ t: 'stop' })}>esc to interrupt</button>`);
+  if (queued || turn.phase === 'settling') meta.push(html`<button title="stop the turn and send the queue now" onClick=${() => send({ t: 'now' })}>⌘⏎ send now</button>`);
+  return html`<div class="spinner"><span><span class="glyph">${g}</span>${verb}…</span><span class="meta">(${meta.map((x, j) => html`${j ? ' · ' : ''}${x}`)})</span>
     ${turn.partial > 0 && html`<span class="meta">memory partial: ${count(turn.partial, 'message')} not summarized yet</span>`}</div>`;
 }
 
@@ -734,19 +769,20 @@ function Footer() {
   const s = S.status, l = S.last;
   const right = [];
   if (s) {
-    right.push(`${s.model}${s.effort ? ' · ' + s.effort : ''}`);
-    right.push(`${count(s.msgs, 'message')} · view ${count(s.viewLines, 'line')}, ${Math.round(s.viewBytes / 1000)} KB`);
-    if (s.backlog || s.merges) right.push(html`<span class="busy">summarizing ${[s.backlog && count(s.backlog, 'message'), s.merges && count(s.merges, 'merge')].filter(Boolean).join(' + ')} (${s.running} running)</span>`);
+    right.push(s.effort ? `${s.model} ${s.effort}` : s.model);
+    right.push(count(s.msgs, 'message'), `view ${count(s.viewLines, 'line')}, ${Math.round(s.viewBytes / 1000)} KB`);
+    if (s.backlog || s.merges) right.push(html`<span class="busy" title=${count(s.running, 'compaction') + ' running'}>summarizing ${[s.backlog && count(s.backlog, 'message'), s.merges && count(s.merges, 'merge')].filter(Boolean).join(' + ')}</span>`);
     if (s.written) right.push(`${count(s.written, 'line')} written`);
     if (s.failing) right.push(html`<span class="conn bad">${s.failing} failing, retrying</span>`);
     if (s.agents?.length) right.push(`agents: ${s.agents.map(a => '[' + a + ']').join(' ')}`);
   }
-  if (l) right.push(`last turn ↓${k(l.turn.output_tokens)} · ${k(l.turn.cache_read_input_tokens + l.view.cache_read_input_tokens)} cached`);
+  if (l) right.push(`last turn ↓${k(l.turn.output_tokens)}, ${k(l.turn.cache_read_input_tokens + l.view.cache_read_input_tokens)} cached`);
   const conn = { open: ['ok', '● connected'], connecting: ['', '○ connecting'], closed: ['bad', '● reconnecting'], denied: ['bad', '● no key'] }[S.conn];
-  return html`<div class="footer">
-    <span><button onClick=${() => set({ help: !S.help })}>? for shortcuts</button> · <span class=${'conn ' + conn[0]}>${conn[1]}</span></span>
-    <span class="right">${right.map((x, j) => html`${j ? ' · ' : ''}${x}`)}</span>
-  </div>`;
+  return html`<div class="footer"><div class="segs">
+    <span class="seg"><button onClick=${() => set({ help: !S.help })}>? for shortcuts</button></span>
+    <span class=${'seg conn ' + conn[0]}>${conn[1]}</span>
+    ${right.map(x => html`<span class="seg">${x}</span>`)}
+  </div></div>`;
 }
 
 function Help() {
@@ -818,7 +854,7 @@ function Scroller() {
       <div class="edge">${S.conn === 'connecting' ? 'Connecting…' : first > 0 ? (S.older ? 'Loading older messages…' : '↑ older messages') : S.msgs.length ? 'The beginning of the chat' : 'An empty chat: say something.'}</div>
       <${Log} msgs=${S.msgs} phase=${S.turn.phase} from=${S.turn.from || 0} notices=${S.notices}/>
       ${S.thinking && (S.turn.phase === 'thinking') && html`<div class="thinking"><div>${S.thinking}</div></div>`}
-      ${S.live && html`<div class="msg opt live"><span class="mark">●</span><div class="body"><${Markdown} text=${S.live} live=${true}/><span class="cursor"/></div></div>`}
+      ${S.live && html`<div class="msg opt live"><span class="mark">●</span><div class="body"><${Markdown} text=${S.live} live=${true}/></div></div>`}
     </div>
     ${newer && html`<div class="newer"><button onClick=${() => { stick.current = true; setNewer(false); toBottom(); }}>↓ new messages</button></div>`}
   </div>`;
@@ -827,7 +863,7 @@ function Scroller() {
 function App() {
   useStore();
   useEffect(() => {
-    document.title = (S.turn.phase ? '✻ ' : '') + 'opt-chat';
+    document.title = (S.turn.phase ? '✻ ' : S.unseen ? '● ' : '') + 'opt-chat';
   });
   return html`<div class="shell">
     ${S.conn === 'denied' && html`<div class="banner">This page has no key to the chat: open the address opt-chat printed in the terminal.</div>`}

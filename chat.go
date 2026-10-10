@@ -285,27 +285,44 @@ func (c *Chat) saveImage(b []byte) (string, error) {
 // saveFile stores what r reads in files/, named by its content with the
 // extension ext, and returns that name and its size.
 func (c *Chat) saveFile(r io.Reader, ext string) (string, int64, error) {
-	f, err := os.CreateTemp(filepath.Join(c.dir, "files"), "tmp-*")
+	tmp, name, n, err := c.spool(r, ext)
 	if err != nil {
 		return "", 0, err
 	}
-	defer os.Remove(f.Name())
+	defer os.Remove(tmp)
+	return name, n, c.keep(tmp, name)
+}
+
+// spool writes what r reads to a temporary file in files/, and returns its
+// path, the name it is kept under (see keep) and its size.
+func (c *Chat) spool(r io.Reader, ext string) (tmp, name string, n int64, err error) {
+	f, err := os.CreateTemp(filepath.Join(c.dir, "files"), "tmp-*")
+	if err != nil {
+		return "", "", 0, err
+	}
 	h := sha256.New()
-	n, err := io.Copy(io.MultiWriter(f, h), r)
+	n, err = io.Copy(io.MultiWriter(f, h), r)
 	if err == nil {
 		err = f.Sync()
 	}
 	if err := errors.Join(err, f.Close()); err != nil {
-		return "", 0, err
+		os.Remove(f.Name())
+		return "", "", 0, err
 	}
-	name := filepath.Join("files", hex.EncodeToString(h.Sum(nil)[:16]))
+	name = filepath.Join("files", hex.EncodeToString(h.Sum(nil)[:16]))
 	if ext != "" {
 		name += "." + ext
 	}
+	return f.Name(), name, n, nil
+}
+
+// keep names the spooled file tmp name, unless a file has that name already:
+// the same content, which may be in the log.
+func (c *Chat) keep(tmp, name string) error {
 	if _, err := os.Stat(filepath.Join(c.dir, name)); err == nil {
-		return name, n, nil
+		return nil
 	}
-	return name, n, os.Rename(f.Name(), filepath.Join(c.dir, name))
+	return os.Rename(tmp, filepath.Join(c.dir, name))
 }
 
 // fileBlocks loads saved images and PDFs as content blocks for a call.

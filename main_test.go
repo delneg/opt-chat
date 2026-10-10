@@ -27,7 +27,7 @@ func TestFilePaths(t *testing.T) {
 		t.Fatalf("filePaths = %q", got)
 	}
 	// In code, brackets and links; not in a block of code.
-	msg = "run `cat " + a + "` (" + notes + ") [the pdf](~/h.pdf)\u00a0and\n```\n" + spaced + "\n```\n"
+	msg = "run `cat " + a + "` (" + notes + ") [the pdf](~/h.pdf)\u00a0and\n```\n" + spaced + "\n```\n  ~~~\n" + quoted + "\n  ~~~\n"
 	if got := filePaths(msg); !slices.Equal(got, []string{a, notes, filepath.Join(home, "h.pdf")}) {
 		t.Fatalf("filePaths = %q", got)
 	}

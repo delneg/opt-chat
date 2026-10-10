@@ -266,7 +266,7 @@ var children sync.Map
 
 func stopChildren() {
 	children.Range(func(pid, _ any) bool {
-		syscall.Kill(pid.(int), syscall.SIGTERM)
+		syscall.Kill(-pid.(int), syscall.SIGTERM) // its group: its tools too
 		return true
 	})
 }

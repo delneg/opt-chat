@@ -70,23 +70,27 @@ func (c *Chat) save(r io.Reader, orig string) (attachment, error) {
 	if !extOK.MatchString(ext) {
 		ext = ""
 	}
-	name, size, err := c.saveFile(io.LimitReader(r, uploadMax+1), ext)
+	tmp, name, size, err := c.spool(io.LimitReader(r, uploadMax+1), ext)
 	if err != nil {
 		return attachment{}, err
 	}
+	defer os.Remove(tmp) // unless kept by its name
 	if size > uploadMax {
-		os.Remove(filepath.Join(c.dir, name))
 		return attachment{}, fmt.Errorf("%s is over %s", orig, humanSize(uploadMax))
 	}
 	at := attachment{Name: name, Orig: filepath.Base(orig), Size: size}
-	at.Kind, err = c.classify(&at)
+	if at.Kind, err = c.classify(&at, tmp); err != nil {
+		return attachment{}, err
+	}
+	if at.Name == name { // as it came; an image made to fit is kept as such alone
+		err = c.keep(tmp, name)
+	}
 	return at, err
 }
 
-// classify finds what at is, turning an image into one the model takes when
-// it must; at.Name and at.Size follow.
-func (c *Chat) classify(at *attachment) (string, error) {
-	path := filepath.Join(c.dir, at.Name)
+// classify finds what at is, its content at path, turning an image into one
+// the model takes when it must; at.Name and at.Size follow.
+func (c *Chat) classify(at *attachment, path string) (string, error) {
 	head := make([]byte, 512)
 	f, err := os.Open(path)
 	if err != nil {
@@ -155,8 +159,7 @@ func fits(cfg image.Config) error {
 // fitting lets two images at a time be decoded: each can take imageMem.
 var fitting = make(chan struct{}, 2)
 
-// saveImageFit stores the image b made to fit, as at, in place of the file
-// at was: the model and the page only ever see the one fitted.
+// saveImageFit stores the image b made to fit, as at.
 func (c *Chat) saveImageFit(at *attachment, b []byte) (string, error) {
 	fitting <- struct{}{}
 	fit, ext, err := fitImage(b)
@@ -167,9 +170,6 @@ func (c *Chat) saveImageFit(at *attachment, b []byte) (string, error) {
 	name, size, err := c.saveFile(bytes.NewReader(fit), ext)
 	if err != nil {
 		return "", err
-	}
-	if name != at.Name {
-		os.Remove(filepath.Join(c.dir, at.Name)) // as it came: no message names it
 	}
 	at.Name, at.Size = name, size
 	return "image", nil
@@ -384,7 +384,7 @@ func (c *Chat) uploaded(atts []attachment) ([]attachment, error) {
 			return nil, fmt.Errorf("attachment %s is gone", at.Orig)
 		}
 		at.Size, at.Orig = fi.Size(), filepath.Base(cmp.Or(at.Orig, at.Name))
-		if at.Kind, err = c.classify(&at); err != nil {
+		if at.Kind, err = c.classify(&at, filepath.Join(c.dir, at.Name)); err != nil {
 			return nil, err
 		}
 		out = append(out, at)
@@ -441,7 +441,7 @@ func humanSize(n int64) string {
 var (
 	pathToken = regexp.MustCompile(`'[^']+'|"[^"]+"|(?:\\.|[^\s\p{Zs}'"\\])+`) // as a terminal drops a path: quoted, or with escaped spaces
 	escaped   = regexp.MustCompile(`\\(.)`)
-	fenced    = regexp.MustCompile("(?ms)^```.*?^```")
+	fenced    = regexp.MustCompile("(?ms)^ {0,3}```.*?^ {0,3}```|^ {0,3}~~~.*?^ {0,3}~~~")
 )
 
 // hidden is a path in a hidden folder or to a hidden file (~/.ssh,

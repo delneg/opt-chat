@@ -163,6 +163,14 @@ func TestSaveClassify(t *testing.T) {
 	if err != nil || len(after) != len(before)+1 {
 		t.Fatalf("%+v, %v: %d files, then %d", big, err, len(before), len(after))
 	}
+	// The same bytes in the log already, as a tool's image: they stay.
+	shared, _ := c.saveImage(pngBytes(2500, 1500))
+	if at, err := c.save(bytes.NewReader(pngBytes(2500, 1500)), "again.png"); err != nil || at.Name == shared {
+		t.Fatalf("again: %+v, %v", at, err)
+	}
+	if _, err := os.Stat(filepath.Join(c.dir, shared)); err != nil {
+		t.Fatalf("a file in the log was removed: %v", err)
+	}
 	if fits(image.Config{ColorModel: color.NRGBA64Model, Width: 8000, Height: 8000}) == nil {
 		t.Fatal("a 16-bit 64-megapixel image would be decoded")
 	}

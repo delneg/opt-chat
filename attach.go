@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"cmp"
+	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"html"
@@ -20,6 +22,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	xdraw "golang.org/x/image/draw"
@@ -40,7 +43,8 @@ const (
 	imageEdge  = 2000      // pixels: the longest side an image keeps; the API's limit with many images
 	imageBytes = 3_750_000 // and the most bytes, 5 MB in base64
 	pdfBytes   = 20 << 20  // a bigger PDF goes as a path: a request holds 32 MB, and base64 adds a third
-	imagePix   = 80e6      // pixels: a bigger image is a file, never decoded (4 bytes each)
+	imageMem   = 400 << 20 // bytes an image takes decoded: a bigger one is a file, never decoded
+	imageFile  = 200 << 20 // bytes: a bigger image file is a file, never read whole
 	textMax    = 2 << 20   // a bigger file is never read as text
 	inlineMax  = 25_000    // characters of text files one message holds, with its own text
 	uploadMax  = 2 << 30
@@ -93,15 +97,15 @@ func (c *Chat) classify(at *attachment) (string, error) {
 	head = head[:n]
 	mime := http.DetectContentType(head)
 	switch {
-	case isHEIC(head):
+	case isHEIC(head) && at.Size <= imageFile:
 		b, err := heicToJPEG(path)
 		if err != nil {
 			return "file", nil // kept as a file, which the tools may still read
 		}
 		return c.saveImageFit(at, b)
 	case slices.Contains([]string{"image/png", "image/jpeg", "image/gif", "image/webp"}, mime):
-		if !decodable(path) {
-			return "file", nil // too big to shrink: read whole, it could take gigabytes
+		if at.Size > imageFile || !decodable(path) {
+			return "file", nil // too big to shrink: decoded, it could take gigabytes
 		}
 		b, err := os.ReadFile(path)
 		if err != nil {
@@ -128,17 +132,44 @@ func decodable(path string) bool {
 	}
 	defer f.Close()
 	cfg, _, err := image.DecodeConfig(f)
-	return err == nil && cfg.Width*cfg.Height <= imagePix
+	return err == nil && fits(cfg) == nil
 }
 
+// fits says whether an image decodes in imageMem.
+func fits(cfg image.Config) error {
+	per := 4 // bytes a pixel: RGBA, CMYK; YCbCr, as a JPEG decodes, less
+	switch cfg.ColorModel {
+	case color.RGBA64Model, color.NRGBA64Model:
+		per = 8
+	case color.Gray16Model:
+		per = 2
+	case color.GrayModel:
+		per = 1
+	}
+	if int64(cfg.Width)*int64(cfg.Height)*int64(per) > imageMem {
+		return fmt.Errorf("%dx%d pixels: too big to shrink", cfg.Width, cfg.Height)
+	}
+	return nil
+}
+
+// fitting lets two images at a time be decoded: each can take imageMem.
+var fitting = make(chan struct{}, 2)
+
+// saveImageFit stores the image b made to fit, as at, in place of the file
+// at was: the model and the page only ever see the one fitted.
 func (c *Chat) saveImageFit(at *attachment, b []byte) (string, error) {
+	fitting <- struct{}{}
 	fit, ext, err := fitImage(b)
+	<-fitting
 	if err != nil {
 		return "file", nil // not an image after all
 	}
 	name, size, err := c.saveFile(bytes.NewReader(fit), ext)
 	if err != nil {
 		return "", err
+	}
+	if name != at.Name {
+		os.Remove(filepath.Join(c.dir, at.Name)) // as it came: no message names it
 	}
 	at.Name, at.Size = name, size
 	return "image", nil
@@ -160,23 +191,30 @@ func heicToJPEG(path string) ([]byte, error) {
 	}
 	defer os.RemoveAll(dir)
 	out := filepath.Join(dir, "out.jpg")
-	if b, err := exec.Command("sips", "-s", "format", "jpeg", path, "--out", out).CombinedOutput(); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	if b, err := exec.CommandContext(ctx, "sips", "-s", "format", "jpeg", path, "--out", out).CombinedOutput(); err != nil {
 		return nil, fmt.Errorf("sips: %v: %s", err, lastLine(string(b)))
 	}
 	return os.ReadFile(out)
 }
 
 // fitImage returns b, or b made to fit the API: at most imageEdge pixels a
-// side and imageBytes, as PNG or JPEG.
+// side and imageBytes, as PNG or JPEG, and upright: a photo's EXIF
+// orientation is applied, as only some readers do.
 func fitImage(b []byte) ([]byte, string, error) {
 	cfg, format, err := image.DecodeConfig(bytes.NewReader(b))
 	if err != nil {
 		return nil, "", err
 	}
-	if cfg.Width*cfg.Height > imagePix {
-		return nil, "", fmt.Errorf("%dx%d pixels: too big to shrink", cfg.Width, cfg.Height)
+	if err := fits(cfg); err != nil {
+		return nil, "", err
 	}
-	if cfg.Width <= imageEdge && cfg.Height <= imageEdge && len(b) <= imageBytes {
+	turn := 1
+	if format == "jpeg" {
+		turn = orientation(b)
+	}
+	if cfg.Width <= imageEdge && cfg.Height <= imageEdge && len(b) <= imageBytes && turn == 1 {
 		return b, map[string]string{"jpeg": "jpeg", "png": "png", "gif": "gif", "webp": "webp"}[format], nil
 	}
 	src, _, err := image.Decode(bytes.NewReader(b))
@@ -184,7 +222,7 @@ func fitImage(b []byte) ([]byte, string, error) {
 		return nil, "", err
 	}
 	for edge := imageEdge; ; edge = edge * 3 / 4 {
-		img := scale(src, edge)
+		img := orient(scale(src, edge), turn)
 		var out bytes.Buffer
 		if format == "png" || format == "gif" {
 			if err := png.Encode(&out, img); err == nil && out.Len() <= imageBytes {
@@ -217,6 +255,86 @@ func scale(img image.Image, edge int) image.Image {
 	}
 	dst := image.NewRGBA(image.Rect(0, 0, w, h))
 	xdraw.CatmullRom.Scale(dst, dst.Bounds(), img, b, xdraw.Src, nil)
+	return dst
+}
+
+// orientation is a JPEG's EXIF orientation, 1 to 8; 1, as it is, when it
+// has none.
+func orientation(b []byte) int {
+	for i := 2; i+4 <= len(b) && b[i] == 0xff; {
+		marker, n := b[i+1], int(b[i+2])<<8|int(b[i+3])
+		if marker == 0xda || n < 2 || i+2+n > len(b) { // the image data: no EXIF before it
+			break
+		}
+		seg := b[i+4 : i+2+n]
+		if marker == 0xe1 && len(seg) > 14 && string(seg[:6]) == "Exif\x00\x00" {
+			return tiffOrientation(seg[6:])
+		}
+		i += 2 + n
+	}
+	return 1
+}
+
+func tiffOrientation(t []byte) int {
+	var order binary.ByteOrder
+	switch string(t[:2]) {
+	case "II":
+		order = binary.LittleEndian
+	case "MM":
+		order = binary.BigEndian
+	default:
+		return 1
+	}
+	ifd := int(order.Uint32(t[4:8]))
+	if ifd < 8 || ifd+2 > len(t) {
+		return 1
+	}
+	for e, n := ifd+2, int(order.Uint16(t[ifd:])); n > 0 && e+12 <= len(t); e, n = e+12, n-1 {
+		if order.Uint16(t[e:]) == 0x0112 { // Orientation, a SHORT
+			if o := int(order.Uint16(t[e+8:])); o >= 1 && o <= 8 {
+				return o
+			}
+			return 1
+		}
+	}
+	return 1
+}
+
+// orient turns img as EXIF orientation o says to show it: 2 to 8 flip or
+// turn it (6 a quarter turn clockwise, as a phone held upright takes it).
+func orient(img image.Image, o int) image.Image {
+	if o < 2 || o > 8 {
+		return img
+	}
+	src := image.NewRGBA(image.Rect(0, 0, img.Bounds().Dx(), img.Bounds().Dy()))
+	draw.Draw(src, src.Bounds(), img, img.Bounds().Min, draw.Src)
+	w, h := src.Rect.Dx(), src.Rect.Dy()
+	if o >= 5 { // a quarter turn: the sides swap
+		w, h = h, w
+	}
+	dst := image.NewRGBA(image.Rect(0, 0, w, h))
+	for y := range h {
+		for x := range w {
+			var sx, sy int
+			switch o {
+			case 2:
+				sx, sy = w-1-x, y
+			case 3:
+				sx, sy = w-1-x, h-1-y
+			case 4:
+				sx, sy = x, h-1-y
+			case 5:
+				sx, sy = y, x
+			case 6:
+				sx, sy = y, w-1-x
+			case 7:
+				sx, sy = h-1-y, w-1-x
+			case 8:
+				sx, sy = h-1-y, x
+			}
+			copy(dst.Pix[dst.PixOffset(x, y):][:4], src.Pix[src.PixOffset(sx, sy):][:4])
+		}
+	}
 	return dst
 }
 
@@ -321,16 +439,31 @@ func humanSize(n int64) string {
 }
 
 var (
-	pathToken = regexp.MustCompile(`'[^']+'|"[^"]+"|(?:\\.|[^\s'"\\])+`) // as a terminal drops a path: quoted, or with escaped spaces
+	pathToken = regexp.MustCompile(`'[^']+'|"[^"]+"|(?:\\.|[^\s\p{Zs}'"\\])+`) // as a terminal drops a path: quoted, or with escaped spaces
 	escaped   = regexp.MustCompile(`\\(.)`)
+	fenced    = regexp.MustCompile("(?ms)^```.*?^```")
 )
 
-// filePaths finds the files a message names by path: absolute, or from ~/.
+// hidden is a path in a hidden folder or to a hidden file (~/.ssh,
+// ~/.zshrc): naming one does not send it; the page asks first.
+func hidden(p string) bool { return strings.Contains(p, "/.") }
+
+// pathsMax is the most files a message attaches by path: more are a paste,
+// a log or a listing, not files to send.
+const pathsMax = 10
+
+// filePaths finds the files a message names by path: absolute, or from ~/;
+// in its words, `code` or a [link](/path), not in a block of code.
 func filePaths(text string) []string {
 	var out []string
 	home, _ := os.UserHomeDir()
-	for _, tok := range pathToken.FindAllString(text, -1) {
-		p := strings.TrimRight(escaped.ReplaceAllString(tok, "$1"), ".,;:!?)") // a path ending a sentence
+	for _, tok := range pathToken.FindAllString(fenced.ReplaceAllString(text, ""), -1) {
+		p := escaped.ReplaceAllString(tok, "$1")
+		if i := strings.LastIndex(p, "]("); i >= 0 { // a markdown link
+			p = p[i+2:]
+		}
+		p = strings.TrimLeft(p, "([{<`")
+		p = strings.TrimRight(p, ".,;:!?)]}>`") // a path ending a sentence, or in brackets
 		if tok[0] == '\'' || tok[0] == '"' {
 			p = tok[1 : len(tok)-1]
 		}
@@ -343,6 +476,9 @@ func filePaths(text string) []string {
 		if fi, err := os.Stat(p); err == nil && fi.Mode().IsRegular() && fi.Size() <= uploadMax {
 			out = append(out, p)
 		}
+	}
+	if len(out) > pathsMax {
+		return nil
 	}
 	return out
 }

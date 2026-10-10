@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -24,6 +25,24 @@ func TestFilePaths(t *testing.T) {
 	msg := "see " + a + ", " + dir + `/my\ shot.JPG and '` + spaced + `' "` + quoted + `" ` + dir + "/d.png " + dir + "/none.png notes.txt " + notes + ". ~/h.pdf"
 	if got := filePaths(msg); !slices.Equal(got, []string{a, spaced, quoted, notes, filepath.Join(home, "h.pdf")}) {
 		t.Fatalf("filePaths = %q", got)
+	}
+	// In code, brackets and links; not in a block of code.
+	msg = "run `cat " + a + "` (" + notes + ") [the pdf](~/h.pdf)\u00a0and\n```\n" + spaced + "\n```\n"
+	if got := filePaths(msg); !slices.Equal(got, []string{a, notes, filepath.Join(home, "h.pdf")}) {
+		t.Fatalf("filePaths = %q", got)
+	}
+	// Many paths are a listing, not files to send.
+	if got := filePaths(strings.Repeat(a+" "+notes+" "+filepath.Join(home, "h.pdf")+" ", 4)); len(got) != 3 {
+		t.Fatalf("each named once: %q", got)
+	}
+	var many []string
+	for i := range pathsMax + 1 {
+		p := filepath.Join(dir, fmt.Sprint(i, ".txt"))
+		os.WriteFile(p, []byte("x"), 0o600)
+		many = append(many, p)
+	}
+	if got := filePaths(strings.Join(many, "\n")); got != nil {
+		t.Fatalf("a listing attached %d files", len(got))
 	}
 }
 

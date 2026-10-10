@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -48,6 +49,13 @@ type webServer struct {
 const keysKept = 1000
 
 // firstSend reports whether a send with this key is new, and notes it.
+// forget lets a send with key come again: what it carried was not sent.
+func (w *webServer) forget(key string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	delete(w.keys, key)
+}
+
 func (w *webServer) firstSend(key string) bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -144,7 +152,8 @@ func (w *webServer) guard(next http.Handler) http.Handler {
 		hd.Set("X-Content-Type-Options", "nosniff")
 		hd.Set("Referrer-Policy", "no-referrer")
 		hd.Set("X-Frame-Options", "DENY")
-		hd.Set("Content-Security-Policy", "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; "+
+		// No inline styles: what a reply holds can never restyle the page.
+		hd.Set("Content-Security-Policy", "default-src 'self'; img-src 'self' data: blob:; style-src 'self'; "+
 			"connect-src 'self' ws://"+r.Host+"; frame-ancestors 'none'; object-src 'none'; base-uri 'none'; form-action 'none'")
 		if !w.ownHost(r.Host) {
 			http.Error(rw, "unknown host", http.StatusForbidden)
@@ -164,6 +173,7 @@ func (w *webServer) guard(next http.Handler) http.Handler {
 		}
 		if k, err := r.Cookie(cookie); err != nil || !w.same(k.Value) {
 			rw.Header().Set("Content-Type", "text/html; charset=utf-8")
+			hd.Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'")
 			rw.WriteHeader(http.StatusUnauthorized)
 			fmt.Fprint(rw, `<!doctype html><title>opt-chat</title><body style="font:15px ui-monospace,monospace;margin:3em;color:#888">`+
 				`Open the address opt-chat printed in the terminal: it carries the key to this chat.`)
@@ -232,6 +242,10 @@ func (w *webServer) upload(rw http.ResponseWriter, r *http.Request) {
 	if err != nil || name == "" {
 		name = "file"
 	}
+	if r.ContentLength > uploadMax { // said up front: refused before a byte is written
+		http.Error(rw, fmt.Sprintf("%s is over %s", name, humanSize(uploadMax)), http.StatusRequestEntityTooLarge)
+		return
+	}
 	r.Body = http.MaxBytesReader(rw, r.Body, uploadMax)
 	at, err := w.c.save(r.Body, name)
 	if err != nil {
@@ -274,6 +288,7 @@ type (
 		T     string       `json:"t"` // restore: queued messages back to the input
 		Text  string       `json:"text"`
 		Files []attachment `json:"files"`
+		Note  string       `json:"note,omitzero"` // why, when it is not plain
 	}
 	sentReply struct {
 		T   string `json:"t"` // sent
@@ -369,16 +384,23 @@ func (w *webServer) serve(req request) any {
 		if out, ok := command(h.agent, req.Text); ok {
 			return noticeUpdate{T: "notice", Level: "info", S: out}
 		}
+		failed := func(err error) any { // not sent: sent again, it is tried again
+			w.forget(req.Key)
+			return failedReply{T: "failed", Seq: req.Seq, S: "Nothing sent: " + err.Error()}
+		}
 		ups, err := c.uploaded(req.Files)
 		if err != nil {
-			return failedReply{T: "failed", Seq: req.Seq, S: "Nothing sent: " + err.Error()}
+			return failed(err)
+		}
+		if req.Paths == nil { // sent before the page looked: the files it names, as the page would
+			req.Paths = slices.DeleteFunc(filePaths(req.Text), hidden)
 		}
 		typed, err := c.attachPaths(req.Paths)
 		if err != nil {
-			return failedReply{T: "failed", Seq: req.Seq, S: "Nothing sent: " + err.Error()}
+			return failed(err)
 		}
 		if strings.TrimSpace(req.Text) == "" && len(ups)+len(typed) == 0 {
-			return nil
+			return sentReply{T: "sent", Seq: req.Seq} // nothing to send
 		}
 		m := c.compose(req.Text, append(ups, typed...))
 		m.uploads = ups
@@ -389,8 +411,8 @@ func (w *webServer) serve(req request) any {
 		}
 		return sentReply{T: "sent", Seq: req.Seq}
 	case "edit":
-		if !h.edit(req.ID, req.Text) {
-			return noticeUpdate{T: "notice", Level: "info", S: "That message has already gone to Opt."}
+		if !h.edit(req.ID, req.Text) { // the edit is not lost: back to the input
+			return restoreReply{T: "restore", Text: req.Text, Files: []attachment{}, Note: "That message had already gone to Opt: your edit is back in the input."}
 		}
 	case "remove":
 		h.pull(req.ID)
@@ -415,7 +437,7 @@ func (w *webServer) serve(req request) any {
 		c.mu.Lock()
 		defer c.mu.Unlock()
 		before := min(max(req.Before, 0), len(c.msgs))
-		return historyReply{T: "history", Msgs: c.msgs[max(0, before-page):before]}
+		return historyReply{T: "history", Msgs: c.msgs[c.whole(max(0, before-page)):before]}
 	case "paths":
 		found := []foundPath{}
 		for _, p := range filePaths(req.Text) {

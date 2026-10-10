@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
@@ -104,7 +105,7 @@ func TestWebGuard(t *testing.T) {
 		t.Fatalf("the key in the address: %d, %v", resp.StatusCode, resp.Header)
 	}
 	page := wt.do("GET", "/", nil, ck)
-	if csp := page.Header.Get("Content-Security-Policy"); !strings.Contains(csp, "default-src 'self'") || strings.Contains(csp, "script-src") {
+	if csp := page.Header.Get("Content-Security-Policy"); !strings.Contains(csp, "default-src 'self'") || strings.Contains(csp, "script-src") || strings.Contains(csp, "unsafe-inline") {
 		t.Fatalf("the page's CSP: %q", csp)
 	}
 
@@ -332,5 +333,47 @@ func TestWebSendOnce(t *testing.T) {
 	waitFor(t, "idle", wt.h.idle)
 	if n := len(slices.DeleteFunc(logged(wt.c), func(s string) bool { return s != "user: only once" })); n != 1 {
 		t.Fatalf("logged %d times", n)
+	}
+	// A send that failed fails again when sent again: it was never taken.
+	for seq := 2; seq < 4; seq++ {
+		ws.send(map[string]any{"t": "send", "text": "x", "files": []map[string]any{{"name": "files/../web.json"}}, "seq": seq, "key": "page:2"})
+		ws.next("failed", func(u map[string]any) bool { return u["t"] == "failed" && u["seq"].(float64) == float64(seq) })
+	}
+}
+
+// An upload that says it is too big is refused before it is read.
+func TestUploadTooBig(t *testing.T) {
+	wt := startWeb(t)
+	req := httptest.NewRequest("POST", "/upload", strings.NewReader("x"))
+	req.ContentLength = uploadMax + 1
+	rec := httptest.NewRecorder()
+	wt.w.upload(rec, req)
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status %d", rec.Code)
+	}
+	if ents, _ := os.ReadDir(filepath.Join(wt.c.dir, "files")); len(ents) != 0 {
+		t.Fatalf("files written: %v", ents)
+	}
+}
+
+// A message sent before the page looked for the paths in it: the server
+// looks, and leaves hidden files for the page to ask about.
+func TestWebFindsPaths(t *testing.T) {
+	wt := startWeb(t)
+	dir := t.TempDir()
+	plain, secret := filepath.Join(dir, "plain.txt"), filepath.Join(dir, ".secret")
+	os.WriteFile(plain, []byte("PLAIN"), 0o600)
+	os.WriteFile(secret, []byte("SECRET"), 0o600)
+	ws, err := wt.dial(-1, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws.next("hello", typ("hello"))
+	ws.send(map[string]any{"t": "send", "text": "see " + plain + " and " + secret, "seq": 1, "key": "page:1"})
+	ws.next("sent", typ("sent"))
+	waitFor(t, "idle", wt.h.idle)
+	got := strings.Join(logged(wt.c), "\n")
+	if !strings.Contains(got, "PLAIN") || strings.Contains(got, "SECRET") {
+		t.Fatalf("logged:\n%s", got)
 	}
 }

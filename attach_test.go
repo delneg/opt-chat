@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"hash/crc32"
 	"image"
+	"image/color"
 	"image/jpeg"
 	"image/png"
 	"math/rand/v2"
@@ -55,12 +56,67 @@ func TestFitImage(t *testing.T) {
 	if r, g, bl, _ := img.At(10, 10).RGBA(); r < 0xe000 || g < 0xe000 || bl < 0xe000 {
 		t.Fatalf("transparency is not white: %v", img.At(10, 10))
 	}
-	if _, _, err := fitImage(pngHeader(10000, 10000)); err == nil || !strings.Contains(err.Error(), "too big") {
-		t.Fatalf("a 100-megapixel image: %v", err)
+	if _, _, err := fitImage(pngHeader(30000, 30000)); err == nil || !strings.Contains(err.Error(), "too big") {
+		t.Fatalf("a 900-megapixel image: %v", err)
 	}
 	if _, _, err := fitImage([]byte("not an image")); err == nil {
 		t.Fatal("text taken for an image")
 	}
+}
+
+// A photo's EXIF orientation is applied: the model sees it upright, as the
+// phone showed it, whatever reader it has.
+func TestOrientation(t *testing.T) {
+	img := image.NewRGBA(image.Rect(0, 0, 30, 20))
+	for i := range img.Pix {
+		img.Pix[i] = 0xff // white
+	}
+	img.Set(0, 0, color.RGBA{255, 0, 0, 255}) // red at the top left, as stored
+	for y := range 4 {
+		for x := range 4 {
+			img.Set(x, y, color.RGBA{255, 0, 0, 255})
+		}
+	}
+	var raw bytes.Buffer
+	jpeg.Encode(&raw, img, &jpeg.Options{Quality: 95})
+	for _, tc := range []struct {
+		o          uint16
+		w, h, x, y int // the red corner, shown
+	}{{1, 30, 20, 0, 0}, {3, 30, 20, 29, 19}, {6, 20, 30, 19, 0}, {8, 20, 30, 0, 29}} {
+		b := withOrientation(raw.Bytes(), tc.o)
+		if got := orientation(b); got != int(tc.o) {
+			t.Fatalf("orientation %d read as %d", tc.o, got)
+		}
+		fit, _, err := fitImage(b)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out, _, err := image.Decode(bytes.NewReader(fit))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if w, h := out.Bounds().Dx(), out.Bounds().Dy(); w != tc.w || h != tc.h {
+			t.Fatalf("orientation %d: %dx%d", tc.o, w, h)
+		}
+		if r, g, _, _ := out.At(tc.x, tc.y).RGBA(); r < 0xc000 || g > 0x6000 {
+			t.Fatalf("orientation %d: no red at %d,%d", tc.o, tc.x, tc.y)
+		}
+	}
+	if orientation([]byte("\xff\xd8\xff")) != 1 || orientation(nil) != 1 {
+		t.Fatal("garbage has an orientation")
+	}
+}
+
+// withOrientation puts an EXIF block with orientation o into a JPEG.
+func withOrientation(b []byte, o uint16) []byte {
+	tiff := []byte("MM\x00\x2a\x00\x00\x00\x08\x00\x01")
+	tiff = append(tiff, 0x01, 0x12, 0x00, 0x03, 0, 0, 0, 1)
+	tiff = binary.BigEndian.AppendUint16(tiff, o)
+	tiff = append(tiff, 0, 0, 0, 0, 0, 0)
+	seg := append([]byte("Exif\x00\x00"), tiff...)
+	out := append([]byte{0xff, 0xd8, 0xff, 0xe1}, byte((len(seg)+2)>>8), byte(len(seg)+2))
+	out = append(out, seg...)
+	return append(out, b[2:]...)
 }
 
 // pngHeader is the start of a PNG of w x h pixels: enough to read its size.
@@ -99,6 +155,16 @@ func TestSaveClassify(t *testing.T) {
 		if err != nil || at.Kind != f.kind || filepath.Ext(at.Name) != f.ext || at.Orig != f.name || !safeName.MatchString(at.Name) {
 			t.Errorf("%s: %+v, %v", f.name, at, err)
 		}
+	}
+	// An image made to fit is kept alone: what came is gone.
+	before, _ := os.ReadDir(filepath.Join(c.dir, "files"))
+	big, err := c.save(bytes.NewReader(pngBytes(3000, 1500)), "big.png")
+	after, _ := os.ReadDir(filepath.Join(c.dir, "files"))
+	if err != nil || len(after) != len(before)+1 {
+		t.Fatalf("%+v, %v: %d files, then %d", big, err, len(before), len(after))
+	}
+	if fits(image.Config{ColorModel: color.NRGBA64Model, Width: 8000, Height: 8000}) == nil {
+		t.Fatal("a 16-bit 64-megapixel image would be decoded")
 	}
 	// A page's attachment is checked against the file, never trusted.
 	img, _ := c.save(bytes.NewReader(pngBytes(8, 8)), "a.png")

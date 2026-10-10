@@ -773,7 +773,7 @@ function Input() {
     <div class="box">
       <${Chips}/>
       <span class="gt">></span>
-      <textarea ref=${ref} rows="1" spellcheck="false" placeholder=${S.turn.phase ? 'Queue a message for Opt…' : 'Message Opt'}
+      <textarea ref=${ref} rows="1" spellcheck="false" aria-label="Message Opt" placeholder=${S.turn.phase ? 'Queue a message for Opt…' : 'Message Opt'}
         onInput=${() => { histPos = -1; autosize(); lookForPaths(); tick(n => n + 1); }}
         onKeyDown=${onKey}
         onPaste=${onPaste}/>

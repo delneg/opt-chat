@@ -615,9 +615,9 @@ func (t *Turn) Run(ctx context.Context, msgs []message) error {
 			case "message_start":
 				done, out, thought = done+out, s.Message.Usage.Output, 0
 				phase("thinking", "")
-			case "message_delta":
+			case "message_delta": // the message's end, as the tool it called starts: the phase stays
 				out = s.Usage.Output
-				phase("thinking", "")
+				h.setTurn(func(lt *liveTurn) { lt.Tokens = done + max(out, thought) })
 			case "content_block_start":
 				switch s.ContentBlock.Type {
 				case "text":
@@ -682,7 +682,7 @@ func (t *Turn) Run(ctx context.Context, msgs []message) error {
 					t.countTools(-1)
 				}
 			}
-			if !acking {
+			if !acking && !t.inTool() { // with every result in: thinking again
 				phase("thinking", "")
 			}
 		}

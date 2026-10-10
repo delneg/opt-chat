@@ -99,6 +99,9 @@ func fakeClaude() {
 			result(fmt.Sprintf("line with %d images", images))
 		case strings.Contains(in, "wait-for-message"):
 			say(textBlock("waiting"), block{Type: "tool_use", ID: "w1", Name: "Bash", Input: []byte(`{"command":"wait"}`)})
+			// as Claude Code ends the message while the tool runs
+			stream(map[string]any{"type": "content_block_stop"})
+			stream(map[string]any{"type": "message_delta", "usage": map[string]any{"output_tokens": 7}})
 			select {
 			case l := <-lines:
 				next, _ := read(l)

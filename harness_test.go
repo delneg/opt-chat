@@ -591,6 +591,21 @@ func TestSendNowDuringTool(t *testing.T) {
 	}
 }
 
+// While a tool runs the spinner says so: the message's end, which Claude
+// Code sends as the tool starts, does not turn it back to thinking.
+func TestToolPhase(t *testing.T) {
+	c, _ := fakeChat(t, t.TempDir(), 100)
+	record(c)
+	h := newHarness(t, c)
+	h.input(message{kind: "user", text: "wait-for-message"})
+	waitFor(t, "the message's end", func() bool { lt, _ := hubState(c); return lt.Tokens == 7 })
+	if lt, _ := hubState(c); lt.Phase != "tool" || lt.Tool != "Bash" {
+		t.Fatalf("while the tool runs: %+v", lt)
+	}
+	h.input(message{kind: "user", text: "done"})
+	waitFor(t, "idle", h.idle)
+}
+
 // A text too long for one message is logged in parts, the later ones
 // marked, and the input's history keeps only its first.
 func TestParts(t *testing.T) {

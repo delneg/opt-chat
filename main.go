@@ -596,7 +596,14 @@ func webPrinter() func(any) {
 			s := u.Status
 			switch left := s.Backlog + s.Merges; {
 			case left > 0 && time.Since(told) >= time.Minute:
-				dim(fmt.Sprintf("[summarizing: %s and %s left; %s written]", count(s.Backlog, "message"), count(s.Merges, "merge"), count(s.Written, "line")))
+				var todo []string
+				if s.Backlog > 0 {
+					todo = append(todo, count(s.Backlog, "message"))
+				}
+				if s.Merges > 0 {
+					todo = append(todo, count(s.Merges, "merge"))
+				}
+				dim(fmt.Sprintf("[summarizing: %s left; %s written]", strings.Join(todo, " and "), count(s.Written, "line")))
 				told = time.Now()
 			case left == 0 && !told.IsZero():
 				dim("[every message is summarized]")

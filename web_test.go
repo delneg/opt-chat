@@ -377,3 +377,19 @@ func TestWebFindsPaths(t *testing.T) {
 		t.Fatalf("logged:\n%s", got)
 	}
 }
+
+// An edit to a queued message that has already gone to Opt comes back to
+// the input, with why, instead of being lost.
+func TestWebEditGone(t *testing.T) {
+	wt := startWeb(t)
+	ws, err := wt.dial(-1, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws.next("hello", typ("hello"))
+	ws.send(map[string]any{"t": "edit", "id": 12345, "text": "my edit"})
+	u := ws.next("restore", typ("restore"))
+	if u["text"] != "my edit" || !strings.Contains(u["note"].(string), "already gone") {
+		t.Fatalf("restore: %v", u)
+	}
+}

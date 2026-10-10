@@ -532,10 +532,14 @@ function Markdown({ text, live }) {
 
 function UserMsg({ m }) {
   const { body, marks } = useMemo(() => splitMarks(m.text), [m.text]);
+  const [open, setOpen] = useState(false);
+  const lines = body.split('\n');
+  const long = lines.length > 20; // a big paste shows folded, as in Claude Code
   return html`<div class="msg user" title=${when(m.date)}>
     <span class="mark">></span>
     <div class="body">
-      ${body && html`<div class="text">${body}</div>`}
+      ${body && html`<div class="text">${long && !open ? lines.slice(0, 12).join('\n') : body}</div>`}
+      ${long && html`<button class="more" onClick=${() => setOpen(!open)}>${open ? '▴ fold' : `… +${lines.length - 12} lines (click to expand)`}</button>`}
       <${Attached} marks=${marks} images=${m.images}/>
     </div>
   </div>`;

@@ -45,6 +45,8 @@ a { color: var(--blue); }
 .msg.user { background: var(--user-bg); padding: .45em .8ch; border-radius: 4px; margin-top: .3em; }
 .msg.user > .mark { color: var(--dim); }
 .msg.user .text { white-space: pre-wrap; }
+.msg.user .more { color: var(--faint); font-size: .9em; }
+.msg.user .more:hover { color: var(--fg); }
 .msg.opt > .mark { color: var(--fg); }
 .msg.work > .mark { color: var(--accent); }
 .msg.work .who { color: var(--accent); font-weight: 600; }

@@ -161,7 +161,13 @@ func main() {
 
 // typed is a message typed in the terminal, with the files it names.
 func typed(c *Chat, text string) message {
-	atts, err := c.attachPaths(filePaths(text))
+	paths := filePaths(text)
+	for _, p := range paths {
+		if hidden(p) { // as in the page, where it is attached only once asked
+			c.hub.notice("info", "[%s is hidden: not attached; Opt can still read it]", p)
+		}
+	}
+	atts, err := c.attachPaths(slices.DeleteFunc(paths, hidden))
 	if err != nil {
 		c.hub.notice("warn", "%v", err)
 	}

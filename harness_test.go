@@ -44,6 +44,16 @@ func (r *recorder) warnings() []string {
 	return out
 }
 
+func (r *recorder) notices() []string {
+	var out []string
+	for _, u := range r.all() {
+		if n, ok := u.(noticeUpdate); ok {
+			out = append(out, n.S)
+		}
+	}
+	return out
+}
+
 func record(c *Chat) *recorder {
 	r := &recorder{}
 	h := newHub()

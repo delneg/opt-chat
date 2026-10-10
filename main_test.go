@@ -76,3 +76,20 @@ func TestCommand(t *testing.T) {
 		}
 	}
 }
+
+// In the terminal, as in the page, naming a hidden file does not send it.
+func TestTypedHidden(t *testing.T) {
+	c, _ := fakeChat(t, t.TempDir(), 100)
+	r := record(c)
+	dir := t.TempDir()
+	plain, secret := filepath.Join(dir, "plain.txt"), filepath.Join(dir, ".env")
+	os.WriteFile(plain, []byte("PLAIN"), 0o600)
+	os.WriteFile(secret, []byte("SECRET"), 0o600)
+	m := typed(c, "see "+plain+" and "+secret)
+	if full := m.full(); !strings.Contains(full, "PLAIN") || strings.Contains(full, "SECRET") {
+		t.Fatalf("message:\n%s", full)
+	}
+	if !slices.ContainsFunc(r.notices(), func(s string) bool { return strings.Contains(s, ".env is hidden") }) {
+		t.Fatalf("notices: %q", r.notices())
+	}
+}

@@ -87,7 +87,7 @@ a change.
 | `-agent-model` | `opus` | model for subagents |
 | `-agent-effort` | model default | effort for subagents |
 | `-compact-model` | `haiku` | model for compactions |
-| `-compact-effort` | `xhigh` | effort for compactions |
+| `-compact-effort` | `high` | effort for compactions (the recipe's: `xhigh`) |
 | `-permission-mode` | `auto` | Claude Code permission mode for turns and subagents |
 | `-tools` | `Bash,Read,Edit,Write,WebSearch,WebFetch` | Claude Code tools |
 | `-import` | | import past chats first (below) |
@@ -159,9 +159,9 @@ The time goes to the compaction model's thinking. Building one day of chats
 at each effort, Haiku 5.5 thought about 10,400 tokens a line at the recipe's
 `xhigh` (41 s a call), 2,600 at `high` (12 s) and 1,100 at `medium` (7 s).
 Lines at `high` read as well as at `xhigh`; at `medium` and below the model
-more often tried a tool or wrote about itself in a line. So for a big import,
-`-compact-effort high` builds about 3x faster, on a quarter of the usage.
-Like every flag, it lasts until you quit.
+more often tried a tool or wrote about itself in a line. So compactions run
+at `high`: about 3x faster than at `xhigh`, on a quarter of the usage
+(`-compact-effort xhigh` for the recipe's).
 
 ## Files
 
@@ -226,7 +226,7 @@ report then says it was stopped.
 
 The recipe assumes direct API calls. Running through `claude -p` changed four
 things, each measured through a logging proxy; testing changed two more, and
-use two more:
+use three more:
 
 1. **How the view is cached.** The recipe splits the view into blocks of 4
    lines, marks the last whole block, and relies on the API's 20-block
@@ -285,6 +285,9 @@ use two more:
    to its whole foreground group: it killed every call underway with
    opt-chat's, so compactions failed, with an empty error, each time the
    user stopped a turn.
+9. **Compactions run at effort `high`**, not the recipe's `xhigh`: their
+   lines read as well, about 3x faster, on a quarter of the usage (see
+   Importing past chats).
 
 The prompt is the recipe's, with Unii renamed Opt and the paragraph on
 computers dropped (opt-chat has no device tools), plus additions: subagent

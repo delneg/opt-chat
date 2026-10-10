@@ -36,7 +36,7 @@ func main() {
 	amodel := flag.String("agent-model", "opus", "model for subagents")
 	aeffort := flag.String("agent-effort", "", "effort for subagents (empty: the model's default)")
 	cmodel := flag.String("compact-model", "haiku", "model for compactions")
-	ceffort := flag.String("compact-effort", "xhigh", "effort for compactions")
+	ceffort := flag.String("compact-effort", "high", "effort for compactions (the recipe's: xhigh)")
 	perm := flag.String("permission-mode", "auto", "Claude Code permission mode")
 	tools := flag.String("tools", "Bash,Read,Edit,Write,WebSearch,WebFetch", "Claude Code tools")
 	importPath := flag.String("import", "", "import past chats, then chat: a ~/.claude or ~/.codex directory, a session's .jsonl, a Claude or ChatGPT export (.zip), or a text file whose lines become notes")

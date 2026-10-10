@@ -35,12 +35,18 @@ const S = {
   help: false,
 };
 
+// set changes the state and renders it once per frame; in a tab in the
+// background, where frames pause, on a timer, so its title still tells
+// when Opt is working.
 const views = new Set();
 let frame = 0;
 function set(patch) {
   Object.assign(S, patch);
-  if (!frame) frame = requestAnimationFrame(() => { frame = 0; for (const f of views) f(); });
+  if (frame) return;
+  const draw = () => { frame = 0; for (const f of views) f(); };
+  frame = document.hidden ? setTimeout(draw, 200) : requestAnimationFrame(draw);
 }
+document.addEventListener('visibilitychange', () => { if (!document.hidden) set({}); });
 function useStore() {
   const [, force] = useState(0);
   useEffect(() => {
@@ -313,6 +319,26 @@ function upload(file) {
     xhr.send(file);
   });
   set({ atts: S.atts.concat(att) });
+}
+
+// onPaste attaches what ⌘V or Ctrl+V pastes as files (a screenshot copied
+// with ⌃⌘⇧4, an image copied from a page, a file copied in Finder), as
+// Claude Code does; text goes into the input, as ever.
+function onPaste(e) {
+  const cd = e.clipboardData;
+  if (!cd) return;
+  let files = [...cd.files];
+  if (!files.length) files = [...cd.items].filter(i => i.kind === 'file').map(i => i.getAsFile()).filter(Boolean);
+  if (files.length) {
+    e.preventDefault();
+    addFiles(files);
+    inputEl?.focus();
+    return;
+  }
+  if (e.target !== inputEl) { // pasted elsewhere on the page: into the input
+    const text = cd.getData('text/plain');
+    if (text) { e.preventDefault(); inputEl.focus(); document.execCommand('insertText', false, text); }
+  }
 }
 
 function onDrop(e) {
@@ -743,10 +769,7 @@ function Input() {
       <textarea ref=${ref} rows="1" spellcheck="false" placeholder=${S.turn.phase ? 'Queue a message for Opt…' : 'Message Opt'}
         onInput=${() => { histPos = -1; autosize(); lookForPaths(); tick(n => n + 1); }}
         onKeyDown=${onKey}
-        onPaste=${e => {
-          const files = [...(e.clipboardData?.files || [])];
-          if (files.length) { e.preventDefault(); addFiles(files); }
-        }}/>
+        onPaste=${onPaste}/>
       <span class="tools">
         <button title="attach files" onClick=${() => pick.current.click()}>📎</button>
         <input type="file" multiple hidden ref=${pick} onChange=${e => { addFiles([...e.target.files]); e.target.value = ''; inputEl.focus(); }}/>
@@ -823,6 +846,10 @@ addEventListener('keydown', e => {
   if (e.metaKey || e.ctrlKey || e.altKey || e.key.length !== 1) return;
   if (getSelection().toString()) return;
   inputEl?.focus(); // type anywhere: it goes to the input
+});
+addEventListener('paste', e => {
+  if (e.target === inputEl || (e.target.tagName === 'TEXTAREA' || e.target.tagName === 'INPUT')) return;
+  onPaste(e);
 });
 document.addEventListener('click', e => {
   const b = e.target.closest('.copy');

@@ -282,7 +282,9 @@ func TestWebStopRestores(t *testing.T) {
 	}
 	waitFor(t, "idle", wt.h.idle)
 	ws.send(map[string]any{"t": "send", "text": "wait-for-stop", "seq": 3})
-	waitFor(t, "the turn", func() bool { return len(logged(wt.c)) > 3 && strings.HasSuffix(logged(wt.c)[len(logged(wt.c))-1], "working") })
+	waitFor(t, "the turn", func() bool {
+		return len(logged(wt.c)) > 3 && strings.HasSuffix(logged(wt.c)[len(logged(wt.c))-1], "working")
+	})
 	ws.send(map[string]any{"t": "send", "text": "pull me", "seq": 4})
 	q := ws.next("queue", queueOf("pull me"))
 	id := q["queue"].([]any)[0].(map[string]any)["id"]

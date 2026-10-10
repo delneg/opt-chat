@@ -226,7 +226,9 @@ func TestQueueEditPullSendNow(t *testing.T) {
 		t.Fatal("send now with a message waiting")
 	}
 	waitFor(t, "the next turn", func() bool {
-		return slices.ContainsFunc(logged(c), func(s string) bool { return strings.HasPrefix(s, "opt: answer to") && strings.Contains(s, "first, edited") })
+		return slices.ContainsFunc(logged(c), func(s string) bool {
+			return strings.HasPrefix(s, "opt: answer to") && strings.Contains(s, "first, edited")
+		})
 	})
 	waitFor(t, "idle", h.idle)
 	if got := logged(c); !slices.Contains(got, "user: first, edited") || slices.Contains(got, "user: second") {

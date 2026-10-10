@@ -67,8 +67,7 @@ The page works like Claude Code:
   mid-reply; a page that loses opt-chat reconnects by itself, also after a
   restart.
 - `/model opus` and `/effort high` switch the turns' model and effort until
-  you quit (`/effort default` for the model's own); `/model` alone shows
-  them. `/agents` lists the subagents at work, `/help` the commands; Tab
+  you quit; `/model` alone shows them. `/agents` lists the subagents at work, `/help` the commands; Tab
   completes them. A line starting with any other `/word` is not sent.
 - The bar at the bottom shows the memory: messages, the view's size, what is
   left to summarize, and the last turn's tokens. `?` on an empty input lists
@@ -83,9 +82,9 @@ a change.
 | flag | default | |
 |---|---|---|
 | `-model` | `fable` | model for turns |
-| `-effort` | model default | effort for turns |
+| `-effort` | `high` | effort for turns: `low`, `medium`, `high`, `xhigh` or `max` |
 | `-agent-model` | `opus` | model for subagents |
-| `-agent-effort` | model default | effort for subagents |
+| `-agent-effort` | `high` | effort for subagents |
 | `-compact-model` | `haiku` | model for compactions |
 | `-compact-effort` | `high` | effort for compactions (the recipe's: `xhigh`) |
 | `-permission-mode` | `auto` | Claude Code permission mode for turns and subagents |

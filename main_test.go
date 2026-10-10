@@ -48,14 +48,15 @@ func TestFilePaths(t *testing.T) {
 
 // Commands change the turns' model and effort; any other /word is held back.
 func TestCommand(t *testing.T) {
-	a := &Agent{chat: &Chat{dir: "/chat"}, model: "fable", running: map[string]*proc{}}
+	a := &Agent{chat: &Chat{dir: "/chat"}, model: "fable", effort: "high", running: map[string]*proc{}}
 	for _, step := range []struct{ in, out string }{
-		{"/model", "Turns: fable, effort default."},
-		{" /model opus ", "Turns: opus, effort default."},
+		{"/model", "Turns: fable, effort high."},
+		{" /model opus ", "Turns: opus, effort high."},
 		{"/model opus please", "A model is one word, as for -model: fable, opus, sonnet, or a full name."},
-		{"/effort high", "Turns: opus, effort high."},
-		{"/effort lots", "effort must be one of low, medium, high, xhigh, max, or default."},
-		{"/EFFORT default", "Turns: opus, effort default."},
+		{"/effort low", "Turns: opus, effort low."},
+		{"/effort lots", "effort must be one of low, medium, high, xhigh, max."},
+		{"/effort default", "effort must be one of low, medium, high, xhigh, max."},
+		{"/EFFORT max", "Turns: opus, effort max."},
 		{"/agents", "No subagent is at work."},
 		{"/fix this\nand that", "/fix is no command; nothing was sent. /help lists the commands."},
 	} {

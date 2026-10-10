@@ -15,7 +15,7 @@
   --border: #d5d3cb;
   --chip: #ebe9e1;
   --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
-  font-size: 14px;
+  font-size: 16px;
 }
 
 * { box-sizing: border-box; }
@@ -34,10 +34,10 @@ a { color: var(--blue); }
 #app { height: 100%; }
 .shell { height: 100%; display: flex; flex-direction: column; }
 .scroll { flex: 1; overflow-y: auto; overflow-anchor: none; }
-.column { max-width: 128ch; margin: 0 auto; padding: 0 2ch; }
+.column { max-width: 128ch; padding: 0 2ch; } /* left, as in a terminal */
 .log { padding-top: 1.5em; padding-bottom: 1em; }
 
-.edge { color: var(--faint); text-align: center; padding: .5em 0 1.5em; }
+.edge { color: var(--faint); padding: .5em 0 1.5em; }
 
 /* messages */
 .msg { display: grid; grid-template-columns: 2ch 1fr; margin: 0 0 1em; min-width: 0; }
@@ -177,8 +177,8 @@ a { color: var(--blue); }
 .cmds { padding: .2em 0; }
 .cmds .cmd { color: var(--dim); padding: 0 3ch; }
 .cmds .cmd.sel { color: var(--fg); background: var(--chip); }
-.banner { background: var(--red); color: var(--bg); text-align: center; padding: .25em; font-size: .9em; }
-.newer { position: sticky; bottom: .5em; display: flex; justify-content: center; align-items: flex-end; pointer-events: none; height: 0; overflow: visible; }
+.banner { background: var(--red); color: var(--bg); padding: .25em 2ch; font-size: .9em; }
+.newer { position: sticky; bottom: .5em; display: flex; padding-left: 2ch; align-items: flex-end; pointer-events: none; height: 0; overflow: visible; }
 .newer button { pointer-events: auto; background: var(--chip); border: 1px solid var(--border); border-radius: 999px; padding: .2em 1.5ch; color: var(--fg); font-size: .9em; }
 
 /* overlays */

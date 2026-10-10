@@ -5,7 +5,6 @@ package main
 
 import (
 	"bufio"
-	"cmp"
 	"context"
 	_ "embed"
 	"errors"
@@ -32,9 +31,9 @@ func main() {
 	dir := flag.String("dir", filepath.Join(home, ".opt-chat"), "where the chat lives; its AGENTS.md holds your instructions")
 	cwd := flag.String("cwd", home, "where Opt's tools run")
 	model := flag.String("model", "fable", "model for turns")
-	effort := flag.String("effort", "", "effort for turns: low, medium, high, xhigh, max (empty: the model's default)")
+	effort := flag.String("effort", "high", "effort for turns: low, medium, high, xhigh, max")
 	amodel := flag.String("agent-model", "opus", "model for subagents")
-	aeffort := flag.String("agent-effort", "", "effort for subagents (empty: the model's default)")
+	aeffort := flag.String("agent-effort", "high", "effort for subagents")
 	cmodel := flag.String("compact-model", "haiku", "model for compactions")
 	ceffort := flag.String("compact-effort", "high", "effort for compactions (the recipe's: xhigh)")
 	perm := flag.String("permission-mode", "auto", "Claude Code permission mode")
@@ -47,6 +46,11 @@ func main() {
 	addr := flag.String("addr", "", "where the web chat listens, as 127.0.0.1:port (empty: the last run's port when free, else any)")
 	open := flag.Bool("open", true, "open the web chat in the browser")
 	flag.Parse()
+	for name, e := range map[string]string{"effort": *effort, "agent-effort": *aeffort, "compact-effort": *ceffort} {
+		if !slices.Contains(efforts, e) {
+			fatal("-%s must be one of %s", name, strings.Join(efforts, ", "))
+		}
+	}
 
 	c, err := openChat(*dir)
 	if err != nil {
@@ -473,12 +477,10 @@ func command(a *Agent, line string) (string, bool) {
 		a.model = arg
 	case word == "model" && arg != "":
 		return "A model is one word, as for -model: fable, opus, sonnet, or a full name.", true
-	case word == "effort" && arg == "default":
-		a.effort = ""
 	case word == "effort" && slices.Contains(efforts, arg):
 		a.effort = arg
 	case word == "effort" && arg != "":
-		return "effort must be one of " + strings.Join(efforts, ", ") + ", or default.", true
+		return "effort must be one of " + strings.Join(efforts, ", ") + ".", true
 	case word == "model" || word == "effort":
 	case word == "agents":
 		names := slices.Sorted(maps.Keys(a.running))
@@ -488,13 +490,13 @@ func command(a *Agent, line string) (string, bool) {
 		return "At work: [" + strings.Join(names, "], [") + "]. Each one's steps: " + filepath.Join(a.chat.dir, "agents", "<Name>.log"), true
 	case word == "help":
 		return "/model [name]       show or set the model for turns, as -model (until quit)\n" +
-			"/effort [level]     show or set their effort: " + strings.Join(efforts, ", ") + ", or default\n" +
+			"/effort [level]     show or set their effort: " + strings.Join(efforts, ", ") + "\n" +
 			"/agents             list the subagents at work\n" +
 			"Ctrl-C stops the turn; Ctrl-C when idle, or Ctrl-D, quits.", true
 	default:
 		return "/" + m[1] + " is no command; nothing was sent. /help lists the commands.", true
 	}
-	return fmt.Sprintf("Turns: %s, effort %s.", a.model, cmp.Or(a.effort, "default")), true
+	return fmt.Sprintf("Turns: %s, effort %s.", a.model, a.effort), true
 }
 
 func logAll(c *Chat, msgs []message) {

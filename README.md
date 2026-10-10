@@ -52,10 +52,12 @@ The page works like Claude Code:
 - Attach files by dropping them on the page (a file from Finder, or the
   thumbnail ⌘⇧4 leaves in the corner), by pasting with ⌘V or Ctrl+V
   anywhere on the page (a screenshot copied with ⌃⌘⇧4, an image copied
-  from a page, a file copied in Finder), with 📎, or by typing a path, `/…` or `~/…`, which shows the file it attaches
-  above the input (× leaves it as text). Images and PDFs go to the model
+  from a page, a file copied in Finder), with 📎, or by typing a path,
+  `/…` or `~/…`, which shows the file it attaches above the input (×
+  leaves it as text). Images and PDFs go to the model
   as such; text files are inlined; any other file goes as a path its tools
   can read. See [Attachments](#attachments).
+- A long message of yours shows folded, as a big paste does in Claude Code.
 - Scroll up for the whole chat, back to its first message, loaded as you go.
   A reload, a second tab or another window shows the turn underway,
   mid-reply; a page that loses opt-chat reconnects by itself, also after a

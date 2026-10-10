@@ -93,6 +93,7 @@ type liveTurn struct {
 	Backlog  int    `json:"backlog,omitzero"` // settling: messages left to summarize
 	Written  int    `json:"written,omitzero"` // settling: lines written since it began
 	Partial  int    `json:"partial,omitzero"` // messages the turn sees unsummarized
+	From     int    `json:"from,omitzero"`    // the turn's first message: a tool call after it, unanswered, is running
 	Text     string `json:"text,omitzero"`    // in a hello only: the reply being written
 	Thinking string `json:"thinking,omitzero"`
 }

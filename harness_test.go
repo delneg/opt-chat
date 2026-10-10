@@ -116,20 +116,21 @@ func (h *harness) queuedIDs() []int {
 // tokens, and logs the reply whole once written.
 func TestStreamedTurn(t *testing.T) {
 	c, _ := fakeChat(t, t.TempDir(), 100)
+	c.Log("note", "before")
 	r := record(c)
 	a, _ := fakeAgent(t, c)
 	if err := (&Turn{agent: a}).Run(context.Background(), []message{{kind: "user", text: "stream-reply"}}); err != nil {
 		t.Fatal(err)
 	}
 	var deltas, phases []string
-	tokens := 0
+	tokens, from := 0, 0
 	for _, u := range r.all() {
 		switch u := u.(type) {
 		case deltaUpdate:
 			deltas = append(deltas, fmt.Sprintf("%s:%s:%v", u.K, u.S, u.R))
 		case turnUpdate:
 			phases = append(phases, u.Turn.Phase)
-			tokens = max(tokens, u.Turn.Tokens)
+			tokens, from = max(tokens, u.Turn.Tokens), max(from, u.Turn.From)
 			if u.Turn.Text != "" || u.Turn.Thinking != "" {
 				t.Fatal("a turn update carried the text: it goes by deltas")
 			}
@@ -138,10 +139,10 @@ func TestStreamedTurn(t *testing.T) {
 	if want := []string{"thinking::true", "thinking:hmm:false", "text::true", "text:Hello:false", "text: world:false"}; !slices.Equal(deltas, want) {
 		t.Fatalf("deltas %q, want %q", deltas, want)
 	}
-	if !slices.Contains(phases, "reading") || !slices.Contains(phases, "writing") || tokens != 42 {
-		t.Fatalf("phases %q, tokens %d", phases, tokens)
+	if !slices.Contains(phases, "reading") || !slices.Contains(phases, "writing") || tokens != 42 || from != 1 {
+		t.Fatalf("phases %q, tokens %d, from %d", phases, tokens, from)
 	}
-	if got := logged(c); !slices.Equal(got, []string{"user: stream-reply", "opt: Hello world"}) {
+	if got := logged(c); !slices.Equal(got, []string{"note: before", "user: stream-reply", "opt: Hello world"}) {
 		t.Fatalf("logged %q", got)
 	}
 	if lt, _ := hubState(c); lt.Text != "" {

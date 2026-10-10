@@ -552,10 +552,10 @@ func (t *Turn) Run(ctx context.Context, msgs []message) error {
 	h := c.hub
 	c.mu.Lock()
 	lines := c.callView() // rendered before the new messages are logged
-	partial := len(c.ready0)
+	partial, from := len(c.ready0), len(c.msgs)
 	c.mu.Unlock()
 	h.setTurn(func(lt *liveTurn) {
-		lt.Phase, lt.Partial, lt.Backlog, lt.Written, lt.Tool = "reading", partial, 0, 0, ""
+		lt.Phase, lt.Partial, lt.From, lt.Backlog, lt.Written, lt.Tool = "reading", partial, from, 0, 0, ""
 	})
 	var input []block
 	for _, m := range msgs {

@@ -202,15 +202,21 @@ function suggestions(text) {
   return commands.filter(([c]) => c.startsWith(text) && c !== text);
 }
 
+let submitting = false; // waiting for uploads: a second Enter sends nothing more
+
 async function submit(now) {
   const text = inputEl.value;
   const atts = S.atts;
+  if (submitting) return;
   if (!text.trim() && !atts.length) {
     if (now && S.queue.length) send({ t: 'now' });
     return;
   }
   if (S.conn !== 'open') { notice('warn', 'Not connected: your message stays in the input until opt-chat is back.'); return; }
-  if (atts.some(a => a.status === 'uploading')) await Promise.all(atts.map(a => a.promise));
+  if (atts.some(a => a.status === 'uploading')) {
+    submitting = true;
+    try { await Promise.all(atts.map(a => a.promise)); } finally { submitting = false; }
+  }
   if (S.atts.some(a => a.status === 'error')) { notice('warn', 'An attachment failed: take it off (×) and send again.'); return; }
   const files = S.atts.map(({ name, orig, kind, size }) => ({ name, orig, kind, size }));
   const paths = S.paths.map(p => p.path).filter(p => !S.skipped.has(p));
@@ -445,25 +451,19 @@ function items(msgs) {
     }
   }
   const out = [];
-  let lastDay = '', afterTool = new Set();
+  let lastDay = '';
   for (const m of joined) {
     if (paired.has(m.i)) continue;
     const d = day(m.date);
     if (d && d !== lastDay) { out.push({ sep: d, key: 'd' + m.i }); lastDay = d; }
     out.push({ m, echo: echoOf.get(m.i), key: m.i });
   }
-  // a tool call with no result was cut short, unless the turn is still on it
-  let replied = false;
-  for (let j = out.length - 1; j >= 0; j--) {
-    const it = out[j];
-    if (!it.m) continue;
-    if (it.m.kind === 'opt' || it.m.kind === 'user') replied = true;
-    if (it.m.kind === 'tool' && !it.echo) it.cutUnlessLive = !replied ? 'tail' : 'cut';
-  }
   return out;
 }
 
-const Log = memo(function Log({ msgs, phase, notices }) {
+// Log is the chat. A tool call with no result is running when the turn
+// underway made it (from on), else it was cut short.
+const Log = memo(function Log({ msgs, phase, from, notices }) {
   const list = useMemo(() => items(msgs), [msgs]);
   const byAfter = useMemo(() => {
     const m = new Map();
@@ -475,7 +475,7 @@ const Log = memo(function Log({ msgs, phase, notices }) {
   for (const n of notices) if (n.after < first) out.push(html`<${Notice} key=${'n' + n.id} n=${n}/>`);
   for (const it of list) {
     if (it.sep) { out.push(html`<div class="sep" key=${it.key}><span class="lbl">${it.sep}</span></div>`); continue; }
-    const state = it.m.kind !== 'tool' ? '' : it.echo ? 'done' : it.cutUnlessLive === 'tail' && phase ? 'run' : 'cut';
+    const state = it.m.kind !== 'tool' ? '' : it.echo ? 'done' : phase && it.m.i >= from ? 'run' : 'cut';
     out.push(html`<${MsgView} key=${it.key} m=${it.m} echo=${it.echo} state=${state}/>`);
     for (const n of byAfter.get(it.m.last) || []) out.push(html`<${Notice} key=${'n' + n.id} n=${n}/>`);
   }
@@ -782,7 +782,7 @@ function Scroller() {
   return html`<div class="scroll" ref=${ref} onScroll=${onScroll}>
     <div class="column log" ref=${inner}>
       <div class="edge">${S.conn === 'connecting' ? 'Connecting…' : first > 0 ? (S.older ? 'Loading older messages…' : '↑ older messages') : S.msgs.length ? 'The beginning of the chat' : 'An empty chat: say something.'}</div>
-      <${Log} msgs=${S.msgs} phase=${S.turn.phase} notices=${S.notices}/>
+      <${Log} msgs=${S.msgs} phase=${S.turn.phase} from=${S.turn.from || 0} notices=${S.notices}/>
       ${S.thinking && (S.turn.phase === 'thinking') && html`<div class="thinking"><div>${S.thinking}</div></div>`}
       ${S.live && html`<div class="msg opt live"><span class="mark">●</span><div class="body"><${Markdown} text=${S.live} live=${true}/><span class="cursor"/></div></div>`}
     </div>

@@ -374,7 +374,7 @@ marked.use({
       let body;
       try {
         body = language && hljs.getLanguage(language) ? hljs.highlight(text, { language }).value
-          : text.length < 20000 ? hljs.highlightAuto(text).value : esc(text);
+          : !streaming && text.length < 20000 ? hljs.highlightAuto(text).value : esc(text);
       } catch { body = esc(text); }
       return `<div class="code"><button class="copy" type="button">copy</button><pre><code class="hljs">${body}</code></pre></div>`;
     },
@@ -386,10 +386,13 @@ DOMPurify.addHook('afterSanitizeAttributes', node => {
 });
 
 const mdCache = new Map();
+let streaming = false; // rendering the reply being written: no guessing languages each frame
 function md(text, live) {
   let out = mdCache.get(text);
   if (out === undefined) {
+    streaming = !!live;
     out = DOMPurify.sanitize(marked.parse(text));
+    streaming = false;
     if (!live && text.length < 100000) {
       mdCache.set(text, out);
       if (mdCache.size > 2000) mdCache.delete(mdCache.keys().next().value);

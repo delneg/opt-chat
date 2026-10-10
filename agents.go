@@ -27,6 +27,10 @@ func (a *Agent) agentLog(name string) string { return filepath.Join(a.chat.dir, 
 
 var efforts = []string{"low", "medium", "high", "xhigh", "max"}
 
+func validEffort(e string) bool { return slices.Contains(efforts, e) }
+
+func joinEfforts() string { return strings.Join(efforts, ", ") }
+
 // Spawn starts an agent and returns at once. An empty effort is -agent-effort.
 func (a *Agent) Spawn(name, task, effort string) string {
 	if strings.TrimSpace(task) == "" {

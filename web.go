@@ -268,7 +268,10 @@ type request struct {
 	ID     int          `json:"id"`
 	Before int          `json:"before"`
 	Seq    int          `json:"seq"`
-	Key    string       `json:"key"` // send: the same on a send again after a reconnect
+	Key    string       `json:"key"`    // send: the same on a send again after a reconnect
+	Model  string       `json:"model"`  // model: the turns' model
+	Effort string       `json:"effort"` // model: their effort
+	Save   bool         `json:"save"`   // model: for later runs too
 }
 
 type (
@@ -295,6 +298,11 @@ type (
 	sentReply struct {
 		T   string `json:"t"` // sent
 		Seq int    `json:"seq"`
+	}
+	modelsReply struct {
+		T      string      `json:"t"` // models: Claude Code's, for the picker
+		Models []modelInfo `json:"models"`
+		Error  string      `json:"error,omitzero"`
 	}
 	failedReply struct {
 		T   string `json:"t"` // failed: not sent, back to the input
@@ -367,6 +375,14 @@ func (w *webServer) ws(rw http.ResponseWriter, r *http.Request) {
 			write(noticeUpdate{T: "notice", Level: "warn", S: "bad request: " + err.Error()})
 			continue
 		}
+		if slow[req.T] { // asks Claude Code: the page's sends go on meanwhile
+			go func() {
+				if reply := w.serveSlow(ctx, req); reply != nil {
+					write(reply)
+				}
+			}()
+			continue
+		}
 		if reply := w.serve(req); reply != nil {
 			if err := write(reply); err != nil {
 				return
@@ -424,6 +440,16 @@ func (w *webServer) serve(req request) any {
 		if m, ok := h.pull(req.ID); ok {
 			return restoreReply{T: "restore", Text: m.text, Files: m.uploads}
 		}
+	case "model":
+		if err := h.agent.choose(req.Model, req.Effort, req.Save); err != nil {
+			return noticeUpdate{T: "notice", Level: "warn", S: err.Error()}
+		}
+		c.hub.setStatus(currentStatus(c, h.agent))
+		how := "until you quit"
+		if req.Save {
+			how = "from now on"
+		}
+		return noticeUpdate{T: "notice", Level: "info", S: fmt.Sprintf("Turns: %s, effort %s, %s.", req.Model, req.Effort, how)}
 	case "now":
 		h.sendNow()
 	case "stop":
@@ -452,6 +478,22 @@ func (w *webServer) serve(req request) any {
 		return pathsReply{T: "paths", Seq: req.Seq, Found: found}
 	default:
 		return noticeUpdate{T: "notice", Level: "warn", S: "unknown request " + strconv.Quote(req.T)}
+	}
+	return nil
+}
+
+// slow are the requests that ask Claude Code, which can take seconds.
+var slow = map[string]bool{"models": true}
+
+func (w *webServer) serveSlow(ctx context.Context, req request) any {
+	a := w.h.agent
+	switch req.T {
+	case "models":
+		ms, err := a.models(ctx)
+		if err != nil {
+			return modelsReply{T: "models", Models: []modelInfo{}, Error: err.Error()}
+		}
+		return modelsReply{T: "models", Models: ms}
 	}
 	return nil
 }

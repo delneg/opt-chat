@@ -30,8 +30,8 @@ func main() {
 	home, _ := os.UserHomeDir()
 	dir := flag.String("dir", filepath.Join(home, ".opt-chat"), "where the chat lives; its AGENTS.md holds your instructions")
 	cwd := flag.String("cwd", home, "where Opt's tools run")
-	model := flag.String("model", "fable", "model for turns")
-	effort := flag.String("effort", "high", "effort for turns: low, medium, high, xhigh, max")
+	model := flag.String("model", "fable", "model for turns (unset: the one the page's picker saved, if any)")
+	effort := flag.String("effort", "high", "effort for turns: low, medium, high, xhigh, max (unset: the picker's, if saved)")
 	amodel := flag.String("agent-model", "opus", "model for subagents")
 	aeffort := flag.String("agent-effort", "high", "effort for subagents")
 	cmodel := flag.String("compact-model", "haiku", "model for compactions")
@@ -46,9 +46,19 @@ func main() {
 	addr := flag.String("addr", "", "where the web chat listens, as 127.0.0.1:port (empty: the last run's port when free, else any)")
 	open := flag.Bool("open", true, "open the web chat in the browser")
 	flag.Parse()
+	given := map[string]bool{}
+	flag.Visit(func(f *flag.Flag) { given[f.Name] = true })
+	// What the model picker saved, unless a flag says otherwise.
+	saved := loadSettings(*dir)
+	if !given["model"] && modelName.MatchString(saved.Model) {
+		*model = saved.Model
+	}
+	if !given["effort"] && validEffort(saved.Effort) {
+		*effort = saved.Effort
+	}
 	for name, e := range map[string]string{"effort": *effort, "agent-effort": *aeffort, "compact-effort": *ceffort} {
-		if !slices.Contains(efforts, e) {
-			fatal("-%s must be one of %s", name, strings.Join(efforts, ", "))
+		if !validEffort(e) {
+			fatal("-%s must be one of %s", name, joinEfforts())
 		}
 	}
 
@@ -477,10 +487,10 @@ func command(a *Agent, line string) (string, bool) {
 		a.model = arg
 	case word == "model" && arg != "":
 		return "A model is one word, as for -model: fable, opus, sonnet, or a full name.", true
-	case word == "effort" && slices.Contains(efforts, arg):
+	case word == "effort" && validEffort(arg):
 		a.effort = arg
 	case word == "effort" && arg != "":
-		return "effort must be one of " + strings.Join(efforts, ", ") + ".", true
+		return "effort must be one of " + joinEfforts() + ".", true
 	case word == "model" || word == "effort":
 	case word == "agents":
 		names := slices.Sorted(maps.Keys(a.running))
@@ -490,7 +500,7 @@ func command(a *Agent, line string) (string, bool) {
 		return "At work: [" + strings.Join(names, "], [") + "]. Each one's steps: " + filepath.Join(a.chat.dir, "agents", "<Name>.log"), true
 	case word == "help":
 		return "/model [name]       show or set the model for turns, as -model (until quit)\n" +
-			"/effort [level]     show or set their effort: " + strings.Join(efforts, ", ") + "\n" +
+			"/effort [level]     show or set their effort: " + joinEfforts() + "\n" +
 			"/agents             list the subagents at work\n" +
 			"Ctrl-C stops the turn; Ctrl-C when idle, or Ctrl-D, quits.", true
 	default:

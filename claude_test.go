@@ -69,8 +69,40 @@ func fakeClaude() {
 		}
 		return text, images
 	}
+	// control answers a control request as Claude Code would; false for
+	// any other line.
+	control := func(line string) bool {
+		var r struct {
+			Type      string         `json:"type"`
+			RequestID string         `json:"request_id"`
+			Request   map[string]any `json:"request"`
+		}
+		json.Unmarshal([]byte(line), &r)
+		if r.Type != "control_request" {
+			return r.Type == "control_response"
+		}
+		ok := func(v any) {
+			emit(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": r.RequestID, "response": v}})
+		}
+		switch r.Request["subtype"] {
+		case "list_models":
+			ok(map[string]any{"models": []map[string]any{
+				{"value": "default", "displayName": "Default (recommended)", "description": "Big 2 · best", "supportsEffort": true},
+				{"value": "big", "displayName": "Big 2", "description": "best", "supportsEffort": true, "supportedEffortLevels": []string{"low", "high"}},
+				{"value": "claude-big-1", "displayName": "Big 1", "description": "older"},
+			}})
+		case "fail":
+			emit(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "error", "request_id": r.RequestID, "error": "no such thing"}})
+		default:
+			ok(map[string]any{})
+		}
+		return true
+	}
 	failRetry := false
 	for line := range lines {
+		if control(line) {
+			continue
+		}
 		text, images := read(line)
 		in := text // what follows the view: triggers in the view are of turns before
 		if i := strings.LastIndex(text, "</chat>"); i >= 0 {

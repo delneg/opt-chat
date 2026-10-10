@@ -177,6 +177,24 @@ a { color: var(--blue); }
 .cmds { padding: .2em 0; }
 .cmds .cmd { color: var(--dim); padding: 0 3ch; }
 .cmds .cmd.sel { color: var(--fg); background: var(--chip); }
+/* the model picker, as Claude Code's /model */
+.picker { padding: .5em 1ch .6em; display: flex; flex-direction: column; gap: .5em; }
+.picker .title { color: var(--blue); font-weight: 600; }
+.picker .dim { color: var(--dim); }
+.picker .err { color: var(--red); }
+.picker .rows { display: grid; grid-template-columns: 2ch auto auto 1fr; column-gap: 1ch; }
+.picker .row { display: contents; cursor: pointer; }
+.picker .row > span { padding: .05em 0; }
+.picker .row .ptr { color: var(--blue); }
+.picker .row .num { color: var(--dim); text-align: right; }
+.picker .row .lbl { padding-right: 3ch; white-space: nowrap; }
+.picker .row .desc { color: var(--dim); }
+.picker .row.sel .lbl { color: var(--accent); }
+.picker .row .ok { color: var(--green); }
+.picker .effort .dot { color: var(--accent); }
+.picker .scale { margin-left: 2ch; color: var(--faint); }
+.picker .scale span { margin-right: 1.5ch; }
+.picker .scale .on { color: var(--fg); text-decoration: underline; text-underline-offset: .25em; }
 .banner { background: var(--red); color: var(--bg); padding: .25em 2ch; font-size: .9em; }
 .newer { position: sticky; bottom: .5em; display: flex; padding-left: 2ch; align-items: flex-end; pointer-events: none; height: 0; overflow: visible; }
 .newer button { pointer-events: auto; background: var(--chip); border: 1px solid var(--border); border-radius: 999px; padding: .2em 1.5ch; color: var(--fg); font-size: .9em; }

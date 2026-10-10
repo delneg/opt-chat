@@ -35,6 +35,9 @@ const S = {
   dragging: false,
   help: false,
   unseen: false, // Opt replied while the tab was in the background
+  picker: null, // the model picker, open: { sel, effort }
+  models: null, // Claude Code's, once asked
+  modelsError: '',
 };
 
 // set changes the state and renders it once per frame; in a tab in the
@@ -151,6 +154,7 @@ function onUpdate(u) {
       pathsWait?.();
       break;
     }
+    case 'models': set({ models: u.models, modelsError: u.error || '' }); break;
     case 'restore': if (u.note) notice('info', u.note); restore(u.text, u.files); break;
     case 'sent': sending.delete(u.seq); break;
     case 'failed': {
@@ -220,7 +224,7 @@ function lookForPaths(now) {
 }
 
 const commands = [
-  ['/model', 'show or set the model for turns'],
+  ['/model', 'choose the model and effort for turns (Alt+P)'],
   ['/effort', 'show or set their effort'],
   ['/agents', 'list the subagents at work'],
   ['/help', 'list the commands'],
@@ -240,6 +244,7 @@ async function submit(now) {
     return;
   }
   if (S.conn !== 'open') { notice('warn', 'Not connected: your message stays in the input until opt-chat is back.'); return; }
+  if (/^\/model\s*$/.test(inputEl.value) && !S.atts.length) { setInput(''); openPicker(); return; }
   submitting = true;
   try {
     // Uploads finish, those added meanwhile too, and the paths the input
@@ -269,6 +274,7 @@ async function submit(now) {
 
 function escape() {
   if (S.lightbox) { set({ lightbox: null }); return; }
+  if (S.picker) { closePicker(); return; }
   if (S.help) { set({ help: false }); return; } // one Esc, one thing: never a stop by surprise
   if (S.turn.phase) send({ t: 'stop' });
 }
@@ -769,6 +775,109 @@ function ToolMsg({ m, echo, state }) {
   </div>`;
 }
 
+// ---------------------------------------------------------------- model picker
+
+// The picker lists Claude Code's models as its /model does: the aliases,
+// each its family's latest, and the one in use when it is another.
+const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
+
+function pickerRows() {
+  const all = S.models || [];
+  const rows = all.filter(m => !m.value.startsWith('claude-'));
+  const cur = S.status?.model;
+  if (cur && S.models && !rows.some(m => m.value === cur)) {
+    rows.push(all.find(m => m.value === cur) || { value: cur, displayName: cur, description: 'set with -model or /model', supportsEffort: true });
+  }
+  return rows;
+}
+
+function modelLabel(m) {
+  return /^[a-z]+$/.test(m.value) && m.value !== 'default' ? m.value[0].toUpperCase() + m.value.slice(1) : m.displayName;
+}
+
+function modelBlurb(m) {
+  return [m.displayName !== modelLabel(m) && m.value !== 'default' && m.displayName, m.description].filter(Boolean).join(' · ');
+}
+
+function effortName(e) { return e === 'xhigh' ? 'Extra high' : e[0].toUpperCase() + e.slice(1); }
+
+function levelsOf(m) { return m?.supportedEffortLevels?.length ? m.supportedEffortLevels : EFFORTS; }
+
+function openPicker() {
+  if (!S.models || S.modelsError) send({ t: 'models' });
+  set({ picker: { sel: -1, effort: S.status?.effort || 'high' }, help: false });
+}
+
+function closePicker() { set({ picker: null }); inputEl?.focus(); }
+
+function pickerSel(rows) {
+  const p = S.picker;
+  return p.sel >= 0 ? Math.min(p.sel, rows.length - 1) : Math.max(0, rows.findIndex(m => m.value === S.status?.model));
+}
+
+function pickModel(save) {
+  const rows = pickerRows(), m = rows[pickerSel(rows)];
+  if (!m) return;
+  const levels = levelsOf(m);
+  const effort = levels.includes(S.picker.effort) ? S.picker.effort : levels.includes('high') ? 'high' : levels[levels.length - 1];
+  send({ t: 'model', model: m.value, effort, save });
+  closePicker();
+}
+
+// pickerKey takes the keys while the picker is open: true when it took e.
+function pickerKey(e) {
+  const p = S.picker;
+  if (!p) return false;
+  const rows = pickerRows();
+  let sel = pickerSel(rows), effort = p.effort;
+  const levels = levelsOf(rows[sel]);
+  switch (e.key) {
+    case 'Escape': closePicker(); break;
+    case 'ArrowUp': sel = (sel + rows.length - 1) % Math.max(1, rows.length); break;
+    case 'ArrowDown': sel = (sel + 1) % Math.max(1, rows.length); break;
+    case 'ArrowLeft': case 'ArrowRight': {
+      let i = levels.indexOf(effort);
+      if (i < 0) i = Math.max(0, levels.indexOf('high'));
+      effort = levels[Math.min(levels.length - 1, Math.max(0, i + (e.key === 'ArrowRight' ? 1 : -1)))];
+      break;
+    }
+    case 'Enter': pickModel(true); break;
+    case 's': case 'S': pickModel(false); break;
+    default:
+      if (/^[1-9]$/.test(e.key) && +e.key <= rows.length) sel = +e.key - 1;
+      else if (e.key === 'Tab' || e.metaKey || e.ctrlKey) return false;
+  }
+  e.preventDefault();
+  e.stopPropagation();
+  if (S.picker) set({ picker: { sel, effort } });
+  return true;
+}
+
+function Picker() {
+  const p = S.picker, rows = pickerRows(), sel = pickerSel(rows), m = rows[sel];
+  const supports = !m || m.supportsEffort !== false;
+  const levels = levelsOf(m);
+  const effort = levels.includes(p.effort) ? p.effort : 'high';
+  return html`<div class="picker" role="dialog" aria-label="Select model">
+    <div class="title">Select model</div>
+    <div class="dim">Switch between Claude models. Enter keeps your pick for later runs too; s, for this run only.</div>
+    ${S.models === null ? html`<div class="rows dim">Asking Claude Code for its models…</div>` : html`<div class="rows">
+      ${S.modelsError && html`<div class="err">Claude Code didn't list its models: ${S.modelsError}</div>`}
+      ${rows.map((r, j) => html`<div class=${'row' + (j === sel ? ' sel' : '')} key=${r.value}
+          onClick=${() => set({ picker: { ...S.picker, sel: j } })} onDblClick=${() => { set({ picker: { ...S.picker, sel: j } }); pickModel(true); }}>
+        <span class="ptr">${j === sel ? '❯' : ''}</span><span class="num">${j + 1}.</span>
+        <span class="lbl">${modelLabel(r)}${r.value === S.status?.model ? html` <span class="ok">✔</span>` : ''}</span>
+        <span class="desc">${modelBlurb(r)}</span>
+      </div>`)}
+    </div>`}
+    <div class="effort">${supports
+      ? html`<span class="dot">●</span> ${effortName(effort)} effort <span class="dim">←/→ to adjust</span>
+          <span class="scale">${levels.map(l => html`<span class=${l === effort ? 'on' : ''}>${l}</span>`)}</span>`
+      : html`<span class="dim">This model takes no effort setting.</span>`}</div>
+    <div class="dim">Enter to set as default · s to use this run only · Esc to cancel</div>
+  </div>`;
+}
+
 // ---------------------------------------------------------------- the page
 
 const glyphs = ['·', '✢', '✳', '✶', '✻', '✽', '✻', '✶', '✳', '✢'];
@@ -857,7 +966,7 @@ function Footer() {
   const s = S.status, l = S.last;
   const right = [];
   if (s) {
-    right.push(s.effort ? `${s.model} ${s.effort}` : s.model);
+    right.push(html`<button title="choose the model and effort (Alt+P)" onClick=${openPicker}>${s.model} · ${s.effort}</button>`);
     right.push(count(s.msgs, 'message'), `view ${count(s.viewLines, 'line')}, ${Math.round(s.viewBytes / 1000)} KB`);
     if (s.backlog || s.merges) right.push(html`<span class="busy" title=${count(s.running, 'compaction') + ' running'}>summarizing ${[s.backlog && count(s.backlog, 'message'), s.merges && count(s.merges, 'merge')].filter(Boolean).join(' + ')}</span>`);
     if (s.written) right.push(`${count(s.written, 'line')} written`);
@@ -881,7 +990,7 @@ function Help() {
     ['Esc', 'stop the turn; queued messages come back here'],
     ['↑ / ↓', 'your earlier messages; ↑ on an empty input edits the last queued'],
     ['drop · paste · 📎', 'attach files; a path you type (/… or ~/…) attaches its file'],
-    ['/model /effort', 'switch the model or effort for turns'],
+    ['Alt+P · /model', 'choose the model, ←/→ its effort'],
     ['/agents /help', 'subagents at work; the commands'],
   ];
   return html`<div class="help">${rows.map(([a, b]) => html`<kbd>${a}</kbd><span>${b}</span>`)}</div>`;
@@ -965,6 +1074,7 @@ function App() {
     <div class="dock"><div class="column">
       ${S.turn.phase && html`<${Spinner} turn=${S.turn} chars=${S.turnChars} queued=${S.queue.length > 0}/>`}
       <${Queue} queue=${S.queue}/>
+      ${S.picker && html`<${Picker}/>`}
       <${Input}/>
       ${S.help && html`<${Help}/>`}
       <${Footer}/>
@@ -986,6 +1096,15 @@ addEventListener('drop', e => {
   const text = e.dataTransfer.getData('text/plain');
   if (text && inputEl) { inputEl.focus(); document.execCommand('insertText', false, text); }
 });
+addEventListener('keydown', e => {
+  if (e.altKey && e.code === 'KeyP' && !e.metaKey && !e.ctrlKey) { // Option+P types π on a Mac: the code is the key
+    e.preventDefault();
+    e.stopPropagation();
+    if (S.picker) closePicker(); else openPicker();
+    return;
+  }
+  pickerKey(e);
+}, true); // before the input: while the picker is open, the keys are its
 addEventListener('keydown', e => {
   if ((e.key === 'Enter' || e.key === ' ') && e.target.getAttribute?.('role') === 'button' && e.target.tagName !== 'BUTTON') {
     e.preventDefault(); // a card, a thumbnail or a copy, from the keyboard

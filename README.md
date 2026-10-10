@@ -66,8 +66,12 @@ The page works like Claude Code:
   A reload, a second tab or another window shows the turn underway,
   mid-reply; a page that loses opt-chat reconnects by itself, also after a
   restart.
-- `/model opus` and `/effort high` switch the turns' model and effort until
-  you quit; `/model` alone shows them. `/agents` lists the subagents at work, `/help` the commands; Tab
+- Alt+P (or `/model`, or the model in the bar) opens the model picker, as
+  in Claude Code: Claude Code's own list of models, ↑/↓ or a number to
+  pick, ←/→ for the effort. Enter keeps the choice for later runs too (in
+  `<dir>/settings.json`; a `-model` or `-effort` flag wins over it), `s`
+  for this run only, Esc cancels. `/model opus` and `/effort high` switch
+  them until you quit. `/agents` lists the subagents at work, `/help` the commands; Tab
   completes them. A line starting with any other `/word` is not sent.
 - The bar at the bottom shows the memory: messages, the view's size, what is
   left to summarize, and the last turn's tokens. `?` on an empty input lists

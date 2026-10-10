@@ -43,6 +43,10 @@ type Agent struct {
 	cusage      usage                    // their usage
 	running     map[string]*proc         // agents by name; nil while starting or finished
 	writing     map[string]chan struct{} // first messages being written to the cache
+	modelList   []modelInfo              // Claude Code's, once asked
+
+	ctlMu sync.Mutex
+	ctl   *control // nil until asked, and once stopped
 }
 
 // writeOnce lets one call at a time write a prefix to the cache: a call
@@ -132,6 +136,10 @@ type event struct {
 	Usage   usage          `json:"usage"`
 	Event   jsontext.Value `json:"event"`                  // stream_event: one of the API's own
 	Think   int            `json:"estimated_tokens_delta"` // system thinking_tokens
+
+	RequestID string          `json:"request_id"` // control_request: Claude Code asks
+	Request   jsontext.Value  `json:"request"`
+	Response  controlResponse `json:"response"` // control_response: Claude Code answers
 }
 
 // streamEvent is the API's streaming event inside a stream_event, which a
@@ -187,6 +195,7 @@ const (
 	roleCompact role = iota
 	roleTurn
 	roleAgent
+	roleControl // takes control requests only: see control
 )
 
 // noTools blocks every tool call of a compaction. Its tools stay listed, the

@@ -404,3 +404,32 @@ func TestWebEditGone(t *testing.T) {
 		t.Fatalf("restore: %v", u)
 	}
 }
+
+// The model picker: Claude Code's models, and a choice the bar shows.
+func TestWebModel(t *testing.T) {
+	wt := startWeb(t)
+	ws, err := wt.dial(-1, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws.next("hello", typ("hello"))
+	ws.send(map[string]any{"t": "models"})
+	if u := ws.next("models", typ("models")); len(u["models"].([]any)) != 3 {
+		t.Fatalf("models: %v", u)
+	}
+	ws.send(map[string]any{"t": "model", "model": "default", "effort": "low", "save": true})
+	if u := ws.next("chosen", typ("notice")); u["s"] != "Turns: default, effort low, from now on." {
+		t.Fatalf("a choice: %v", u)
+	}
+	ws.next("the bar", func(u map[string]any) bool {
+		s, _ := u["status"].(map[string]any)
+		return u["t"] == "status" && s["model"] == "default" && s["effort"] == "low"
+	})
+	if s := loadSettings(wt.c.dir); s.Model != "default" {
+		t.Fatalf("saved %+v", s)
+	}
+	ws.send(map[string]any{"t": "model", "model": "default", "effort": "lots"})
+	if u := ws.next("refused", typ("notice")); u["level"] != "warn" {
+		t.Fatalf("a bad effort: %v", u)
+	}
+}

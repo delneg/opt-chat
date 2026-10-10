@@ -1,0 +1,173 @@
+package main
+
+import (
+	"bytes"
+	"image"
+	"image/jpeg"
+	"image/png"
+	"math/rand/v2"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"slices"
+	"strings"
+	"testing"
+)
+
+func decodeSize(t *testing.T, b []byte) (int, int, string) {
+	t.Helper()
+	cfg, format, err := image.DecodeConfig(bytes.NewReader(b))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cfg.Width, cfg.Height, format
+}
+
+// Images go to the model at most imageEdge a side and imageBytes; one that
+// fits is left alone, byte for byte.
+func TestFitImage(t *testing.T) {
+	small := pngBytes(100, 50)
+	if b, ext, err := fitImage(small); err != nil || ext != "png" || !bytes.Equal(b, small) {
+		t.Fatalf("a small image changed: %s, %v", ext, err)
+	}
+	b, ext, err := fitImage(pngBytes(3000, 1500))
+	if w, h, f := decodeSize(t, b); err != nil || ext != "png" || f != "png" || w != imageEdge || h != imageEdge/2 {
+		t.Fatalf("a wide screenshot: %dx%d %s %s, %v", w, h, f, ext, err)
+	}
+	// Noise compresses badly: as PNG it stays too big, so it goes as JPEG.
+	noise := image.NewNRGBA(image.Rect(0, 0, 1100, 1100))
+	rand.NewChaCha8([32]byte{}).Read(noise.Pix)
+	for i := 3; i < len(noise.Pix); i += 4 {
+		noise.Pix[i] = 0 // and transparent: JPEG has none, so it shows on white
+	}
+	var big bytes.Buffer
+	png.Encode(&big, noise)
+	if big.Len() <= imageBytes {
+		t.Fatalf("test image only %d bytes", big.Len())
+	}
+	b, ext, err = fitImage(big.Bytes())
+	if err != nil || ext != "jpeg" || len(b) > imageBytes {
+		t.Fatalf("a big PNG: %s, %d bytes, %v", ext, len(b), err)
+	}
+	img, _ := jpeg.Decode(bytes.NewReader(b))
+	if r, g, bl, _ := img.At(10, 10).RGBA(); r < 0xe000 || g < 0xe000 || bl < 0xe000 {
+		t.Fatalf("transparency is not white: %v", img.At(10, 10))
+	}
+	if _, _, err := fitImage([]byte("not an image")); err == nil {
+		t.Fatal("text taken for an image")
+	}
+}
+
+// What a file is, from its content: the name only gives the extension.
+func TestSaveClassify(t *testing.T) {
+	c, _ := fakeChat(t, t.TempDir(), 100)
+	for _, f := range []struct {
+		name string
+		body []byte
+		kind string
+		ext  string
+	}{
+		{"Shot.PNG", pngBytes(8, 8), "image", ".png"},
+		{"wrongly.jpg", pngBytes(8, 8), "image", ".png"}, // content wins
+		{"report.pdf", []byte("%PDF-1.4\n%fake"), "pdf", ".pdf"},
+		{"notes.txt", []byte("hello\nworld\n"), "text", ".txt"},
+		{"main.go", []byte("package main\n"), "text", ".go"},
+		{"blob.bin", []byte("ab\x00cd"), "file", ".bin"},
+		{"latin1.txt", []byte("caf\xe9"), "file", ".txt"},
+		{"no-ext", []byte("plain"), "text", ""},
+		{"odd.ex t!", []byte("plain"), "text", ""},
+	} {
+		at, err := c.save(bytes.NewReader(f.body), f.name)
+		if err != nil || at.Kind != f.kind || filepath.Ext(at.Name) != f.ext || at.Orig != f.name || !safeName.MatchString(at.Name) {
+			t.Errorf("%s: %+v, %v", f.name, at, err)
+		}
+	}
+	// A page's attachment is checked against the file, never trusted.
+	img, _ := c.save(bytes.NewReader(pngBytes(8, 8)), "a.png")
+	got, err := c.uploaded([]attachment{{Name: img.Name, Orig: "a.png", Kind: "text"}})
+	if err != nil || got[0].Kind != "image" {
+		t.Fatalf("uploaded: %+v, %v", got, err)
+	}
+	for _, bad := range []string{"files/../web.json", "web.json", "files/0123456789abcdef0123456789abcdef.png"} {
+		if _, err := c.uploaded([]attachment{{Name: bad}}); err == nil {
+			t.Errorf("uploaded took %q", bad)
+		}
+	}
+}
+
+// HEIC, as iPhones and macOS take photos, becomes a JPEG (with macOS's sips).
+func TestHEIC(t *testing.T) {
+	if _, err := exec.LookPath("sips"); err != nil {
+		t.Skip("no sips")
+	}
+	dir := t.TempDir()
+	src := filepath.Join(dir, "in.png")
+	os.WriteFile(src, pngBytes(64, 48), 0o600)
+	heic := filepath.Join(dir, "photo.heic")
+	if out, err := exec.Command("sips", "-s", "format", "heic", src, "--out", heic).CombinedOutput(); err != nil {
+		t.Skipf("sips writes no HEIC here: %s", out)
+	}
+	b, _ := os.ReadFile(heic)
+	if !isHEIC(b[:12]) {
+		t.Fatalf("not taken for HEIC: %q", b[:12])
+	}
+	c, _ := fakeChat(t, t.TempDir(), 100)
+	at, err := c.save(bytes.NewReader(b), "photo.heic")
+	if err != nil || at.Kind != "image" || filepath.Ext(at.Name) != ".jpeg" {
+		t.Fatalf("HEIC: %+v, %v", at, err)
+	}
+	jb, _ := os.ReadFile(filepath.Join(c.dir, at.Name))
+	if w, h, f := decodeSize(t, jb); w != 64 || h != 48 || f != "jpeg" {
+		t.Fatalf("converted: %dx%d %s", w, h, f)
+	}
+}
+
+// A message with attachments: images and PDFs as content, text inlined
+// within its budget, the rest as paths; the marks come off for the input's
+// history.
+func TestCompose(t *testing.T) {
+	c, _ := fakeChat(t, t.TempDir(), 100)
+	save := func(name string, body []byte) attachment {
+		at, err := c.save(bytes.NewReader(body), name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return at
+	}
+	img := save(`my "shot" <1>.png`, pngBytes(4, 4))
+	pdf := save("r.pdf", []byte("%PDF-1.4\nx"))
+	txt := save("a.txt", []byte("line one\nline two\n"))
+	huge := save("huge.txt", []byte(strings.Repeat("z", inlineMax+1)))
+	zip := save("b.zip", []byte("PK\x03\x04\x00\x00"))
+	m := c.compose("look", []attachment{img, pdf, txt, huge, zip})
+	if !slices.Equal(m.images, []string{img.Name, pdf.Name}) || !slices.Equal(m.files, []string{img.Orig, "r.pdf", "a.txt", "huge.txt", "b.zip"}) {
+		t.Fatalf("images %q, files %q", m.images, m.files)
+	}
+	full := m.full()
+	for _, want := range []string{
+		"look\n\n<attachment name=\"my &#34;shot&#34; &lt;1&gt;.png\" path=\"" + filepath.Join(c.dir, img.Name) + "\" size=\"",
+		"<attachment name=\"a.txt\" path=\"" + filepath.Join(c.dir, txt.Name) + "\" size=\"18 B\">\nline one\nline two\n</attachment>",
+		"<attachment name=\"huge.txt\" path=\"" + filepath.Join(c.dir, huge.Name) + "\" size=\"25.0 KB\"/>",
+		"<attachment name=\"b.zip\" path=\"" + filepath.Join(c.dir, zip.Name) + "\" size=\"6 B\"/>",
+	} {
+		if !strings.Contains(full, want) {
+			t.Errorf("message lacks %q:\n%s", want, full)
+		}
+	}
+	if got := stripAttachments(full); got != "look" {
+		t.Fatalf("stripAttachments = %q", got)
+	}
+	if got := c.compose("", []attachment{zip}).full(); !strings.HasPrefix(got, "<attachment") {
+		t.Fatalf("attachments alone: %q", got)
+	}
+	// A typed path is saved like an upload.
+	p := filepath.Join(t.TempDir(), "typed.txt")
+	os.WriteFile(p, []byte("typed"), 0o600)
+	atts, err := c.attachPaths([]string{p, t.TempDir()})
+	if err == nil || len(atts) != 1 || atts[0].Kind != "text" || atts[0].Orig != "typed.txt" {
+		t.Fatalf("attachPaths: %+v, %v", atts, err)
+	}
+	if b := c.fileBlocks([]string{pdf.Name, img.Name}); b[0].Type != "document" || b[0].Source.MediaType != "application/pdf" || b[1].Type != "image" {
+		t.Fatalf("fileBlocks: %v %v", b[0].Type, b[1].Type)
+	}
+}

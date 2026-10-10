@@ -30,6 +30,9 @@ const pngHead = "\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
 func fakeClaude() {
 	b, _ := json.Marshal(os.Args[1:])
 	appendRaw(os.Getenv("OPT_FAKE_ARGS"), append(b, '\n'))
+	if f := os.Getenv("OPT_FAKE_PGID"); f != "" {
+		appendRaw(f, []byte(fmt.Sprintln(syscall.Getpgrp())))
+	}
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGTERM)
 	emit := func(v any) {
@@ -37,6 +40,7 @@ func fakeClaude() {
 		os.Stdout.Write(append(b, '\n'))
 	}
 	say := func(bs ...block) { emit(map[string]any{"type": "assistant", "message": map[string]any{"content": bs}}) }
+	stream := func(ev any) { emit(map[string]any{"type": "stream_event", "event": ev}) }
 	result := func(text string) {
 		say(textBlock(text))
 		emit(map[string]any{"type": "result", "result": text, "usage": map[string]any{"cache_read_input_tokens": 1000}})
@@ -59,7 +63,7 @@ func fakeClaude() {
 		json.Unmarshal([]byte(line), &m)
 		for _, b := range m.Message.Content {
 			text += b.Text
-			if b.Type == "image" {
+			if b.Type == "image" || b.Type == "document" {
 				images++
 			}
 		}
@@ -68,32 +72,56 @@ func fakeClaude() {
 	failRetry := false
 	for line := range lines {
 		text, images := read(line)
+		in := text // what follows the view: triggers in the view are of turns before
+		if i := strings.LastIndex(text, "</chat>"); i >= 0 {
+			in = text[i:]
+		}
 		switch {
 		case strings.HasSuffix(text, viewGoesOn):
 			if strings.Contains(text, "slow-ack") {
 				time.Sleep(300 * time.Millisecond)
 			}
 			result("ok")
-		case strings.Contains(text, "Too long:") && failRetry:
+		case strings.Contains(in, "Too long:") && failRetry:
 			emit(map[string]any{"type": "result", "is_error": true, "result": "overloaded"})
-		case strings.Contains(text, "Too long:"):
+		case strings.Contains(in, "Too long:"):
 			if strings.Contains(text, "your line is 600 bytes") && strings.Contains(text, strings.Repeat("x", nodeMax)+"| ← LIMIT") {
 				result("short line")
 			} else {
 				result("bad retry: " + text)
 			}
-		case strings.Contains(text, "Compaction:") && strings.Contains(text, "make-it-long"):
-			failRetry = strings.Contains(text, "then-fail")
+		case strings.Contains(in, "Compaction:") && strings.Contains(in, "empty-error"):
+			emit(map[string]any{"type": "result", "subtype": "error_during_execution", "is_error": true, "result": ""})
+		case strings.Contains(in, "Compaction:") && strings.Contains(in, "make-it-long"):
+			failRetry = strings.Contains(in, "then-fail")
 			result(strings.Repeat("x", 600))
-		case strings.Contains(text, "Compaction:"):
+		case strings.Contains(in, "Compaction:"):
 			result(fmt.Sprintf("line with %d images", images))
-		case strings.Contains(text, "wait-for-message"):
+		case strings.Contains(in, "wait-for-message"):
 			say(textBlock("waiting"), block{Type: "tool_use", ID: "w1", Name: "Bash", Input: []byte(`{"command":"wait"}`)})
 			next, _ := read(<-lines)
 			result("got: " + next)
-		case strings.Contains(text, "wait-for-stop"):
+		case strings.Contains(in, "wait-for-stop"):
 			say(textBlock("working"))
 			<-stop
+			os.Exit(143)
+		case strings.Contains(in, "stream-reply"):
+			stream(map[string]any{"type": "message_start", "message": map[string]any{"usage": map[string]any{"output_tokens": 5}}})
+			stream(map[string]any{"type": "content_block_start", "content_block": map[string]any{"type": "thinking"}})
+			stream(map[string]any{"type": "content_block_delta", "delta": map[string]any{"type": "thinking_delta", "thinking": "hmm"}})
+			stream(map[string]any{"type": "content_block_start", "content_block": map[string]any{"type": "text"}})
+			stream(map[string]any{"type": "content_block_delta", "delta": map[string]any{"type": "text_delta", "text": "Hello"}})
+			stream(map[string]any{"type": "content_block_delta", "delta": map[string]any{"type": "text_delta", "text": " world"}})
+			say(textBlock("Hello world"))
+			stream(map[string]any{"type": "message_delta", "usage": map[string]any{"output_tokens": 42}})
+			emit(map[string]any{"type": "result", "result": "Hello world"})
+		case strings.Contains(in, "stream-then-stop"):
+			stream(map[string]any{"type": "message_start", "message": map[string]any{"usage": map[string]any{"output_tokens": 1}}})
+			stream(map[string]any{"type": "content_block_start", "content_block": map[string]any{"type": "text"}})
+			stream(map[string]any{"type": "content_block_delta", "delta": map[string]any{"type": "text_delta", "text": "half a"}})
+			stream(map[string]any{"type": "content_block_delta", "delta": map[string]any{"type": "text_delta", "text": " reply"}})
+			<-stop
+			emit(map[string]any{"type": "result", "subtype": "error_during_execution", "is_error": true, "result": ""})
 			os.Exit(143)
 		default:
 			say(block{Type: "tool_use", Name: "Read", Input: []byte(`{"file_path":"x.png"}`)}, block{Type: "tool_use", Name: "mcp__opt__date", Input: []byte(`{"id":0}`)})

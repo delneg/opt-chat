@@ -525,10 +525,9 @@ func (c *Chat) notify() {
 	c.changed = make(chan struct{})
 }
 
-const (
-	settleMax  = 256             // a call waits for every line when at most this many are to build...
-	settleWait = 2 * time.Minute // ...and for at most this long
-)
+const settleMax = 256 // a call waits for every line when at most this many are to build...
+
+var settleWait = 2 * time.Minute // ...and for at most this long
 
 // settle waits until every message is summarized, so that no call sees a
 // placeholder, as the recipe says, when that is a short wait. Behind a bigger

@@ -99,7 +99,7 @@ a { color: var(--blue); }
 .md .copy:hover { color: var(--fg); }
 .md blockquote { border-left: 3px solid var(--border); padding-left: 1.5ch; color: var(--dim); }
 .md table { border-collapse: collapse; display: block; overflow-x: auto; max-width: 100%; }
-.md th, .md td { border: 1px solid var(--border); padding: .25em 1ch; text-align: left; vertical-align: top; }
+.md th, .md td { border: 1px solid var(--border); padding: .25em 1ch; text-align: left; vertical-align: top; overflow-wrap: break-word; } /* words whole: a narrow table scrolls */
 .md th { background: var(--chip); }
 .md hr { border: 0; border-top: 1px solid var(--border); }
 .md img { max-width: 100%; }

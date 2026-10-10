@@ -257,8 +257,9 @@ use two more:
    lost it) starts the view over from the log, with a warning, instead of
    keeping the chat shut. It is written whole and synced before it replaces
    the last one, so this should never happen.
-7. **A call waits for summaries only when that is short**: when at most 256
-   lines are left to build, and for at most two minutes. Behind a bigger
+7. **A call waits for summaries only when that is short**: when at most 32
+   lines are left to build (four rounds of 8 compactions), and for at most a
+   minute. Behind a bigger
    backlog, as after an import, it goes on at once, as UniiChat does, and
    sees the tree as far as it is built: a message not summarized yet shows
    its head, its first 512 bytes, then `(not summarized yet: zoom it)`, and

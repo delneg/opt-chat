@@ -299,7 +299,7 @@ function upload(file) {
     xhr.onload = () => {
       if (xhr.status === 200) {
         const r = JSON.parse(xhr.responseText);
-        update({ status: 'done', name: r.name, kind: r.kind, size: r.size, orig: r.orig });
+        update({ status: 'done', name: r.name, kind: r.kind, size: r.size, orig: r.orig, url: r.kind === 'image' ? '/' + r.name : null });
       } else update({ status: 'error', error: xhr.responseText.trim() || `upload failed (${xhr.status})` });
       resolve();
     };
@@ -335,6 +335,7 @@ function hasFiles(e) { return [...(e.dataTransfer?.types || [])].includes('Files
 
 marked.use({
   gfm: true,
+  breaks: true, // a line break shows, as in Claude Code
   renderer: {
     code({ text, lang }) {
       const language = (lang || '').split(/\s/)[0];
@@ -382,6 +383,11 @@ function fileURL(path) {
   const base = path.split('/').pop();
   return /^[0-9a-f]{32}(\.[a-z0-9]+)?$/.test(base) ? '/files/' + base : null;
 }
+
+// count is "1 line", "2 lines": n with its noun.
+function count(n, noun) { return `${(n || 0).toLocaleString()} ${noun}${n === 1 ? '' : 's'}`; }
+
+function icon(kind) { return { pdf: '📕', text: '📄', image: '🖼' }[kind] || '📎'; }
 
 function size(n) {
   if (n < 1000) return n + ' B';
@@ -639,11 +645,11 @@ function Spinner({ turn, chars, queued }) {
   const meta = [elapsed(Date.now() - (turn.since || Date.now()))];
   const tokens = (turn.tokens || 0) + Math.round(chars / 4);
   if (tokens) meta.push(`↓ ${k(tokens)} tokens`);
-  if (turn.phase === 'settling' && turn.written) meta.push(`${turn.written} lines written`);
+  if (turn.phase === 'settling' && turn.written) meta.push(`${count(turn.written, 'line')} written`);
   meta.push('esc to interrupt');
   if (queued || turn.phase === 'settling') meta.push('⌘⏎ send now');
   return html`<div class="spinner"><span><span class="glyph">${g}</span>${verb}…</span><span class="meta">(${meta.join(' · ')})</span>
-    ${turn.partial > 0 && html`<span class="meta">memory partial: ${turn.partial} messages not summarized yet</span>`}</div>`;
+    ${turn.partial > 0 && html`<span class="meta">memory partial: ${count(turn.partial, 'message')} not summarized yet</span>`}</div>`;
 }
 
 function Queue({ queue }) {
@@ -675,7 +681,7 @@ function Chips() {
   if (!atts.length && !shownPaths.length) return null;
   return html`<div class="atts">
     ${atts.map(a => html`<span class=${'chip' + (a.status === 'error' ? ' err' : '')} key=${a.id} title=${a.error || a.orig}>
-      ${a.url ? html`<img src=${a.url} alt=""/>` : kindOf(a) === 'pdf' ? '📕' : '📎'}
+      ${a.url ? html`<img src=${a.url} alt=""/>` : icon(kindOf(a))}
       <span class="name">${a.orig}</span>
       ${a.status === 'uploading' ? html`<span class="bar"><i style=${'width:' + Math.round((a.progress || 0) * 100) + '%'}/></span>` : html`<span class="size">${a.status === 'error' ? a.error : size(a.size)}</span>`}
       <button class="x" title="remove" onClick=${() => set({ atts: S.atts.filter(x => x.id !== a.id) })}>×</button>
@@ -692,9 +698,9 @@ function Footer() {
   const right = [];
   if (s) {
     right.push(`${s.model}${s.effort ? ' · ' + s.effort : ''}`);
-    right.push(`${s.msgs.toLocaleString()} messages · view ${s.viewLines} lines, ${Math.round(s.viewBytes / 1000)} KB`);
-    if (s.backlog || s.merges) right.push(html`<span class="busy">summarizing ${s.backlog} messages + ${s.merges} merges (${s.running} running)</span>`);
-    if (s.written) right.push(`${s.written} lines written`);
+    right.push(`${count(s.msgs, 'message')} · view ${count(s.viewLines, 'line')}, ${Math.round(s.viewBytes / 1000)} KB`);
+    if (s.backlog || s.merges) right.push(html`<span class="busy">summarizing ${[s.backlog && count(s.backlog, 'message'), s.merges && count(s.merges, 'merge')].filter(Boolean).join(' + ')} (${s.running} running)</span>`);
+    if (s.written) right.push(`${count(s.written, 'line')} written`);
     if (s.failing) right.push(html`<span class="conn bad">${s.failing} failing, retrying</span>`);
     if (s.agents?.length) right.push(`agents: ${s.agents.map(a => '[' + a + ']').join(' ')}`);
   }

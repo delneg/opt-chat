@@ -376,6 +376,17 @@ func TestWebFindsPaths(t *testing.T) {
 	if !strings.Contains(got, "PLAIN") || strings.Contains(got, "SECRET") {
 		t.Fatalf("logged:\n%s", got)
 	}
+	// As the chips said: one taken off (×), one hidden asked for (+).
+	os.WriteFile(plain, []byte("PLAIN2"), 0o600)
+	os.WriteFile(secret, []byte("SECRET2"), 0o600)
+	ws.send(map[string]any{"t": "send", "text": "again " + plain + " and " + secret, "seq": 2, "key": "page:2",
+		"skip": []string{plain}, "chosen": []string{secret}})
+	ws.next("sent", typ("sent"))
+	waitFor(t, "idle", wt.h.idle)
+	got = strings.Join(logged(wt.c), "\n")
+	if strings.Contains(got, "PLAIN2") || !strings.Contains(got, "SECRET2") {
+		t.Fatalf("logged:\n%s", got)
+	}
 }
 
 // An edit to a queued message that has already gone to Opt comes back to

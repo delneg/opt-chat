@@ -148,6 +148,7 @@ function onUpdate(u) {
       pathsDone = true;
       const off = u.found.filter(p => secret(p.path) && !S.chosen.has(p.path)).map(p => p.path);
       set({ paths: u.found, skipped: new Set([...S.skipped, ...off]) });
+      pathsWait?.();
       break;
     }
     case 'restore': if (u.note) notice('info', u.note); restore(u.text, u.files); break;
@@ -195,6 +196,7 @@ function setInput(text) {
 }
 
 function restore(text, files) {
+  histPos = -1;
   const cur = inputEl.value.trim();
   setInput(text + (cur ? '\n\n' + cur : ''));
   const back = (files || []).map(f => ({ ...f, id: ++uploadSeq, status: 'done', url: kindOf(f) === 'image' ? '/' + f.name : null, promise: Promise.resolve() }));
@@ -206,13 +208,15 @@ function restore(text, files) {
 function secret(p) { return /\/\.[^/]/.test(p); }
 
 let pathsDone = true; // S.paths are the input's as it is
+let pathsWait = null; // a send waiting for them
 
-function lookForPaths() {
+function lookForPaths(now) {
   clearTimeout(pathTimer);
   const text = inputEl.value;
-  if (!/(^|[\s'"(\[`]|\]\()(\/|~\/)/.test(text)) { pathSeq++; pathsDone = true; if (S.paths.length) set({ paths: [] }); return; }
+  const seq = ++pathSeq; // a reply about an earlier text is stale
+  if (!/(^|[\s'"(\[<{`]|\]\()(\/|~\/)/.test(text)) { pathsDone = true; if (S.paths.length) set({ paths: [] }); return; }
   pathsDone = false;
-  pathTimer = setTimeout(() => send({ t: 'paths', text, seq: ++pathSeq }), 250);
+  pathTimer = setTimeout(() => send({ t: 'paths', text, seq }), now ? 0 : 250);
 }
 
 const commands = [
@@ -236,18 +240,25 @@ async function submit(now) {
     return;
   }
   if (S.conn !== 'open') { notice('warn', 'Not connected: your message stays in the input until opt-chat is back.'); return; }
-  if (S.atts.some(a => a.status === 'uploading')) {
-    submitting = true;
-    try { await Promise.all(S.atts.map(a => a.promise)); } finally { submitting = false; }
-  }
+  submitting = true;
+  try {
+    // Uploads finish, those added meanwhile too, and the paths the input
+    // names are looked for, so it goes as its chips say.
+    while (S.atts.some(a => a.status === 'uploading')) await Promise.all(S.atts.map(a => a.promise));
+    if (!pathsDone) lookForPaths(true);
+    if (!pathsDone) {
+      await new Promise(r => { pathsWait = r; setTimeout(r, 1500); });
+      pathsWait = null;
+    }
+  } finally { submitting = false; }
   if (S.atts.some(a => a.status === 'error')) { notice('warn', 'An attachment failed: take it off (×) and send again.'); return; }
-  const text = inputEl.value; // as it is now: typing went on while the uploads finished
+  const text = inputEl.value; // as it is now: typing went on meanwhile
   if (!text.trim() && !S.atts.length) return;
   const files = S.atts.map(({ name, orig, kind, size }) => ({ name, orig, kind, size }));
-  // Sent before the paths in it were looked for: the server looks.
+  // Not looked for yet (opt-chat slow to answer): the server looks, as told.
   const paths = pathsDone ? S.paths.map(p => p.path).filter(p => !S.skipped.has(p)) : null;
   const seq = ++sendSeq;
-  const payload = { t: 'send', text, files, paths, now, seq, key: pageKey + ':' + seq };
+  const payload = { t: 'send', text, files, paths, skip: [...S.skipped], chosen: [...S.chosen], now, seq, key: pageKey + ':' + seq };
   if (!send(payload)) return;
   sending.set(seq, { payload, text, files: S.atts });
   if (text.trim() && !text.startsWith('/')) set({ inputs: mergeInputs(S.inputs, [text.trim()]) });
@@ -258,7 +269,7 @@ async function submit(now) {
 
 function escape() {
   if (S.lightbox) { set({ lightbox: null }); return; }
-  if (S.help) set({ help: false });
+  if (S.help) { set({ help: false }); return; } // one Esc, one thing: never a stop by surprise
   if (S.turn.phase) send({ t: 'stop' });
 }
 
@@ -333,7 +344,7 @@ function upload(file) {
   const blob = att.url;
   att.promise = new Promise(resolve => {
     const xhr = att.xhr = new XMLHttpRequest();
-    xhr.onloadend = () => { if (blob) URL.revokeObjectURL(blob); resolve(); };
+    xhr.onloadend = () => resolve();
     xhr.onabort = () => update({ status: 'error', error: 'taken off' });
     xhr.open('POST', '/upload');
     xhr.setRequestHeader('X-Name', encodeURIComponent(orig));
@@ -342,6 +353,7 @@ function upload(file) {
       if (xhr.status === 200) {
         const r = JSON.parse(xhr.responseText);
         update({ status: 'done', name: r.name, kind: r.kind, size: r.size, orig: r.orig, url: r.kind === 'image' ? '/' + r.name : null });
+        if (blob) URL.revokeObjectURL(blob);
       } else update({ status: 'error', error: xhr.responseText.trim() || `upload failed (${xhr.status})` });
     };
     xhr.onerror = () => update({ status: 'error', error: 'upload failed' });
@@ -402,6 +414,7 @@ marked.use({
   gfm: true,
   breaks: true, // a line break shows, as in Claude Code
   renderer: {
+    checkbox({ checked }) { return checked ? '☑ ' : '☐ '; },
     code({ text, lang }) {
       // Only a named language is highlighted, as Claude Code does: a guess
       // costs much and would change the colours when the reply is done.
@@ -446,18 +459,23 @@ function md(text) {
 const blockCache = new Map();
 function mdLive(text) {
   const tokens = marked.lexer(text);
+  if (tokens.some(t => t.type === 'html')) return pure(marked.parser(tokens)); // markup can span blocks: whole
+  const links = JSON.stringify(tokens.links || {}); // a block's links can be defined below it
   let out = '';
   tokens.forEach((t, j) => {
-    let h = blockCache.get(t.raw);
+    const key = t.raw + '\0' + links;
+    let h = blockCache.get(key);
     if (h === undefined) {
       const one = [t];
       one.links = tokens.links;
       h = pure(marked.parser(one));
-      if (j < tokens.length - 1) blockCache.set(t.raw, h); // the last may still grow
+      if (j < tokens.length - 1) { // the last may still grow
+        blockCache.set(key, h);
+        if (blockCache.size > 500) blockCache.delete(blockCache.keys().next().value);
+      }
     }
     out += h;
   });
-  if (blockCache.size > 500) blockCache.clear();
   return out;
 }
 
@@ -806,6 +824,7 @@ function Queue({ queue }) {
 
 function takeOff(a) {
   if (a.xhr && a.xhr.readyState < 4) a.xhr.abort(); // not uploaded for nothing
+  if (a.url?.startsWith('blob:')) URL.revokeObjectURL(a.url);
   set({ atts: S.atts.filter(x => x.id !== a.id) });
   inputEl?.focus();
 }

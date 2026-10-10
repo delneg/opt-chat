@@ -260,9 +260,11 @@ func (w *webServer) upload(rw http.ResponseWriter, r *http.Request) {
 type request struct {
 	T      string       `json:"t"` // send, edit, remove, pull, now, stop, history, paths
 	Text   string       `json:"text"`
-	Files  []attachment `json:"files"` // send: uploaded
-	Paths  []string     `json:"paths"` // send: typed, to attach
-	Now    bool         `json:"now"`   // send: and stop the turn underway for it
+	Files  []attachment `json:"files"`  // send: uploaded
+	Paths  []string     `json:"paths"`  // send: typed, to attach; null: not looked for yet
+	Skip   []string     `json:"skip"`   // send: typed, not to attach
+	Chosen []string     `json:"chosen"` // send: typed and hidden, to attach
+	Now    bool         `json:"now"`    // send: and stop the turn underway for it
 	ID     int          `json:"id"`
 	Before int          `json:"before"`
 	Seq    int          `json:"seq"`
@@ -393,7 +395,9 @@ func (w *webServer) serve(req request) any {
 			return failed(err)
 		}
 		if req.Paths == nil { // sent before the page looked: the files it names, as the page would
-			req.Paths = slices.DeleteFunc(filePaths(req.Text), hidden)
+			req.Paths = slices.DeleteFunc(filePaths(req.Text), func(p string) bool {
+				return slices.Contains(req.Skip, p) || hidden(p) && !slices.Contains(req.Chosen, p)
+			})
 		}
 		typed, err := c.attachPaths(req.Paths)
 		if err != nil {

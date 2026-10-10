@@ -101,6 +101,12 @@ func fakeClaude() {
 			say(textBlock("waiting"), block{Type: "tool_use", ID: "w1", Name: "Bash", Input: []byte(`{"command":"wait"}`)})
 			next, _ := read(<-lines)
 			result("got: " + next)
+		case strings.Contains(in, "tool-after-pause"):
+			say(textBlock("pausing"))
+			time.Sleep(400 * time.Millisecond)
+			say(block{Type: "tool_use", ID: "p1", Name: "Bash", Input: []byte(`{"command":"x"}`)})
+			next, _ := read(<-lines)
+			result("got: " + next)
 		case strings.Contains(in, "wait-for-stop"):
 			say(textBlock("working"))
 			<-stop

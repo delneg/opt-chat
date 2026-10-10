@@ -243,6 +243,25 @@ func TestQueueEditPullSendNow(t *testing.T) {
 	}
 }
 
+// A message sent while Opt writes waits in the queue, then joins the turn
+// at its next tool call.
+func TestQueueJoinsAtToolCall(t *testing.T) {
+	c, _ := fakeChat(t, t.TempDir(), 100)
+	record(c)
+	h := newHarness(t, c)
+	h.input(message{kind: "user", text: "tool-after-pause"})
+	waitFor(t, "the turn", func() bool { return hasLogged(c, "opt: pausing") })
+	h.input(message{kind: "user", text: "joins"})
+	if _, q := hubState(c); len(q) != 1 || hasLogged(c, "user: joins") {
+		t.Fatalf("not queued: %+v", q)
+	}
+	waitFor(t, "idle", h.idle)
+	want := []string{"user: tool-after-pause", "opt: pausing", `tool: Bash {"command":"x"}`, "user: joins", "opt: got: joins"}
+	if got := logged(c); !slices.Equal(got, want) {
+		t.Fatalf("logged %q, want %q", got, want)
+	}
+}
+
 // Send now while a turn waits for summaries: it goes at once, seeing the
 // message not summarized yet by its head.
 func TestSendNowWhileSettling(t *testing.T) {

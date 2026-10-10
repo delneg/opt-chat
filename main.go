@@ -196,15 +196,23 @@ type queued struct {
 }
 
 func (h *harness) input(m message) {
+	// A report joins the turn underway at once, and so does the user's
+	// message while a tool call runs: the model gets it with the result.
+	// It is sent without h.mu, as everything sent to a call is: a write to
+	// the call can wait on the call, which can wait on h.mu (flush).
+	h.mu.Lock()
+	t := h.turn
+	if h.quitting {
+		t = nil
+	}
+	h.mu.Unlock()
+	if t != nil && (m.kind != "user" || t.inTool()) && t.Send(&m) {
+		return
+	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.quitting { // a report from a subagent being stopped
-		h.agent.chat.Log(m.kind, m.full(), m.images...)
-		return
-	}
-	// A report joins the turn underway at once, and so does the user's
-	// message while a tool call runs: the model gets it with the result.
-	if h.turn != nil && (m.kind != "user" || h.turn.inTool()) && h.turn.Send(&m) {
+		logAll(h.agent.chat, []message{m})
 		return
 	}
 	h.lastID++
@@ -232,18 +240,26 @@ func (h *harness) publish() {
 // starts: it reaches the model with the call's result.
 func (h *harness) flush() {
 	h.mu.Lock()
-	defer h.mu.Unlock()
-	if h.turn == nil || len(h.queue) == 0 {
+	t, q := h.turn, h.queue
+	if t == nil || len(q) == 0 {
+		h.mu.Unlock()
 		return
 	}
+	h.queue = nil
+	h.publish()
+	h.mu.Unlock()
 	var left []queued
-	for _, q := range h.queue {
-		if !h.turn.Send(&q.message) {
-			left = append(left, q)
+	for _, it := range q {
+		if !t.Send(&it.message) {
+			left = append(left, it)
 		}
 	}
-	h.queue = left
-	h.publish()
+	if len(left) > 0 { // the call ended first: they start the next turn
+		h.mu.Lock()
+		h.queue = append(left, h.queue...)
+		h.publish()
+		h.mu.Unlock()
+	}
 }
 
 // edit changes a queued message's text; false once it is sent.

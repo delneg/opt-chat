@@ -685,7 +685,7 @@ func importPlan(c *Chat, sessions []session) string {
 		}
 	}
 	return fmt.Sprintf("%s (%.1f MB) from %s, %s to %s. Summarizing them takes about\n"+
-		"%s to the compaction model, and turns wait until they are done.",
+		"%s to the compaction model; meanwhile the chat answers from what is summarized.",
 		count(n, "message"), float64(bytes)/1e6, count(len(sessions), "session"), first.Local().Format(time.DateOnly),
 		last.Local().Format(time.DateOnly), count(summaryCalls(at, sizes), "call"))
 }

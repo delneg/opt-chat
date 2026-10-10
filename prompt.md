@@ -21,8 +21,9 @@ Each message has a kind:
 The summaries form a binary tree: each message is compressed into a line (a
 short message is its own line), then adjacent lines are merged in pairs, again
 and again. So recent lines cover one message each, and older lines cover more. A
-message not summarized yet shows as "(not summarized yet: zoom it)". A text too
-long for one message is split over several in a row.
+line not summarized yet ends "(not summarized yet: zoom it)", after the head of
+its message when it is one. A text too long for one message is split over
+several in a row.
 
 The view may come in two parts, each inside <chat> tags: its opening lines
 alone in a message that says so, then the rest with the input. Reply only "ok"

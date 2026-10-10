@@ -94,7 +94,7 @@ func (a *Agent) runAgent(name, task, effort string) {
 		a.mu.Lock()
 		delete(a.running, name)
 		a.mu.Unlock()
-		dim(fmt.Sprintf("[%s] done", name))
+		a.chat.hub.notice("info", "[%s] done", name)
 		if !strings.HasPrefix(text, "["+name+"]") { // as the prompt asks of a report
 			text = "[" + name + "] " + text
 		}
@@ -105,7 +105,7 @@ func (a *Agent) runAgent(name, task, effort string) {
 		return
 	}
 	a.agentWrite(name, "task", task)
-	dim(fmt.Sprintf("[%s] started", name))
+	a.chat.hub.notice("info", "[%s] started", name)
 	c := a.chat
 	failed := func(err error) string {
 		if a.life.Err() != nil {
@@ -118,7 +118,7 @@ func (a *Agent) runAgent(name, task, effort string) {
 		return
 	}
 	c.mu.Lock()
-	lines := c.lines(c.view.keys)
+	lines := c.callView()
 	c.mu.Unlock()
 	p, err := a.start(context.Background(), a.amodel, effort, roleAgent)
 	if err != nil {

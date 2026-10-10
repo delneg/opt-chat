@@ -269,7 +269,7 @@ func TestImages(t *testing.T) {
 	if text, imgs := c.Zoom(0, 1); text != "0+1|user: look" || !slices.Equal(imgs, []string{name}) {
 		t.Fatalf("zoom(0, 1) = %q, %v", text, imgs)
 	}
-	if b := c.imageBlocks([]string{"files/gone.png"}); b[0].Type != "text" {
+	if b := c.fileBlocks([]string{"files/gone.png"}); b[0].Type != "text" {
 		t.Fatalf("lost image: %v", b)
 	}
 	waitIdle(t, c)

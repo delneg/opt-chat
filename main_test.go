@@ -8,17 +8,22 @@ import (
 	"testing"
 )
 
-// imagePaths reads paths the way terminals drop them.
-func TestImagePaths(t *testing.T) {
+// filePaths reads paths the way terminals drop them: absolute or from ~/,
+// files only, each once.
+func TestFilePaths(t *testing.T) {
 	dir := t.TempDir()
-	for _, f := range []string{"a.png", "my shot.JPG", "q'd.gif"} {
+	for _, f := range []string{"a.png", "my shot.JPG", "q'd.gif", "notes.txt"} {
 		os.WriteFile(filepath.Join(dir, f), []byte("x"), 0o600)
 	}
 	os.Mkdir(filepath.Join(dir, "d.png"), 0o700)
-	a, spaced, quoted := filepath.Join(dir, "a.png"), filepath.Join(dir, "my shot.JPG"), filepath.Join(dir, "q'd.gif")
-	msg := "see " + a + ", " + dir + `/my\ shot.JPG and '` + spaced + `' "` + quoted + `" ` + dir + "/d.png " + dir + "/none.png notes.txt"
-	if got := imagePaths(msg); !slices.Equal(got, []string{a, spaced, spaced, quoted}) {
-		t.Fatalf("imagePaths = %q", got)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	os.WriteFile(filepath.Join(home, "h.pdf"), []byte("x"), 0o600)
+	a, spaced, quoted, notes := filepath.Join(dir, "a.png"), filepath.Join(dir, "my shot.JPG"), filepath.Join(dir, "q'd.gif"), filepath.Join(dir, "notes.txt")
+	t.Chdir(dir)
+	msg := "see " + a + ", " + dir + `/my\ shot.JPG and '` + spaced + `' "` + quoted + `" ` + dir + "/d.png " + dir + "/none.png notes.txt " + notes + ". ~/h.pdf"
+	if got := filePaths(msg); !slices.Equal(got, []string{a, spaced, quoted, notes, filepath.Join(home, "h.pdf")}) {
+		t.Fatalf("filePaths = %q", got)
 	}
 }
 

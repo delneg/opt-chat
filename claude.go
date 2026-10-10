@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"cmp"
 	"context"
 	"encoding/base64"
 	"encoding/json/jsontext"
@@ -80,9 +81,11 @@ type block struct {
 	Text     string         `json:"text,omitempty"`
 	Source   *source        `json:"source,omitzero"` // image
 	Thinking string         `json:"thinking,omitempty"`
+	ID       string         `json:"id,omitempty"` // tool_use
 	Name     string         `json:"name,omitempty"`
 	Input    jsontext.Value `json:"input,omitzero"`
-	Content  jsontext.Value `json:"content,omitzero"` // tool_result: a string or blocks
+	ToolID   string         `json:"tool_use_id,omitempty"` // tool_result
+	Content  jsontext.Value `json:"content,omitzero"`      // tool_result: a string or blocks
 	IsError  bool           `json:"is_error,omitzero"`
 	ImageURL jsontext.Value `json:"image_url,omitzero"` // Codex's input_image, read by import
 }
@@ -121,10 +124,34 @@ type event struct {
 	Message struct {
 		Content jsontext.Value `json:"content"`
 	} `json:"message"`
-	Result  string `json:"result"`
-	IsError bool   `json:"is_error"`
-	Usage   usage  `json:"usage"`
+	Result  string         `json:"result"`
+	IsError bool           `json:"is_error"`
+	Usage   usage          `json:"usage"`
+	Event   jsontext.Value `json:"event"`                  // stream_event: one of the API's own
+	Think   int            `json:"estimated_tokens_delta"` // system thinking_tokens
 }
+
+// streamEvent is the API's streaming event inside a stream_event, which a
+// turn's call sends as it goes (--include-partial-messages).
+type streamEvent struct {
+	Type         string `json:"type"`
+	ContentBlock struct {
+		Type string `json:"type"`
+		Name string `json:"name"`
+	} `json:"content_block"`
+	Delta struct {
+		Type     string `json:"type"`
+		Text     string `json:"text"`
+		Thinking string `json:"thinking"`
+	} `json:"delta"`
+	Message struct {
+		Usage usage `json:"usage"`
+	} `json:"message"`
+	Usage usage `json:"usage"`
+}
+
+// failure is what a result that is an error says, never empty.
+func (e event) failure() string { return cmp.Or(e.Result, e.Subtype, "error") }
 
 func (e event) blocks() []block {
 	var bs []block
@@ -193,12 +220,19 @@ func (a *Agent) start(ctx context.Context, model, effort string, r role) (p *pro
 	if effort != "" {
 		args = append(args, "--effort", effort)
 	}
-	if r == roleCompact {
+	switch r {
+	case roleCompact:
 		args = append(args, "--settings", noTools)
+	case roleTurn: // the reply streams to the pages as it is written
+		args = append(args, "--include-partial-messages")
 	}
 	cmd := exec.CommandContext(ctx, "claude", args...)
 	// Stopped gently, so Claude Code can stop what its tools started.
 	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
+	// In a process group of its own: the terminal's Ctrl-C goes to the
+	// foreground group, and would kill every call, compactions too. Calls
+	// stop only through ctx.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.WaitDelay = 5 * time.Second
 	cmd.Dir = a.cwd
 	cmd.Env = childEnv()
@@ -292,7 +326,10 @@ func (p *proc) wait() error {
 	p.ended.Do(func() {
 		p.close()
 		if err := p.cmd.Wait(); err != nil {
-			p.err = fmt.Errorf("%w: %s", err, lastLine(p.stderr.String()))
+			p.err = err
+			if last := lastLine(p.stderr.String()); last != "" {
+				p.err = fmt.Errorf("%w: %s", err, last)
+			}
 		}
 		p.done()
 	})
@@ -363,7 +400,7 @@ func awaitResult(p *proc, u *usage, each func(event)) error {
 		}
 		u.add(e.Usage)
 		if e.IsError {
-			return errors.New(e.Result)
+			return errors.New(e.failure())
 		}
 		return nil
 	}
@@ -404,7 +441,7 @@ func (a *Agent) Compact(ctx context.Context, lines []string, task []block) (stri
 		if (e.IsError || line == "") && best != "" {
 			return best, nil
 		} else if e.IsError {
-			return "", fmt.Errorf("compaction: %s", e.Result)
+			return "", fmt.Errorf("compaction: %s", e.failure())
 		} else if line == "" {
 			return "", errors.New("empty compaction")
 		}
@@ -424,23 +461,53 @@ func (a *Agent) Compact(ctx context.Context, lines []string, task []block) (stri
 // message is one the chat hands a turn: the user's (kind user) or an agent's report (kind work).
 type message struct {
 	kind, text string
-	images     []string // saved with Chat.saveImage
-	logged     bool     // by a call that died before it could answer
+	extra      string       // what attachments add to the text, which an edit of it keeps
+	images     []string     // saved with Chat.saveFile: images and PDFs
+	files      []string     // the attachments' names, as the queue shows them
+	uploads    []attachment // those a page uploaded, which a stop hands back to it
+	logged     bool         // by a call that died before it could answer
 }
 
-// content is m as a call gets it: its text, then its images.
+// full is m's text as the chat logs it: its own, then what its attachments add.
+func (m message) full() string {
+	switch {
+	case m.extra == "":
+		return m.text
+	case m.text == "":
+		return m.extra
+	}
+	return m.text + "\n\n" + m.extra
+}
+
+// content is m as a call gets it: its text, then its images and PDFs.
 func (c *Chat) content(m message) []block {
-	return append([]block{textBlock(m.text)}, c.imageBlocks(m.images)...)
+	return append([]block{textBlock(m.full())}, c.fileBlocks(m.images)...)
 }
 
 // Turn is one fresh `claude -p` call: [system] [view] [message], logging
 // each reply, tool call and result as it happens.
 type Turn struct {
 	agent   *Agent
+	onTool  func() // called as each tool call starts: queued messages join the turn then
 	mu      sync.Mutex
 	open    bool      // taking messages: from its own until its result
 	p       *proc     // set once the view and input are sent
 	pending []message // taken while the view was being sent
+	tools   int       // tool calls started and not answered
+}
+
+// inTool reports whether a tool call is running: a message sent now reaches
+// the model with its result, as soon as it could.
+func (t *Turn) inTool() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.open && t.p != nil && t.tools > 0
+}
+
+func (t *Turn) countTools(n int) {
+	t.mu.Lock()
+	t.tools = max(0, t.tools+n)
+	t.mu.Unlock()
 }
 
 // Send hands a message to the running call, between its tool calls. When it
@@ -452,7 +519,7 @@ func (t *Turn) Send(m *message) bool {
 		return false
 	}
 	c := t.agent.chat
-	c.Log(m.kind, m.text, m.images...)
+	c.Log(m.kind, m.full(), m.images...)
 	m.logged = true
 	if t.p == nil {
 		t.pending = append(t.pending, *m)
@@ -482,13 +549,18 @@ func (t *Turn) detach() []message {
 
 func (t *Turn) Run(ctx context.Context, msgs []message) error {
 	a, c := t.agent, t.agent.chat
+	h := c.hub
 	c.mu.Lock()
-	lines := c.lines(c.view.keys) // rendered before the new messages are logged
+	lines := c.callView() // rendered before the new messages are logged
+	partial := len(c.ready0)
 	c.mu.Unlock()
+	h.setTurn(func(lt *liveTurn) {
+		lt.Phase, lt.Partial, lt.Backlog, lt.Written, lt.Tool = "reading", partial, 0, 0, ""
+	})
 	var input []block
 	for _, m := range msgs {
 		if !m.logged {
-			c.Log(m.kind, m.text, m.images...)
+			c.Log(m.kind, m.full(), m.images...)
 		}
 		input = append(input, c.content(m)...)
 	}
@@ -504,6 +576,11 @@ func (t *Turn) Run(ctx context.Context, msgs []message) error {
 	}
 	var vu, u usage
 	acking := true
+	var written strings.Builder   // the reply being written, until it is logged
+	done, out, thought := 0, 0, 0 // output tokens: of the replies before, this one's, its thinking's estimate
+	phase := func(p, tool string) {
+		h.setTurn(func(lt *liveTurn) { lt.Phase, lt.Tool, lt.Tokens = p, tool, done+max(out, thought) })
+	}
 	// Everything the model does is logged as it happens, even during the
 	// ack, where only its "ok" is dropped.
 	handle := func(e event) {
@@ -511,39 +588,84 @@ func (t *Turn) Run(ctx context.Context, msgs []message) error {
 			return // a subagent's own steps stay out of the chat
 		}
 		switch e.Type {
+		case "stream_event":
+			var s streamEvent
+			if acking || json.Unmarshal(e.Event, &s) != nil {
+				return
+			}
+			switch s.Type {
+			case "message_start":
+				done, out, thought = done+out, s.Message.Usage.Output, 0
+				phase("thinking", "")
+			case "message_delta":
+				out = s.Usage.Output
+				phase("thinking", "")
+			case "content_block_start":
+				switch s.ContentBlock.Type {
+				case "text":
+					written.Reset()
+					h.restart("text")
+					phase("writing", "")
+				case "tool_use":
+					phase("tool", strings.TrimPrefix(s.ContentBlock.Name, "mcp__opt__"))
+				case "thinking":
+					h.restart("thinking")
+					phase("thinking", "")
+				}
+			case "content_block_delta":
+				switch s.Delta.Type {
+				case "text_delta":
+					written.WriteString(s.Delta.Text)
+					h.delta("text", s.Delta.Text)
+				case "thinking_delta":
+					h.delta("thinking", s.Delta.Thinking)
+				}
+			}
+		case "system":
+			if e.Subtype == "thinking_tokens" && !acking {
+				thought += e.Think
+				phase("thinking", "")
+			}
 		case "assistant":
 			for _, b := range e.blocks() {
 				switch b.Type {
 				case "thinking":
-					if b.Thinking != "" {
-						dim(b.Thinking)
+					if b.Thinking != "" && !acking {
+						h.thought(b.Thinking)
 					}
 				case "text":
 					if !acking {
-						fmt.Println(b.Text)
+						h.clearText()
+						written.Reset()
 						c.Log("opt", b.Text)
 					}
 				case "tool_use":
-					call := toolCall(b)
-					dim("→ " + oneLine(call, 200))
-					c.Log("tool", call)
+					c.logRef("tool", toolCall(b), b.ID)
+					t.countTools(1)
+					phase("tool", strings.TrimPrefix(b.Name, "mcp__opt__"))
+					if !acking && t.onTool != nil {
+						t.onTool()
+					}
 				}
 			}
 		case "user":
 			for _, b := range e.blocks() {
 				if b.Type == "tool_result" {
 					out, imgs := resultContent(b.Content)
-					dim("  " + oneLine(out, 160))
 					var names []string
 					for _, img := range imgs {
 						if name, err := c.saveImage(img); err == nil {
 							names = append(names, name)
 						} else {
-							warn("echo image: %v", err)
+							h.notice("warn", "echo image: %v", err)
 						}
 					}
-					c.Log("echo", clip(out, clipMax), names...)
+					c.logRef("echo", clip(out, clipMax), b.ToolID, names...)
+					t.countTools(-1)
 				}
+			}
+			if !acking {
+				phase("thinking", "")
 			}
 		}
 	}
@@ -553,6 +675,7 @@ func (t *Turn) Run(ctx context.Context, msgs []message) error {
 		return err
 	}
 	acking = false
+	phase("thinking", "")
 	t.mu.Lock()
 	p.send(second...)
 	for _, m := range t.pending {
@@ -570,8 +693,8 @@ func (t *Turn) Run(ctx context.Context, msgs []message) error {
 			continue
 		}
 		u.add(e.Usage)
-		if e.IsError {
-			warn("turn: %s", e.Result)
+		if e.IsError && ctx.Err() == nil {
+			h.notice("warn", "turn: %s", e.failure())
 		}
 		// Claude Code delivers a message sent mid-run into this same result,
 		// so the call is done: close it to new messages and let it exit.
@@ -579,8 +702,12 @@ func (t *Turn) Run(ctx context.Context, msgs []message) error {
 	}
 	t.detach()
 	err = p.wait()
+	if s := written.String(); s != "" { // stopped mid-reply: what it said stays in the chat
+		h.clearText()
+		c.Log("opt", s+" [interrupted]")
+	}
 	n, cu := a.takeCompactions()
-	dim(fmt.Sprintf("[view: %s | turn: %s | %d compactions: %s]", vu, u, n, cu))
+	h.ended(turnEnd{View: vu, Turn: u, Compactions: n, CUsage: cu})
 	return err
 }
 

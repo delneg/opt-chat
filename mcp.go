@@ -96,7 +96,7 @@ func mcpResult(a *Agent, method string, params jsontext.Value, fromAgent bool) (
 		json.Unmarshal(params, &p)
 		text, images := callTool(a, fromAgent, p.Name, p.Args)
 		content := []map[string]any{{"type": "text", "text": text}}
-		for _, b := range a.chat.imageBlocks(images) {
+		for _, b := range a.chat.fileBlocks(images) {
 			if b.Source == nil { // lost
 				content = append(content, map[string]any{"type": "text", "text": b.Text})
 			} else {

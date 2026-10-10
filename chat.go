@@ -10,6 +10,7 @@ import (
 	"encoding/json/v2"
 	"errors"
 	"fmt"
+	"io"
 	"math/bits"
 	"net/http"
 	"os"
@@ -53,7 +54,8 @@ type Msg struct {
 	Text   string    `json:"text"`
 	Size   int       `json:"size"`
 	Date   time.Time `json:"date"`
-	Images []string  `json:"images,omitzero"` // files/<hash>.<ext>, named by content
+	Images []string  `json:"images,omitzero"` // files/<hash>.<ext>, named by content: images and PDFs, which go to the model
+	Ref    string    `json:"ref,omitzero"`    // a tool call's id, on it and on its echo
 }
 
 type Node struct {
@@ -80,6 +82,7 @@ type Chat struct {
 	readyM  []key        // merges whose line needs a model call
 	written int          // lines a model has built in this run
 	changed chan struct{}
+	hub     *hub // where what happens is shown; nil: nowhere
 	// compact builds one line with a model; set before the first pump, nil
 	// again at quit.
 	compact func(ctx context.Context, context []string, task []block) (string, error)
@@ -225,9 +228,14 @@ func (c *Chat) appendDay(sub string, vs ...any) {
 }
 
 // Log appends one message, splitting text too long for one. Its images
-// (names from saveImage) go with the first part.
+// (names from saveFile: images and PDFs) go with the first part.
 func (c *Chat) Log(kind, text string, images ...string) {
 	c.logMsgs([]Msg{{Kind: kind, Text: text, Date: time.Now(), Images: images}})
+}
+
+// logRef logs a tool call or its echo, under the call's id.
+func (c *Chat) logRef(kind, text, ref string, images ...string) {
+	c.logMsgs([]Msg{{Kind: kind, Text: text, Date: time.Now(), Images: images, Ref: ref}})
 }
 
 // logMsgs appends messages (their kind, text, date and images) in one
@@ -239,7 +247,7 @@ func (c *Chat) logMsgs(ms []Msg) {
 	var parts []any
 	for _, m := range ms {
 		for j, part := range splitText(m.Text, clipMax) {
-			p := Msg{I: len(c.msgs), Kind: m.Kind, Text: part, Size: len(m.Kind) + 2 + len(part), Date: m.Date}
+			p := Msg{I: len(c.msgs), Kind: m.Kind, Text: part, Size: len(m.Kind) + 2 + len(part), Date: m.Date, Ref: m.Ref}
 			if j == 0 {
 				p.Images = m.Images
 			}
@@ -248,6 +256,7 @@ func (c *Chat) logMsgs(ms []Msg) {
 		}
 	}
 	c.appendDay("main", parts...)
+	c.hub.logged(slices.Clone(c.msgs[from:]))
 	for i := from; i < len(c.msgs); i++ {
 		c.need(key{0, i})
 		if c.view.push(key{0, i}, c) {
@@ -268,35 +277,48 @@ func (c *Chat) saveImage(b []byte) (string, error) {
 	if !ok || !slices.Contains([]string{"png", "jpeg", "gif", "webp"}, ext) {
 		return "", fmt.Errorf("not a PNG, JPEG, GIF or WebP image")
 	}
-	sum := sha256.Sum256(b)
-	name := filepath.Join("files", hex.EncodeToString(sum[:16])+"."+ext)
-	if _, err := os.Stat(filepath.Join(c.dir, name)); err == nil {
-		return name, nil
-	}
+	name, _, err := c.saveFile(bytes.NewReader(b), ext)
+	return name, err
+}
+
+// saveFile stores what r reads in files/, named by its content with the
+// extension ext, and returns that name and its size.
+func (c *Chat) saveFile(r io.Reader, ext string) (string, int64, error) {
 	f, err := os.CreateTemp(filepath.Join(c.dir, "files"), "tmp-*")
 	if err != nil {
-		return "", err
+		return "", 0, err
 	}
 	defer os.Remove(f.Name())
-	_, err = f.Write(b)
+	h := sha256.New()
+	n, err := io.Copy(io.MultiWriter(f, h), r)
 	if err == nil {
 		err = f.Sync()
 	}
 	if err := errors.Join(err, f.Close()); err != nil {
-		return "", err
+		return "", 0, err
 	}
-	return name, os.Rename(f.Name(), filepath.Join(c.dir, name))
+	name := filepath.Join("files", hex.EncodeToString(h.Sum(nil)[:16]))
+	if ext != "" {
+		name += "." + ext
+	}
+	if _, err := os.Stat(filepath.Join(c.dir, name)); err == nil {
+		return name, n, nil
+	}
+	return name, n, os.Rename(f.Name(), filepath.Join(c.dir, name))
 }
 
-// imageBlocks loads saved images as content blocks for a call.
-func (c *Chat) imageBlocks(names []string) []block {
+// fileBlocks loads saved images and PDFs as content blocks for a call.
+func (c *Chat) fileBlocks(names []string) []block {
 	return lo.Map(names, func(name string, _ int) block {
 		b, err := os.ReadFile(filepath.Join(c.dir, name))
 		if err != nil {
-			return textBlock("[image lost: " + name + "]")
+			return textBlock("[file lost: " + name + "]")
 		}
-		mt := "image/" + strings.TrimPrefix(filepath.Ext(name), ".")
-		return block{Type: "image", Source: &source{Type: "base64", MediaType: mt, Data: base64.StdEncoding.EncodeToString(b)}}
+		data := base64.StdEncoding.EncodeToString(b)
+		if ext := strings.TrimPrefix(filepath.Ext(name), "."); ext != "pdf" {
+			return block{Type: "image", Source: &source{Type: "base64", MediaType: "image/" + ext, Data: data}}
+		}
+		return block{Type: "document", Source: &source{Type: "base64", MediaType: "application/pdf", Data: data}}
 	})
 }
 
@@ -434,7 +456,7 @@ func (c *Chat) build(k key, compact func(context.Context, []string, []block) (st
 	if err != nil {
 		if !c.failed[k] {
 			c.failed[k] = true
-			warn("compaction %s failed, trying again at the next message or in %s: %v", k.name(), retryIn, err)
+			c.hub.notice("warn", "compaction %s failed, trying again at the next message or in %s: %v", k.name(), retryIn, err)
 		}
 		c.cooling[k] = true
 		// ponytail: also on a timer, so a turn waiting on this line never waits for a message that won't come.
@@ -488,7 +510,7 @@ func (c *Chat) compactInput(k key) ([]string, []block) {
 		if len(m.Images) == 0 {
 			return c.lines(keys), []block{textBlock(in + "</input>")}
 		}
-		return c.lines(keys), slices.Concat([]block{textBlock(in)}, c.imageBlocks(m.Images), []block{textBlock("</input>")})
+		return c.lines(keys), slices.Concat([]block{textBlock(in)}, c.fileBlocks(m.Images), []block{textBlock("</input>")})
 	}
 	a, b := k.kids()
 	return c.lines(keys), []block{textBlock(fmt.Sprintf("Compaction: merge lines %s and %s, adjacent, into one line of at most\n"+
@@ -503,31 +525,94 @@ func (c *Chat) notify() {
 	c.changed = make(chan struct{})
 }
 
-// settle waits until every message is summarized, so no call sees a
-// placeholder. It tells waiting how many are left, and how many lines a
-// model has written since it began, then again each minute.
+const (
+	settleMax  = 256             // a call waits for every line when at most this many are to build...
+	settleWait = 2 * time.Minute // ...and for at most this long
+)
+
+// settle waits until every message is summarized, so that no call sees a
+// placeholder, as the recipe says, when that is a short wait. Behind a bigger
+// backlog (an import), or after settleWait, it returns at once, and the call
+// sees the tree as far as it is built (callView), as in UniiChat: the chat
+// never waits hours. It tells waiting how many messages are left, and how
+// many lines a model has written since it began, at each change.
 func (c *Chat) settle(ctx context.Context, waiting func(n, written int)) error {
-	var told time.Time
 	c.mu.Lock()
 	from := c.written
 	c.mu.Unlock()
+	timeout := time.NewTimer(settleWait)
+	defer timeout.Stop()
 	for {
 		c.mu.Lock()
 		n, written, ch := len(c.ready0), c.written-from, c.changed
+		big := len(c.ready0)+len(c.readyM) > settleMax
 		c.mu.Unlock()
-		if n == 0 {
+		if n == 0 || big {
 			return nil
 		}
-		if time.Since(told) >= time.Minute {
-			waiting(n, written)
-			told = time.Now()
-		}
+		waiting(n, written)
 		select {
 		case <-ch:
+		case <-timeout.C:
+			return nil
 		case <-ctx.Done():
 			return ctx.Err()
 		}
 	}
+}
+
+// callView is the view as a turn or subagent sees it. With every line built,
+// it is the view itself, byte for byte, so the cache holds. Behind a backlog
+// (see settle) a message not summarized yet shows its head, and once that
+// passes viewHi, runs of lines not built yet, then any lines, oldest first,
+// show as their parents, built or not, down to viewLo: a partial tree that
+// zoom opens like any other. Caller holds c.mu.
+func (c *Chat) callView() []string {
+	keys := c.view.keys
+	if !slices.ContainsFunc(keys, func(k key) bool { return !c.built(k) }) {
+		return c.lines(keys)
+	}
+	size := lo.SumBy(keys, func(k key) int { return len(c.callLine(k)) + 1 })
+	for _, anyPair := range []bool{false, true} {
+		for merged := true; merged && size > viewHi; {
+			merged = false
+			out := make([]key, 0, len(keys))
+			for j := 0; j < len(keys); j++ {
+				a := keys[j]
+				if j+1 < len(keys) && size > viewLo {
+					b := keys[j+1]
+					if a.L == b.L && a.I%2 == 0 && b.I == a.I+1 && (anyPair || !c.built(a) && !c.built(b)) {
+						p := a.parent()
+						size += len(c.callLine(p)) - len(c.callLine(a)) - len(c.callLine(b)) - 1
+						out = append(out, p)
+						j++
+						merged = true
+						continue
+					}
+				}
+				out = append(out, a)
+			}
+			keys = out
+		}
+	}
+	return lo.Map(keys, func(k key, _ int) string { return c.callLine(k) })
+}
+
+// callLine is line k as a call sees it: a message not summarized yet shows
+// its head, up to nodeMax bytes.
+func (c *Chat) callLine(k key) string {
+	if k.L > 0 || c.built(k) {
+		return c.line(k)
+	}
+	m := c.msgs[k.I]
+	text := strings.ReplaceAll(m.Text, "\n", " ")
+	if cut := head(text, nodeMax); cut != text {
+		text = cut + "…"
+	}
+	if n := len(m.Images); n > 0 {
+		text += fmt.Sprintf(" [%d attached]", n)
+	}
+	return fmt.Sprintf("%s|%s: %s %s", k.name(), m.Kind, text, unbuilt)
 }
 
 // Zoom opens line id+n into its two halves; n = 1 gives the message whole,

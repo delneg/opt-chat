@@ -88,7 +88,7 @@ func fakeClaude() {
 		case strings.Contains(text, "Compaction:"):
 			result(fmt.Sprintf("line with %d images", images))
 		case strings.Contains(text, "wait-for-message"):
-			say(textBlock("waiting"))
+			say(textBlock("waiting"), block{Type: "tool_use", ID: "w1", Name: "Bash", Input: []byte(`{"command":"wait"}`)})
 			next, _ := read(<-lines)
 			result("got: " + next)
 		case strings.Contains(text, "wait-for-stop"):
@@ -183,7 +183,7 @@ func TestCompact(t *testing.T) {
 		t.Fatalf("Compact = %q, %v", got, err)
 	}
 	img, _ := c.saveImage([]byte(pngHead))
-	got, err = a.Compact(context.Background(), nil, append([]block{textBlock("Compaction: x")}, c.imageBlocks([]string{img})...))
+	got, err = a.Compact(context.Background(), nil, append([]block{textBlock("Compaction: x")}, c.fileBlocks([]string{img})...))
 	if err != nil || got != "line with 1 images" {
 		t.Fatalf("Compact = %q, %v", got, err)
 	}
@@ -211,7 +211,7 @@ func TestMidRun(t *testing.T) {
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		c.mu.Lock()
-		working := len(c.msgs) == 2
+		working := len(c.msgs) == 3
 		c.mu.Unlock()
 		if working {
 			break
@@ -234,7 +234,7 @@ func TestMidRun(t *testing.T) {
 	for _, m := range c.msgs {
 		got = append(got, m.Kind+": "+m.Text)
 	}
-	if !slices.Equal(got, []string{"user: wait-for-message", "opt: waiting", "user: banana", "opt: got: banana"}) {
+	if !slices.Equal(got, []string{"user: wait-for-message", "opt: waiting", `tool: Bash {"command":"wait"}`, "user: banana", "opt: got: banana"}) {
 		t.Fatalf("logged: %q", got)
 	}
 }
@@ -390,7 +390,7 @@ func TestHarness(t *testing.T) {
 		c.mu.Lock()
 		n := len(c.msgs)
 		c.mu.Unlock()
-		if n == 2 { // its "waiting"
+		if n == 3 { // its "waiting", and its tool call
 			break
 		}
 		if time.Now().After(deadline) {
@@ -417,7 +417,7 @@ func TestHarness(t *testing.T) {
 	for _, m := range c.msgs {
 		got = append(got, m.Kind+": "+m.Text)
 	}
-	if !slices.Equal(got, []string{"user: wait-for-message", "opt: waiting", "user: banana", "opt: got: banana", "user: after quit"}) {
+	if !slices.Equal(got, []string{"user: wait-for-message", "opt: waiting", `tool: Bash {"command":"wait"}`, "user: banana", "opt: got: banana", "user: after quit"}) {
 		t.Fatalf("logged: %q", got)
 	}
 }

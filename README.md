@@ -35,8 +35,10 @@ The page works like Claude Code:
 
 - The reply streams in as it is written, as Markdown with highlighted code.
   Each tool call is one line, `Bash(ls -la)`, with the first lines of its
-  result under it; click it for the whole input and output. A spinner tells
-  what Opt is doing, for how long and how many tokens it has written so far.
+  result under it (`Read 12 lines`, `Updated with 2 additions and 1
+  removal` for files); click it, or Enter on it, for the whole input and
+  output. A spinner tells what Opt is doing, for how long and how many
+  tokens it has written so far; click its `esc to interrupt` to stop.
 - The input stays put at the bottom: Enter sends, Shift+Enter starts a new
   line, Up and Down go through your earlier messages. Output never touches
   what you type.
@@ -46,17 +48,19 @@ The page works like Claude Code:
   soon as Opt could read it: at once while a tool call runs, with that
   call's result; else at the next tool call; else it starts the next turn.
   Up on an empty input takes the last queued message back to edit.
-- Esc stops the turn, keeping what Opt had written, marked
-  `[interrupted]`; your queued messages come back into the input, as in
-  Claude Code.
+- Esc stops the turn, keeping what Opt had written, marked Interrupted
+  (`[interrupted]` in the log); your queued messages come back into the
+  input, as in Claude Code.
 - Attach files by dropping them on the page (a file from Finder, or the
   thumbnail ⌘⇧4 leaves in the corner), by pasting with ⌘V or Ctrl+V
   anywhere on the page (a screenshot copied with ⌃⌘⇧4, an image copied
   from a page, a file copied in Finder), with 📎, or by typing a path,
   `/…` or `~/…`, which shows the file it attaches above the input (×
-  leaves it as text). Images and PDFs go to the model
-  as such; text files are inlined; any other file goes as a path its tools
-  can read. See [Attachments](#attachments).
+  leaves it as text). A hidden file or folder (`~/.zshrc`, `~/.ssh/…`) is
+  only attached once you press its +, and a path in a block of code, or
+  in a message naming more than ten, is just text. Images and PDFs go to
+  the model as such; text files are inlined; any other file goes as a path
+  its tools can read. See [Attachments](#attachments).
 - A long message of yours shows folded, as a big paste does in Claude Code.
 - Scroll up for the whole chat, back to its first message, loaded as you go.
   A reload, a second tab or another window shows the turn underway,
@@ -67,7 +71,9 @@ The page works like Claude Code:
   them. `/agents` lists the subagents at work, `/help` the commands; Tab
   completes them. A line starting with any other `/word` is not sent.
 - The bar at the bottom shows the memory: messages, the view's size, what is
-  left to summarize, and the last turn's tokens. `?` lists the shortcuts.
+  left to summarize, and the last turn's tokens. `?` on an empty input lists
+  the shortcuts. While a reply lands in a tab in the background, its title
+  says so.
 
 Put your own instructions in `<dir>/AGENTS.md`: who you are, how your files
 are organized, how you want work done. They follow the system prompt. Edit
@@ -105,8 +111,9 @@ addressed to `127.0.0.1:port` or `localhost:port` (so a web page can't reach
 it through a DNS name of its own) that carry the chat's key. The key is in
 the address opt-chat prints; opening it once stores the key in a cookie
 (HttpOnly, SameSite=Strict) and drops it from the address. Requests from
-another site's page are refused, the page runs only its own scripts, and a
-reply's HTML is sanitized before it shows. Files you attached are served
+another site's page are refused, the page runs only its own scripts and
+styles, and a reply's HTML is sanitized before it shows, so it can't run
+code or restyle the page. Files you attached are served
 only as images or PDFs; anything else downloads, and none of them runs a
 script. The key and the port are kept in `<dir>/web.json`, so a page left
 open carries on after a restart; delete the file for a new key.
@@ -183,9 +190,11 @@ message gets a mark for it, which the model and its summaries see:
 
 - Images go to the model with the message, at most 2000 pixels a side and
   3.75 MB (5 MB in base64, the API's limit), shrunk when bigger: a Retina
-  screenshot stays a PNG, a photo becomes a JPEG. HEIC photos, as iPhones
-  and macOS take them, become JPEGs (with macOS's `sips`). An image over
-  80 megapixels is a path, never decoded.
+  screenshot stays a PNG, a photo becomes a JPEG, turned upright as its
+  EXIF orientation says. Only the image as sent is kept. HEIC photos, as
+  iPhones and macOS take them, become JPEGs (with macOS's `sips`). An image
+  that would take over 400 MB decoded (100 megapixels; 50 at 16 bits) or a
+  file over 200 MB is a path, never decoded.
 - PDFs up to 20 MB go to the model as documents (a request holds 32 MB,
   and base64 adds a third); a bigger one is a path.
 - Text files are inlined in the mark, up to 25,000 characters in one
@@ -302,8 +311,8 @@ their names (`zoom`, not `mcp__opt__zoom`).
 ## Test
 
 ```sh
-go test ./...          # ~50 s: three tests fsync thousands of writes
-go test -short ./...   # skips them: ~10 s
+go test ./...          # ~70 s: three tests fsync thousands of writes
+go test -short ./...   # skips them: ~20 s
 ```
 
 The tests run turns, compactions and subagents against a fake `claude`: the

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"crypto/subtle"
@@ -315,6 +316,7 @@ type (
 		Servers []mcpServer `json:"servers"`
 		SignIn  string      `json:"signIn,omitzero"` // the page to open to sign in to Name
 		Name    string      `json:"name,omitzero"`
+		Action  string      `json:"action,omitzero"` // the action answered; empty: a list asked for
 		Error   string      `json:"error,omitzero"`
 	}
 	filesReply struct {
@@ -325,6 +327,7 @@ type (
 	skillsReply struct {
 		T      string  `json:"t"` // skills: the user's skills
 		Skills []skill `json:"skills"`
+		Action string  `json:"action,omitzero"`
 		Error  string  `json:"error,omitzero"`
 	}
 	failedReply struct {
@@ -519,6 +522,7 @@ func slow(req request) bool {
 		return true
 	case "send":
 		w, _, _ := strings.Cut(strings.TrimSpace(req.Text), " ")
+		w = strings.ToLower(w)
 		return w == "/mcp" || w == "/skills"
 	}
 	return false
@@ -548,7 +552,7 @@ func (w *webServer) serveSlow(ctx context.Context, req request) any {
 			return mcpReply{T: "mcp", Servers: []mcpServer{}, Error: "Opt runs without your Claude Code setup (-claude-config=false)."}
 		}
 		var err error
-		r := mcpReply{T: "mcp", Name: req.Name}
+		r := mcpReply{T: "mcp", Name: req.Name, Action: req.Action}
 		switch req.Action {
 		case "on", "off":
 			err = a.setMCP(ctx, req.Name, req.Action == "on")
@@ -561,14 +565,14 @@ func (w *webServer) serveSlow(ctx context.Context, req request) any {
 			r.Error = err.Error()
 		}
 		if r.Servers, err = a.mcpServers(ctx); err != nil {
-			r.Servers, r.Error = []mcpServer{}, err.Error()
+			r.Servers, r.Error = []mcpServer{}, cmp.Or(r.Error, err.Error())
 		}
 		return r
 	case "skills":
 		if !a.ownConfig {
 			return skillsReply{T: "skills", Skills: []skill{}, Error: "Opt runs without your Claude Code setup (-claude-config=false)."}
 		}
-		r := skillsReply{T: "skills"}
+		r := skillsReply{T: "skills", Action: req.Action}
 		if req.Action == "set" {
 			if err := a.setSkill(ctx, req.Name, req.State); err != nil {
 				r.Error = err.Error()
@@ -576,7 +580,7 @@ func (w *webServer) serveSlow(ctx context.Context, req request) any {
 		}
 		ss, err := a.skills(ctx)
 		if err != nil {
-			ss, r.Error = []skill{}, err.Error()
+			ss, r.Error = []skill{}, cmp.Or(r.Error, err.Error())
 		}
 		r.Skills = ss
 		return r

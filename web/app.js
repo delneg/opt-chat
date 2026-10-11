@@ -122,6 +122,8 @@ function onUpdate(u) {
         queue: u.queue, asks: u.asks || [], status: u.status, last: u.last, inputs: mergeInputs(S.inputs, u.inputs), older: false,
       });
       for (const s of sending.values()) send(s.payload); // the connection may have dropped it: the key makes it once
+      if (S.panel) { set({ panel: { ...S.panel, busy: true, acting: false } }); send({ t: S.panel.kind }); } // a reply lost with the connection
+      if (S.picker && (!S.models || S.modelsError)) send({ t: 'models' });
       break;
     }
     case 'msgs': {
@@ -132,7 +134,7 @@ function onUpdate(u) {
       const patch = { msgs: S.msgs.concat(fresh), total: lastI + 1 };
       if (fresh.some(m => m.kind === 'opt')) { patch.live = ''; if (document.hidden) patch.unseen = true; }
       if (fresh.some(m => m.kind === 'tool')) patch.input = '';
-      const typed = fresh.filter(m => m.kind === 'user' && !m.part).map(m => splitMarks(m.text).body).filter(Boolean);
+      const typed = fresh.filter(m => m.kind === 'user' && !m.part).map(m => histText(m.text)).filter(Boolean);
       if (typed.length) patch.inputs = mergeInputs(S.inputs, typed);
       set(patch);
       break;
@@ -165,9 +167,14 @@ function onUpdate(u) {
       break;
     }
     case 'models': set({ models: u.models, modelsError: u.error || '' }); break;
-    case 'files': if (S.mention && u.seq === mentionSeq) set({ mention: { ...S.mention, items: u.items, sel: 0 } }); break;
+    case 'files': if (S.mention && u.seq === mentionSeq) set({ mention: { ...S.mention, items: u.items, sel: 0, stale: false } }); break;
     case 'mcp': case 'skills': {
-      const p = S.panel?.kind === u.t ? { ...S.panel, busy: false, error: u.error || '', signIn: u.signIn || S.panel.signIn, name: u.signIn ? u.name : S.panel.name } : S.panel;
+      let p = S.panel;
+      if (p?.kind === u.t && p.acting && !u.action) break; // a poll's, from before the action: its answer comes
+      if (p?.kind === u.t && (u.action || !p.acting)) {
+        p = { ...p, busy: false, acting: false, signIn: u.signIn || p.signIn, name: u.signIn ? u.name : p.name };
+        if (u.action || u.error) p.error = u.error || ''; // a poll keeps an action's error
+      }
       set(u.t === 'mcp' ? { mcp: u.servers, panel: p } : { skills: u.skills, panel: p });
       break;
     }
@@ -185,6 +192,12 @@ function onUpdate(u) {
 
 function notice(level, s) {
   set({ notices: S.notices.concat({ id: ++noticeSeq, after: lastI, level, s }).slice(-50) });
+}
+
+// histText is a message as ↑ recalls it: without its attachments, which
+// don't come back with it, nor their placeholders.
+function histText(s) {
+  return s.replace(MARK, ' ').replace(PLACE, ' ').replace(/[ \t]{2,}/g, ' ').replace(/ +\n/g, '\n').trim();
 }
 
 function mergeInputs(a, b) {
@@ -218,8 +231,27 @@ function setInput(text) {
 function restore(text, files) {
   histPos = -1;
   const cur = inputEl.value.trim();
-  setInput(text + (cur ? '\n\n' + cur : ''));
-  const back = (files || []).map(f => ({ ...f, id: ++uploadSeq, status: 'done', url: kindOf(f) === 'image' ? '/' + f.name : null, promise: Promise.resolve() }));
+  // Each queued message numbered its placeholders from 1: one taken already
+  // is numbered anew, in the text and its attachment both.
+  const taken = new Set([...S.atts, ...gone].map(a => a.at).filter(Boolean));
+  for (const m of cur.matchAll(PLACE)) taken.add(m[0]);
+  let n = placeMax(cur);
+  for (const m of text.matchAll(PLACE)) n = Math.max(n, +m[2]);
+  const parts = []; // the text, its placeholders at odd places
+  let prev = 0;
+  for (const m of text.matchAll(PLACE)) { parts.push(text.slice(prev, m.index), m[0]); prev = m.index + m[0].length; }
+  parts.push(text.slice(prev));
+  const claimed = new Set();
+  const back = (files || []).map(f => {
+    const a = { ...f, id: ++uploadSeq, status: 'done', url: kindOf(f) === 'image' ? '/' + f.name : null, promise: Promise.resolve() };
+    const j = a.at ? parts.findIndex((p, k) => k % 2 === 1 && p === a.at && !claimed.has(k)) : -1;
+    if (j < 0) return a;
+    claimed.add(j);
+    if (taken.has(a.at)) a.at = parts[j] = a.at.replace(/#\d+\]$/, `#${++n}]`);
+    taken.add(a.at);
+    return a;
+  });
+  setInput(parts.join('') + (cur ? '\n\n' + cur : ''));
   set({ atts: back.concat(S.atts) });
 }
 
@@ -241,16 +273,18 @@ function lookForPaths(now) {
 
 // The @ menu, as Claude Code's: "@" and part of a path at the caret lists
 // what it completes to; Tab or Enter takes one, a folder to list its own.
-let mentionSeq = 0, mentionTimer = 0, mentionOff = ''; // mentionOff: the text Esc closed the menu on
+let mentionSeq = 0, mentionTimer = 0, mentionOff = ''; // mentionOff: the text up to the @ Esc closed the menu on
 
 function lookForMention() {
   const el = inputEl;
   const before = el.value.slice(0, el.selectionStart);
-  const m = el.selectionStart === el.selectionEnd && before.match(/(^|\s)@([^\s@]*)$/);
-  if (!m || before === mentionOff) { if (S.mention) set({ mention: null }); return; }
-  const query = m[2], start = before.length - query.length - 1;
+  const m = el.selectionStart === el.selectionEnd && before.match(/(^|\s)@((?:\\.|[^\s@\\])*)$/); // a space in it escaped, as @ writes it
+  const start = m ? before.length - m[2].length - 1 : -1;
+  if (!m || before.slice(0, start + 1) === mentionOff) { if (S.mention) set({ mention: null }); return; }
+  const query = m[2].replace(/\\(.)/g, '$1');
   if (S.mention?.query === query && S.mention.start === start) return;
-  set({ mention: { start, query, items: S.mention?.items || [], sel: 0 } });
+  // The items listed are the last query's until this one's come: not taken.
+  set({ mention: { start, query, items: S.mention?.items || [], sel: 0, stale: true } });
   clearTimeout(mentionTimer);
   const seq = ++mentionSeq;
   mentionTimer = setTimeout(() => send({ t: 'files', text: query, seq }), 60);
@@ -261,7 +295,7 @@ function takeMention(item) {
   const end = el.selectionStart;
   el.focus();
   el.setSelectionRange(m.start, end);
-  const text = '@' + item.path + (item.dir ? '' : ' ');
+  const text = '@' + item.path.replace(/([\\ ])/g, '\\$1') + (item.dir ? '' : ' '); // as a terminal writes a path: a space escaped
   if (!document.execCommand('insertText', false, text)) el.setRangeText(text, m.start, end, 'end');
   autosize();
   set({ mention: null });
@@ -276,8 +310,8 @@ function mentionKey(e) {
   switch (e.key) {
     case 'ArrowUp': set({ mention: { ...m, sel: (m.sel + m.items.length - 1) % m.items.length } }); break;
     case 'ArrowDown': set({ mention: { ...m, sel: (m.sel + 1) % m.items.length } }); break;
-    case 'Tab': case 'Enter': if (e.shiftKey) return false; takeMention(m.items[m.sel]); break;
-    case 'Escape': mentionOff = inputEl.value.slice(0, inputEl.selectionStart); set({ mention: null }); break;
+    case 'Tab': case 'Enter': if (e.shiftKey) return false; if (!m.stale) takeMention(m.items[m.sel]); break; // stale: wait for this query's
+    case 'Escape': mentionOff = inputEl.value.slice(0, m.start + 1); set({ mention: null }); break;
     default: return false;
   }
   e.preventDefault();
@@ -288,7 +322,7 @@ function mentionKey(e) {
 function Mention() {
   const m = S.mention;
   if (!m?.items.length) return null;
-  return html`<div class="cmds mention">${m.items.map((it, j) => html`<div class=${'cmd' + (j === m.sel ? ' sel' : '') + (it.dir ? ' dir' : '')}
+  return html`<div class=${'cmds mention' + (m.stale ? ' stale' : '')}>${m.items.map((it, j) => html`<div class=${'cmd' + (j === m.sel ? ' sel' : '') + (it.dir ? ' dir' : '')}
     onMouseDown=${e => { e.preventDefault(); takeMention(it); }}>${it.path}</div>`)}</div>`;
 }
 
@@ -339,10 +373,11 @@ async function submit(now) {
   const payload = { t: 'send', text, files, paths, skip: [...S.skipped], chosen: [...S.chosen], now, seq, key: pageKey + ':' + seq };
   if (!send(payload)) return;
   sending.set(seq, { payload, text, files: S.atts });
-  if (text.trim() && !text.startsWith('/')) set({ inputs: mergeInputs(S.inputs, [text.trim()]) });
+  if (histText(text) && !text.startsWith('/')) set({ inputs: mergeInputs(S.inputs, [histText(text)]) });
   if (inputEl.value === text) setInput('');
   histPos = -1;
   set({ atts: [], paths: [], skipped: new Set(), chosen: new Set() });
+  forget();
 }
 
 function escape() {
@@ -414,10 +449,19 @@ function addFiles(list) {
 
 // nextPlace is the placeholder for the next attachment, as Claude Code
 // writes it: "[Image #2]". It marks the attachment's place in the message.
-function nextPlace(kind) {
+const PLACE = /\[(Image|PDF|File) #(\d+)\]/g;
+
+// placeMax is the highest placeholder number in use: by an attachment, one
+// taken off that may come back, or text that reads as one.
+function placeMax(text) {
   let n = 0;
-  for (const a of S.atts) n = Math.max(n, +(a.at?.match(/#(\d+)\]$/)?.[1] || 0));
-  return `[${{ image: 'Image', pdf: 'PDF' }[kind] || 'File'} #${n + 1}]`;
+  for (const a of [...S.atts, ...gone]) n = Math.max(n, +(a.at?.match(/#(\d+)\]$/)?.[1] || 0));
+  for (const m of text.matchAll(PLACE)) n = Math.max(n, +m[2]);
+  return n;
+}
+
+function nextPlace(kind) {
+  return `[${{ image: 'Image', pdf: 'PDF' }[kind] || 'File'} #${placeMax(inputEl?.value || '') + 1}]`;
 }
 
 // insertAtCaret types s where the caret is, or was when the input lost the
@@ -433,10 +477,28 @@ function insertAtCaret(s) {
   autosize();
 }
 
-// placesGone takes off the attachments whose placeholder the user deleted.
+// gone are the attachments taken off since the last send: one whose
+// placeholder comes back (⌘Z) is back on.
+let gone = [];
+
+// placesGone takes off the attachments whose placeholder the user deleted,
+// and puts back those whose placeholder is back.
 function placesGone() {
-  const gone = S.atts.filter(a => a.at && !inputEl.value.includes(a.at));
-  for (const a of gone) takeOff(a, true);
+  const v = inputEl.value;
+  const out = S.atts.filter(a => a.at && !v.includes(a.at));
+  const back = gone.filter(a => a.at && v.includes(a.at) && !S.atts.some(x => x.at === a.at));
+  if (!out.length && !back.length) return;
+  gone = gone.filter(a => !back.includes(a)).concat(out);
+  set({ atts: S.atts.filter(a => !out.includes(a)).concat(back) });
+}
+
+// forget lets the attachments taken off go for good.
+function forget() {
+  for (const a of gone) {
+    if (a.xhr && a.xhr.readyState < 4) a.xhr.abort(); // not uploaded for nothing
+    if (a.url?.startsWith('blob:')) URL.revokeObjectURL(a.url);
+  }
+  gone = [];
 }
 
 function upload(file) {
@@ -732,12 +794,14 @@ function Markdown({ text, live }) {
 // inlineParts splits a message's text at the attachment marks put in its
 // words ("do this <img> not this <img>"), which show there; the marks after
 // its text, each on a line of its own, show in a row below.
+const TRAILING = new RegExp(`^(?:\\s*${MARK.source.replace(/^\\n\*/, '')})*\\s*$`);
+
 function inlineParts(text) {
   const parts = [];
   let prev = 0, m;
   const re = new RegExp(MARK.source, 'g');
   while ((m = re.exec(text))) {
-    if (m[0].startsWith('\n')) break; // the marks at the end
+    if (TRAILING.test(text.slice(m.index))) break; // the marks at the end: shown in a row
     parts.push(text.slice(prev, m.index), { name: unesc(m[1]), path: unesc(m[2]), size: m[3], content: m[4] });
     prev = m.index + m[0].length;
   }
@@ -956,7 +1020,7 @@ const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
 
 function pickerRows() {
   const all = S.models || [];
-  const rows = all.filter(m => !m.value.startsWith('claude-'));
+  const rows = all.filter(m => !m.value.startsWith('claude-') && m.value !== 'default'); // default: one of those, by another name
   const cur = S.status?.model;
   if (cur && S.models && !rows.some(m => m.value === cur)) {
     rows.push(all.find(m => m.value === cur) || { value: cur, displayName: cur, description: 'set with -model or /model', supportsEffort: true });
@@ -1059,7 +1123,7 @@ const MODES = ['manual', 'acceptEdits', 'auto'];
 const modeNames = { manual: '⏵ manual', default: '⏵ manual', acceptEdits: '⏵⏵ accept edits on', auto: '⏵⏵ auto mode on', bypassPermissions: '⏵⏵ bypass permissions on', dontAsk: '⏵⏵ don\'t ask on' };
 
 function cycleMode() {
-  const m = S.status?.mode;
+  const m = S.status?.mode === 'default' ? 'manual' : S.status?.mode; // Claude Code's name for manual
   send({ t: 'mode', mode: MODES[(MODES.indexOf(m) + 1) % MODES.length] });
 }
 
@@ -1070,16 +1134,16 @@ function askChoices(q) {
 function answer(q, [, allow, always]) {
   send({ t: 'answer', id: q.id, allow, always });
   set({ asks: S.asks.filter(x => x.id !== q.id), askSel: 0 }); // at once: the server confirms
-  inputEl?.focus();
+  if (!S.asks.length) inputEl?.focus(); // else the next question takes it
 }
 
-// askKey takes the keys for the question shown, unless the user is typing
-// a message: true when it took e.
+// askKey takes the keys for the question shown while it has the focus: it
+// takes it as it comes up, unless the user is typing, whose keys never
+// answer it by chance; Tab or a click goes to it. True when it took e.
 function askKey(e) {
   const q = S.asks[0];
-  if (!q || S.picker || e.metaKey || e.ctrlKey || e.altKey) return false;
-  if (inputEl && inputEl.value && e.target === inputEl) return false;
-  if (e.target.tagName === 'TEXTAREA' && e.target !== inputEl) return false;
+  if (!q || S.picker || S.lightbox || S.help || e.metaKey || e.ctrlKey || e.altKey) return false;
+  if (!e.target.closest?.('.ask')) return false;
   const choices = askChoices(q);
   let sel = Math.min(S.askSel, choices.length - 1);
   switch (e.key) {
@@ -1108,16 +1172,24 @@ function askTitle(tool, x) {
   }
 }
 
+let typedAt = 0; // the last key typed in the input
+
 function Ask({ q }) {
   const x = q.input && typeof q.input === 'object' ? q.input : null;
   const choices = askChoices(q), sel = Math.min(S.askSel, choices.length - 1);
-  return html`<div class="ask" role="dialog" aria-label="Permission">
+  const ref = useRef();
+  const [focused, setFocused] = useState(false);
+  useEffect(() => { // up: the keys are its, unless the user is typing
+    if (!inputEl?.value && performance.now() - typedAt > 1500) ref.current.focus();
+  }, [q.id]);
+  return html`<div class=${'ask' + (focused ? ' focused' : '')} role="dialog" aria-label="Permission" tabindex="-1" ref=${ref}
+      onFocusIn=${() => setFocused(true)} onFocusOut=${() => setFocused(false)}>
     <div class="title">${askTitle(q.tool, x)}${q.who ? html` <span class="dim">· [${q.who}] asks</span>` : ''}${S.asks.length > 1 ? html` <span class="dim">· ${S.asks.length - 1} more waiting</span>` : ''}</div>
     <div class="what">
       ${q.tool === 'Bash' && x ? html`<pre>${x.command}</pre>` : html`<div class="args">${q.tool}(${toolArgs(q.tool, x, JSON.stringify(q.input))})</div><${ToolInput} name=${q.tool} x=${x} raw=${JSON.stringify(q.input)}/>`}
       ${q.desc && html`<div class="dim">${q.desc}</div>`}
     </div>
-    <div>Do you want to proceed?</div>
+    <div>Do you want to proceed?${!focused && html` <span class="dim">(Tab or a click here to answer)</span>`}</div>
     <div class="choices">${choices.map((c, j) => html`<div class=${'row' + (j === sel ? ' sel' : '')} role="button" tabindex="-1" onClick=${() => answer(q, c)}>
       <span class="ptr">${j === sel ? '❯' : ''}</span><span>${j + 1}. ${c[0]}</span></div>`)}</div>
   </div>`;
@@ -1142,8 +1214,8 @@ function closePanel() { clearInterval(panelTimer); set({ panel: null }); inputEl
 function panelRows() { return (S.panel?.kind === 'mcp' ? S.mcp : S.skills) || []; }
 
 function panelAct(action, row, extra) {
-  if (!row) return;
-  set({ panel: { ...S.panel, busy: true, error: '' } });
+  if (!row || S.panel.acting) return; // one at a time: a second Enter would undo the first
+  set({ panel: { ...S.panel, busy: true, acting: true, error: '' } });
   send({ t: S.panel.kind, action, name: row.name, ...extra });
 }
 
@@ -1153,10 +1225,12 @@ function toggleRow(row) {
   else if (!row.locked_by) panelAct('set', row, { state: row.state === 'off' ? 'on' : 'off' });
 }
 
+// panelKey takes the keys while the panel has the focus, as it has once
+// opened: a click in the input types a message.
 function panelKey(e) {
   const p = S.panel;
   if (!p || S.picker || e.metaKey || e.ctrlKey || e.altKey) return false;
-  if (e.target.tagName === 'TEXTAREA' && e.target.value) return false; // typing a message
+  if (!e.target.closest?.('.panel')) return false;
   const rows = panelRows(), row = rows[p.sel];
   let sel = p.sel;
   switch (e.key) {
@@ -1174,7 +1248,7 @@ function panelKey(e) {
   e.stopPropagation();
   if (S.panel && sel !== p.sel) {
     set({ panel: { ...S.panel, sel } });
-    requestAnimationFrame(() => document.querySelector('.panel .row.sel')?.scrollIntoView({ block: 'nearest' }));
+    requestAnimationFrame(() => document.querySelector('.panel .row.sel > .lbl')?.scrollIntoView({ block: 'nearest' })); // the row itself has no box
   }
   return true;
 }
@@ -1195,18 +1269,20 @@ function SkillRow({ s }) {
 
 function Panel() {
   const p = S.panel, rows = panelRows(), mcp = p.kind === 'mcp';
+  const ref = useRef();
+  useEffect(() => ref.current.focus(), [p.kind]);
   const loaded = mcp ? S.mcp : S.skills;
   const on = rows.filter(r => mcp ? !r.off : r.state !== 'off');
-  return html`<div class="picker panel" role="dialog" aria-label=${mcp ? 'MCP servers' : 'Skills'}>
+  return html`<div class="picker panel" role="dialog" aria-label=${mcp ? 'MCP servers' : 'Skills'} tabindex="-1" ref=${ref}>
     <div class="title">${mcp ? 'MCP servers' : 'Skills'}${p.busy ? html` <span class="dim">…</span>` : ''}</div>
     <div class="dim">${mcp
       ? `Your Claude Code MCP servers, as its /mcp lists them: ${on.length} of ${rows.length} on for Opt. Off is kept for Opt alone; a sign-in is Claude Code's.`
-      : `Your Claude Code skills, as its /skills lists them: ${on.length} of ${rows.length} on, ${on.reduce((n, r) => n + (r.tokens || 0), 0).toLocaleString()} tokens listed. On or off is saved in Claude Code's settings.`}</div>
+      : `Your Claude Code skills, as its /skills lists them: ${on.length} of ${rows.length} on, ${on.reduce((n, r) => n + (r.tokens || 0), 0).toLocaleString()} tokens listed. On or off is kept for Opt alone, from its next call.`}</div>
     ${p.error && html`<div class="err">${p.error}</div>`}
-    ${p.signIn && html`<div>Sign in to ${p.name}: <a href=${p.signIn} target="_blank" rel="noopener noreferrer">open the sign-in page</a>, then come back here.</div>`}
+    ${/^https?:\/\//i.test(p.signIn || '') && html`<div>Sign in to ${p.name}: <a href=${p.signIn} target="_blank" rel="noopener noreferrer">open the sign-in page</a>, then come back here.</div>`}
     ${!loaded ? html`<div class="dim">Asking Claude Code…</div>` : html`<div class="rows list">
       ${rows.map((r, j) => html`<div class=${'row' + (j === p.sel ? ' sel' : '')} key=${r.name}
-          onClick=${() => set({ panel: { ...S.panel, sel: j } })} onDblClick=${() => toggleRow(r)}>
+          onClick=${() => { set({ panel: { ...S.panel, sel: j } }); ref.current.focus(); }} onDblClick=${() => toggleRow(r)}>
         <span class="ptr">${j === p.sel ? '❯' : ''}</span>${mcp ? html`<${McpRow} s=${r}/>` : html`<${SkillRow} s=${r}/>`}
       </div>`)}
       ${!rows.length && html`<div class="dim">None.</div>`}
@@ -1272,8 +1348,7 @@ function Queue({ queue }) {
 // takeOff removes an attachment, and its placeholder from the input
 // unless the user just deleted it (typed).
 function takeOff(a, typed) {
-  if (a.xhr && a.xhr.readyState < 4) a.xhr.abort(); // not uploaded for nothing
-  if (a.url?.startsWith('blob:')) URL.revokeObjectURL(a.url);
+  gone.push(a); // its placeholder put back (⌘Z): back on
   set({ atts: S.atts.filter(x => x.id !== a.id) });
   if (!typed && a.at && inputEl?.value.includes(a.at)) {
     const v = inputEl.value, i = v.indexOf(a.at);
@@ -1457,13 +1532,21 @@ addEventListener('drop', e => {
   if (text && inputEl) { inputEl.focus(); document.execCommand('insertText', false, text); }
 });
 addEventListener('keydown', e => {
+  if (e.isComposing || e.keyCode === 229) return; // the keys that pick an input method's candidates are its own
+  if (e.target === inputEl && e.key.length === 1) typedAt = performance.now();
+  if (e.key === 'Tab' && !e.shiftKey && e.target === inputEl && S.asks.length && !S.picker && !S.mention?.items.length && !suggestions(inputEl.value).length) {
+    e.preventDefault(); // to the question
+    document.querySelector('.ask')?.focus();
+    return;
+  }
   if (e.altKey && e.code === 'KeyP' && !e.metaKey && !e.ctrlKey) { // Option+P types π on a Mac: the code is the key
     e.preventDefault();
     e.stopPropagation();
     if (S.picker) closePicker(); else openPicker();
     return;
   }
-  if (e.key === 'Tab' && e.shiftKey && !S.picker && !e.metaKey && !e.ctrlKey && !e.altKey) {
+  const mine = e.target === inputEl || e.target === document.body || e.target.closest?.('.ask, .panel'); // not another field's
+  if (e.key === 'Tab' && e.shiftKey && mine && !S.picker && !e.metaKey && !e.ctrlKey && !e.altKey) {
     e.preventDefault();
     e.stopPropagation();
     cycleMode();

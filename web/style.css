@@ -184,8 +184,11 @@ a { color: var(--blue); }
 .cmds.mention .cmd { cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .cmds.mention .cmd.dir { color: var(--blue); }
 .cmds.mention .cmd.dir.sel { color: var(--blue); }
+.cmds.mention.stale { opacity: .55; }
 /* a tool call waiting for permission, as Claude Code asks */
 .ask { border: 1px solid var(--blue); border-radius: 6px; padding: .5em 1.5ch .6em; margin: .3em 0 .5em; display: flex; flex-direction: column; gap: .4em; }
+.ask:focus, .panel:focus { outline: none; }
+.ask.focused { box-shadow: 0 0 0 2px color-mix(in srgb, var(--blue) 35%, transparent); }
 .ask .title { color: var(--blue); font-weight: 600; }
 .ask .dim { color: var(--dim); font-weight: normal; }
 .ask .args { color: var(--dim); }

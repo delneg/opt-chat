@@ -336,9 +336,15 @@ use three more:
    clarifying questions" mid-call. On one model, turns and compactions read
    each other's tools and system prompt from the cache (measured on Fable).
    The cache is per model, so with the recipe's Haiku they can't.
-3. **A failed compaction** is tried again at the next message, as the recipe
-   says, and also every 10 s, so a turn waiting on its line never waits for a
-   message that won't come.
+3. **A failed compaction** is tried again at your next message, as the recipe
+   says, and on a timer, 10 s at first, doubled at each failure up to 10
+   minutes, so a usage limit or an outage is not hammered. Meanwhile the
+   lines after it get built, and calls don't wait for it. A line that keeps
+   failing while other lines get built (the 5th such failure; a message with
+   images is tried without them from the 3rd) is its source cut to size,
+   ending "(not summarized: zoom it)": one bad message never holds up the
+   tree above it. Compactions see a message not summarized yet as its head,
+   not as the end of their context.
 4. **The child environment** drops the variables of any Claude Code session
    that launched opt-chat. With them inherited, that session's token-budget
    reminder appeared in some calls and not others, and no two prompts

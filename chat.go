@@ -33,7 +33,8 @@ const (
 	cviewHi = 32_000
 	jobs    = 8      // compactions running at once
 	clipMax = 30_000 // characters: a tool output's head and tail, and the most in one message
-	retryIn = 10 * time.Second
+	waitMax = 10 * time.Minute // a failed compaction's longest wait
+	giveUp  = 4                // failures while other lines got built: the line is its source, cut
 	// A stuck compaction must not hold a job slot forever.
 	compactTimeout = 5 * time.Minute
 	unbuilt        = "(not summarized yet: zoom it)"
@@ -66,6 +67,14 @@ type Node struct {
 	Size int    `json:"size"`
 }
 
+// failure is a line's compactions that failed: n in a row, the strikes among
+// them that came after other lines were built (so not an outage or a usage
+// limit, which fail every line), and when it is tried again.
+type failure struct {
+	n, strikes, at int // at: c.written at the last one
+	until          time.Time
+}
+
 // Chat is the log, the tree and both views. All fields are guarded by mu.
 type Chat struct {
 	dir     string
@@ -77,8 +86,7 @@ type Chat struct {
 	cview   view         // what compactions see
 	queued  map[key]bool // waiting in ready0/readyM or running
 	busy    map[key]bool // running
-	cooling map[key]bool // failed: tried again at the next message, or after retryIn
-	failed  map[key]bool // already reported
+	failing map[key]*failure // lines whose compaction failed, until built
 	ready0  []int        // messages whose line needs a model call, in order
 	readyM  []key        // merges whose line needs a model call
 	written int          // lines a model has built in this run
@@ -106,7 +114,7 @@ func openChat(dir string) (*Chat, error) {
 	}
 	c := &Chat{
 		dir: dir, lock: lock, tree: map[key]string{}, queued: map[key]bool{}, busy: map[key]bool{},
-		cooling: map[key]bool{}, failed: map[key]bool{}, changed: make(chan struct{}),
+		failing: map[key]*failure{}, changed: make(chan struct{}),
 		view: view{lo: viewLo, hi: viewHi}, cview: view{lo: cviewLo, hi: cviewHi},
 	}
 	// By id, not by file: a day file is named by the clock, which can go back.
@@ -268,7 +276,11 @@ func (c *Chat) logMsgs(ms []Msg) {
 		}
 	}
 	c.saveView()
-	clear(c.cooling) // a failed compaction is tried again at the next message
+	if slices.ContainsFunc(ms, func(m Msg) bool { return m.Kind == "user" }) {
+		for _, f := range c.failing { // the user is back: failed compactions are tried again now
+			f.until = time.Time{}
+		}
+	}
 	c.pump()
 	c.notify()
 }
@@ -438,15 +450,29 @@ func (c *Chat) enqueueMissing() {
 	}
 }
 
+// cooling says whether line k failed and waits to be tried again.
+func (c *Chat) cooling(k key) bool {
+	f := c.failing[k]
+	return f != nil && time.Now().Before(f.until)
+}
+
 // next picks the next node to build: merges first, so that a batch finds the
-// parents it needs even behind a backlog, then messages, at most 8 deep.
+// parents it needs even behind a backlog, then messages, at most 8 deep, not
+// counting those waiting after a failure.
 func (c *Chat) next() (key, bool) {
-	free := func(k key) bool { return !c.busy[k] && !c.cooling[k] }
-	if k, ok := lo.Find(c.readyM, free); ok {
+	if k, ok := lo.Find(c.readyM, func(k key) bool { return !c.busy[k] && !c.cooling(k) }); ok {
 		return k, true
 	}
-	for _, i := range c.ready0[:min(jobs, len(c.ready0))] {
-		if k := (key{0, i}); free(k) {
+	n := 0
+	for _, i := range c.ready0 {
+		k := key{0, i}
+		if c.cooling(k) {
+			continue
+		}
+		if n++; n > jobs {
+			break
+		}
+		if !c.busy[k] {
 			return k, true
 		}
 	}
@@ -476,22 +502,36 @@ func (c *Chat) build(k key, compact func(context.Context, []string, []block) (st
 		return // quitting: the next run builds it
 	}
 	if err != nil {
-		if !c.failed[k] {
-			c.failed[k] = true
-			c.hub.notice("warn", "compaction %s failed, trying again at the next message or in %s: %v", k.name(), retryIn, err)
+		f := c.failing[k]
+		if f == nil {
+			f = &failure{}
+			c.failing[k] = f
+			c.hub.notice("warn", "compaction %s failed, trying again later: %v", k.name(), err)
 		}
-		c.cooling[k] = true
-		// ponytail: also on a timer, so a turn waiting on this line never waits for a message that won't come.
-		time.AfterFunc(retryIn, func() {
-			c.mu.Lock()
-			defer c.mu.Unlock()
-			delete(c.cooling, k)
-			c.pump()
-		})
-		return
+		if f.n > 0 && c.written > f.at {
+			f.strikes++
+		}
+		f.n, f.at = f.n+1, c.written
+		if f.strikes < giveUp {
+			wait := min(retryIn<<min(f.n-1, 10), waitMax)
+			f.until = time.Now().Add(wait)
+			time.AfterFunc(wait, func() {
+				c.mu.Lock()
+				defer c.mu.Unlock()
+				c.pump()
+				c.notify()
+			})
+			c.pump() // the lines after it, in its place
+			c.notify()
+			return
+		}
+		// It fails while other lines get built: its source, cut, stands in.
+		c.hub.notice("warn", "compaction %s failed %d times while other lines were built: its line is its source, cut and marked: %v", k.name(), f.n, err)
+		text = c.fallback(k)
+	} else {
+		c.written++
 	}
-	delete(c.failed, k)
-	c.written++
+	delete(c.failing, k)
 	c.setNode(k, text)
 	c.refit()
 	c.pump()
@@ -509,10 +549,27 @@ func (c *Chat) refit() {
 	}
 }
 
+// notSummarized ends a line no model could write, which zoom opens as any other.
+const notSummarized = " … (not summarized: zoom it)"
+
+// fallback is line k cut from what it summarizes: the message, or its two
+// halves' lines.
+func (c *Chat) fallback(k key) string {
+	var text string
+	if k.L == 0 {
+		text = c.msgs[k.I].Kind + ": " + c.msgs[k.I].Text
+	} else {
+		a, b := k.kids()
+		text = c.text(a) + " " + c.text(b)
+	}
+	return head(strings.Join(strings.Fields(text), " "), nodeMax-len(notSummarized)) + notSummarized
+}
+
 var ruler = strings.Repeat("-", nodeMax)
 
-// compactInput is node k's context (the compaction view up to the node,
-// stopping at the first unbuilt line) and its task.
+// compactInput is node k's context (the compaction view up to the node, a
+// message not summarized yet as its head: eight run at once, and the lines
+// after one still tell what it was about) and its task.
 func (c *Chat) compactInput(k key) ([]string, []block) {
 	until := k.end()
 	if k.L == 0 {
@@ -520,22 +577,26 @@ func (c *Chat) compactInput(k key) ([]string, []block) {
 	}
 	var keys []key
 	for _, v := range c.cview.keys {
-		if v.end() > until || !c.built(v) {
+		if v.end() > until {
 			break
 		}
 		keys = append(keys, v)
 	}
+	ctx := lo.Map(keys, func(k key, _ int) string { return c.callLine(k) })
 	if k.L == 0 {
 		m := c.msgs[k.I]
 		in := fmt.Sprintf("Compaction: compress message %d into one line of at most 512 bytes\n"+
 			"(about 70 words), the length of this ruler:\n%s\n<input>\n%s: %s\n", k.I, ruler, m.Kind, m.Text)
-		if len(m.Images) == 0 {
-			return c.lines(keys), []block{textBlock(in + "</input>")}
+		if f := c.failing[k]; len(m.Images) > 0 && f != nil && f.strikes >= giveUp/2 { // they may be what fails
+			return ctx, []block{textBlock(in + fmt.Sprintf("[%d attached, which could not be read]\n</input>", len(m.Images)))}
 		}
-		return c.lines(keys), append(c.interleave(in, m.Images), textBlock("</input>"))
+		if len(m.Images) == 0 {
+			return ctx, []block{textBlock(in + "</input>")}
+		}
+		return ctx, append(c.interleave(in, m.Images), textBlock("</input>"))
 	}
 	a, b := k.kids()
-	return c.lines(keys), []block{textBlock(fmt.Sprintf("Compaction: merge lines %s and %s, adjacent, into one line of at most\n"+
+	return ctx, []block{textBlock(fmt.Sprintf("Compaction: merge lines %s and %s, adjacent, into one line of at most\n"+
 		"512 bytes (about 70 words), the length of this ruler:\n%s\n"+
 		"<chat> may hold their messages, %d to %d, in more detail: take details\nof them from there too.\n"+
 		"<input>\n%s\n%s\n</input>",
@@ -550,6 +611,8 @@ func (c *Chat) notify() {
 const settleMax = 32 // a call waits for every line when at most this many are to build: four rounds of jobs...
 
 var settleWait = time.Minute // ...and for at most this long
+
+var retryIn = 10 * time.Second // a failed compaction's first wait, doubled at each failure
 
 // settle waits until every message is summarized, so that no call sees a
 // placeholder, as the recipe says, when that is a short wait. Behind a bigger
@@ -567,8 +630,10 @@ func (c *Chat) settle(ctx context.Context, waiting func(n, written int)) error {
 		c.mu.Lock()
 		n, written, ch := len(c.ready0), c.written-from, c.changed
 		big := len(c.ready0)+len(c.readyM) > settleMax
+		_, more := c.next()
+		failing := len(c.busy) == 0 && !more && c.compact != nil // all that is left failed: no wait for its next try
 		c.mu.Unlock()
-		if n == 0 || big {
+		if n == 0 || big || failing {
 			return nil
 		}
 		waiting(n, written)
@@ -649,7 +714,7 @@ func (c *Chat) Zoom(id, n int) (string, []string) {
 		return fmt.Sprintf("%d+1|%s: %s", id, m.Kind, m.Text), m.Images
 	}
 	a, b := key{bits.TrailingZeros(uint(n)), id / n}.kids()
-	return c.line(a) + "\n" + c.line(b), nil
+	return c.callLine(a) + "\n" + c.callLine(b), nil // a message not summarized yet: its head
 }
 
 func (c *Chat) Date(id int) string {

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"encoding/json/v2"
+	"errors"
 
 	"github.com/samber/lo"
 )
@@ -24,6 +25,8 @@ var lineHead = regexp.MustCompile(`(?m)^(\d+)\+(\d+)\|`)
 
 // fakeChat opens a chat whose compactor checks what every compaction sees
 // (built lines only, none past the node) and answers with a size-byte line.
+var msgHead = regexp.MustCompile(`^\d+\+1\|\w+: `) // a message's line
+
 func fakeChat(t *testing.T, dir string, size int) (*Chat, *atomic.Int64) {
 	t.Helper()
 	c, err := openChat(dir)
@@ -52,8 +55,8 @@ func fakeChat(t *testing.T, dir string, size int) (*Chat, *atomic.Int64) {
 			t.Errorf("task without ruler")
 		}
 		for _, l := range lines {
-			if strings.Contains(l, unbuilt) {
-				t.Errorf("compaction saw a placeholder: %q", l)
+			if strings.Contains(l, unbuilt) && !msgHead.MatchString(l) {
+				t.Errorf("compaction saw a placeholder without its message's head: %q", l)
 			}
 			m := lineHead.FindStringSubmatch(l)
 			id, _ := strconv.Atoi(m[1])
@@ -292,7 +295,7 @@ func TestImages(t *testing.T) {
 	}
 }
 
-// A failed compaction is tried again at the next message, not only on the timer.
+// A failed compaction is tried again at the user's next message, not only on the timer.
 func TestRetryAtNextMessage(t *testing.T) {
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	inner := c.compact
@@ -311,7 +314,7 @@ func TestRetryAtNextMessage(t *testing.T) {
 	deadline := time.Now().Add(time.Second)
 	for {
 		c.mu.Lock()
-		cooling := c.cooling[key{0, 0}]
+		cooling := c.cooling(key{0, 0})
 		c.mu.Unlock()
 		if cooling {
 			break
@@ -467,5 +470,56 @@ func TestImportKeepsDetail(t *testing.T) {
 	defer c.mu.Unlock()
 	if k := c.view.keys[0]; k.L > 6 {
 		t.Fatalf("the oldest line, %s, covers more than 64 messages", k.name())
+	}
+}
+
+// Lines whose compaction always fails hold up nothing: the lines after them
+// get built, a call does not wait for them, and once they have failed while
+// others got built, their source, cut and marked, stands in.
+func TestFailingLines(t *testing.T) {
+	c, _ := fakeChat(t, t.TempDir(), 100)
+	defer func(d time.Duration) { retryIn = d }(retryIn)
+	retryIn = 5 * time.Millisecond
+	inner := c.compact
+	c.mu.Lock()
+	c.compact = func(ctx context.Context, lines []string, task []block) (string, error) {
+		if strings.Contains(task[0].Text, "compress message") && strings.Contains(task[0].Text, "poison") {
+			return "", errors.New("refused")
+		}
+		return inner(ctx, lines, task)
+	}
+	c.mu.Unlock()
+	for i := range 8 {
+		c.Log("note", fmt.Sprintf("poison %d %s", i, strings.Repeat("p", 600)))
+	}
+	c.Log("note", strings.Repeat("h", 600))
+	waitFor(t, "the line after them", func() bool {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		return c.built(key{0, 8})
+	})
+	start := time.Now()
+	if err := c.settle(context.Background(), func(int, int) {}); err != nil || time.Since(start) > time.Second {
+		t.Fatalf("settle waited %s on failing lines: %v", time.Since(start), err)
+	}
+	i := 0
+	waitFor(t, "their stand-ins", func() bool {
+		c.Log("note", fmt.Sprintf("%d %s", i, strings.Repeat("h", 600))) // others get built meanwhile
+		i++
+		time.Sleep(20 * time.Millisecond)
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		for j := range 8 {
+			if !c.built(key{0, j}) {
+				return false
+			}
+		}
+		return true
+	})
+	c.mu.Lock()
+	line := c.line(key{0, 3})
+	c.mu.Unlock()
+	if !strings.HasPrefix(line, "3+1|note: poison 3 ppp") || !strings.HasSuffix(line, notSummarized) || len(line) > nodeMax+8 {
+		t.Fatalf("stand-in: %q", line)
 	}
 }

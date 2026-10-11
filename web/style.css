@@ -181,6 +181,9 @@ a { color: var(--blue); }
 .cmds { padding: .2em 0; }
 .cmds .cmd { color: var(--dim); padding: 0 3ch; }
 .cmds .cmd.sel { color: var(--fg); background: var(--chip); }
+.cmds.mention .cmd { cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cmds.mention .cmd.dir { color: var(--blue); }
+.cmds.mention .cmd.dir.sel { color: var(--blue); }
 /* a tool call waiting for permission, as Claude Code asks */
 .ask { border: 1px solid var(--blue); border-radius: 6px; padding: .5em 1.5ch .6em; margin: .3em 0 .5em; display: flex; flex-direction: column; gap: .4em; }
 .ask .title { color: var(--blue); font-weight: 600; }

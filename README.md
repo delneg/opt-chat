@@ -61,6 +61,12 @@ The page works like Claude Code:
   in a message naming more than ten, is just text. Images and PDFs go to
   the model as such; text files are inlined; any other file goes as a path
   its tools can read. See [Attachments](#attachments).
+- `@` and part of a path opens a menu of the files and folders it
+  completes to, as in Claude Code: a folder's entries (`@~/dev/`, `@../`,
+  `@src/ap`, relative to `-cwd`), and for a name alone also the files below
+  `-cwd` that have it (a quarter of a second's search). ↑/↓ choose, Tab or
+  Enter takes one: a folder opens on its own entries, a file goes in as
+  `@~/path`, which attaches it as a typed path does. Esc closes the menu.
 - A long message of yours shows folded, as a big paste does in Claude Code.
 - Scroll up for the whole chat, back to its first message, loaded as you go.
   A reload, a second tab or another window shows the turn underway,

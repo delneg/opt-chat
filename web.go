@@ -317,6 +317,11 @@ type (
 		Name    string      `json:"name,omitzero"`
 		Error   string      `json:"error,omitzero"`
 	}
+	filesReply struct {
+		T     string           `json:"t"` // files: the @ menu's
+		Seq   int              `json:"seq"`
+		Items []fileSuggestion `json:"items"`
+	}
 	skillsReply struct {
 		T      string  `json:"t"` // skills: the user's skills
 		Skills []skill `json:"skills"`
@@ -510,7 +515,7 @@ func (w *webServer) serve(req request) any {
 // slow are the requests that ask Claude Code, which can take seconds.
 func slow(req request) bool {
 	switch req.T {
-	case "models", "mcp", "skills":
+	case "models", "mcp", "skills", "files":
 		return true
 	case "send":
 		w, _, _ := strings.Cut(strings.TrimSpace(req.Text), " ")
@@ -528,6 +533,12 @@ func (w *webServer) serveSlow(ctx context.Context, req request) any {
 			return modelsReply{T: "models", Models: []modelInfo{}, Error: err.Error()}
 		}
 		return modelsReply{T: "models", Models: ms}
+	case "files":
+		items := fileSuggestions(a.cwd, req.Text)
+		if items == nil {
+			items = []fileSuggestion{}
+		}
+		return filesReply{T: "files", Seq: req.Seq, Items: items}
 	case "send": // /mcp or /skills
 		out, _ := command(a, req.Text)
 		w.c.hub.send(noticeUpdate{T: "notice", Level: "info", S: out}) // all pages: as a command's answer

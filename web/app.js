@@ -41,6 +41,7 @@ const S = {
   panel: null, // /mcp or /skills, open: { kind, sel, busy, error, signIn, name }
   mcp: null, // the user's MCP servers, once asked
   skills: null, // and skills
+  mention: null, // the @ menu, open: { start, query, items, sel }
   picker: null, // the model picker, open: { sel, effort }
   models: null, // Claude Code's, once asked
   modelsError: '',
@@ -164,6 +165,7 @@ function onUpdate(u) {
       break;
     }
     case 'models': set({ models: u.models, modelsError: u.error || '' }); break;
+    case 'files': if (S.mention && u.seq === mentionSeq) set({ mention: { ...S.mention, items: u.items, sel: 0 } }); break;
     case 'mcp': case 'skills': {
       const p = S.panel?.kind === u.t ? { ...S.panel, busy: false, error: u.error || '', signIn: u.signIn || S.panel.signIn, name: u.signIn ? u.name : S.panel.name } : S.panel;
       set(u.t === 'mcp' ? { mcp: u.servers, panel: p } : { skills: u.skills, panel: p });
@@ -232,9 +234,62 @@ function lookForPaths(now) {
   clearTimeout(pathTimer);
   const text = inputEl.value;
   const seq = ++pathSeq; // a reply about an earlier text is stale
-  if (!/(^|[\s'"(\[<{`]|\]\()(\/|~\/)/.test(text)) { pathsDone = true; if (S.paths.length) set({ paths: [] }); return; }
+  if (!/(^|[\s'"(\[<{`@]|\]\()(\/|~\/)/.test(text)) { pathsDone = true; if (S.paths.length) set({ paths: [] }); return; }
   pathsDone = false;
   pathTimer = setTimeout(() => send({ t: 'paths', text, seq }), now ? 0 : 250);
+}
+
+// The @ menu, as Claude Code's: "@" and part of a path at the caret lists
+// what it completes to; Tab or Enter takes one, a folder to list its own.
+let mentionSeq = 0, mentionTimer = 0, mentionOff = ''; // mentionOff: the text Esc closed the menu on
+
+function lookForMention() {
+  const el = inputEl;
+  const before = el.value.slice(0, el.selectionStart);
+  const m = el.selectionStart === el.selectionEnd && before.match(/(^|\s)@([^\s@]*)$/);
+  if (!m || before === mentionOff) { if (S.mention) set({ mention: null }); return; }
+  const query = m[2], start = before.length - query.length - 1;
+  if (S.mention?.query === query && S.mention.start === start) return;
+  set({ mention: { start, query, items: S.mention?.items || [], sel: 0 } });
+  clearTimeout(mentionTimer);
+  const seq = ++mentionSeq;
+  mentionTimer = setTimeout(() => send({ t: 'files', text: query, seq }), 60);
+}
+
+function takeMention(item) {
+  const el = inputEl, m = S.mention;
+  const end = el.selectionStart;
+  el.focus();
+  el.setSelectionRange(m.start, end);
+  const text = '@' + item.path + (item.dir ? '' : ' ');
+  if (!document.execCommand('insertText', false, text)) el.setRangeText(text, m.start, end, 'end');
+  autosize();
+  set({ mention: null });
+  lookForPaths();
+  if (item.dir) lookForMention(); // on into the folder
+}
+
+// mentionKey takes the keys while the @ menu lists something.
+function mentionKey(e) {
+  const m = S.mention;
+  if (!m || !m.items.length || e.target !== inputEl || e.metaKey || e.ctrlKey || e.altKey) return false;
+  switch (e.key) {
+    case 'ArrowUp': set({ mention: { ...m, sel: (m.sel + m.items.length - 1) % m.items.length } }); break;
+    case 'ArrowDown': set({ mention: { ...m, sel: (m.sel + 1) % m.items.length } }); break;
+    case 'Tab': case 'Enter': if (e.shiftKey) return false; takeMention(m.items[m.sel]); break;
+    case 'Escape': mentionOff = inputEl.value.slice(0, inputEl.selectionStart); set({ mention: null }); break;
+    default: return false;
+  }
+  e.preventDefault();
+  e.stopPropagation();
+  return true;
+}
+
+function Mention() {
+  const m = S.mention;
+  if (!m?.items.length) return null;
+  return html`<div class="cmds mention">${m.items.map((it, j) => html`<div class=${'cmd' + (j === m.sel ? ' sel' : '') + (it.dir ? ' dir' : '')}
+    onMouseDown=${e => { e.preventDefault(); takeMention(it); }}>${it.path}</div>`)}</div>`;
 }
 
 const commands = [
@@ -1284,7 +1339,8 @@ function Help() {
     ['⌘/Ctrl+Enter', 'send now: stop the turn and send'],
     ['Esc', 'stop the turn; queued messages come back here'],
     ['↑ / ↓', 'your earlier messages; ↑ on an empty input edits the last queued'],
-    ['drop · paste · 📎', 'attach files; a path you type (/… or ~/…) attaches its file'],
+    ['drop · paste · 📎', 'attach files, each where the caret is; a path you type (/… or ~/…) attaches its file'],
+    ['@', 'find a file or folder by its path or name: Tab or Enter takes it'],
     ['Alt+P · /model', 'choose the model, ←/→ its effort'],
     ['Shift+Tab', 'permission mode: manual, accept edits, auto'],
     ['/mcp · /skills', 'your Claude Code MCP servers and skills: on or off'],
@@ -1303,12 +1359,16 @@ function Input() {
   }, []);
   const sugg = inputEl ? suggestions(inputEl.value) : [];
   return html`
+    <${Mention}/>
     ${sugg.length > 0 && html`<div class="cmds">${sugg.map(([c, d], j) => html`<div class=${'cmd' + (j ? '' : ' sel')}>${c}  ${d}${j ? '' : '  (tab)'}</div>`)}</div>`}
     <div class="box">
       <${Chips}/>
       <span class="gt">></span>
       <textarea ref=${ref} rows="1" spellcheck="false" aria-label="Message Opt" placeholder=${S.turn.phase ? 'Queue a message for Opt…' : 'Message Opt'}
-        onInput=${() => { histPos = -1; autosize(); placesGone(); lookForPaths(); tick(n => n + 1); }}
+        onInput=${() => { histPos = -1; autosize(); placesGone(); lookForPaths(); lookForMention(); tick(n => n + 1); }}
+        onKeyUp=${e => { if (e.key.startsWith('Arrow') || e.key === 'Home' || e.key === 'End') lookForMention(); }}
+        onClick=${lookForMention}
+        onBlur=${() => S.mention && set({ mention: null })}
         onKeyDown=${onKey}
         onCompositionEnd=${e => { composedAt = e.timeStamp; }}
         onPaste=${onPaste}/>
@@ -1409,7 +1469,7 @@ addEventListener('keydown', e => {
     cycleMode();
     return;
   }
-  pickerKey(e) || panelKey(e) || askKey(e);
+  pickerKey(e) || panelKey(e) || mentionKey(e) || askKey(e);
 }, true); // before the input: while the picker or a question is up, the keys are theirs
 addEventListener('keydown', e => {
   if ((e.key === 'Enter' || e.key === ' ') && e.target.getAttribute?.('role') === 'button' && e.target.tagName !== 'BUTTON') {

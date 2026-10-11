@@ -529,7 +529,7 @@ func filePaths(text string) []string {
 		if i := strings.LastIndex(p, "]("); i >= 0 { // a markdown link
 			p = p[i+2:]
 		}
-		p = strings.TrimLeft(p, "([{<`")
+		p = strings.TrimLeft(p, "@([{<`")       // @: a file mentioned, as the page's @ completes it
 		p = strings.TrimRight(p, ".,;:!?)]}>`") // a path ending a sentence, or in brackets
 		if tok[0] == '\'' || tok[0] == '"' {
 			p = tok[1 : len(tok)-1]

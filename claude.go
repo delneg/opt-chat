@@ -334,8 +334,9 @@ func (a *Agent) start(ctx context.Context, model, effort string, r role, window 
 		args = append(args, "--include-partial-messages")
 	}
 	cmd := exec.CommandContext(ctx, "claude", args...)
-	// Stopped gently, so Claude Code can stop what its tools started.
-	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
+	// Stopped gently, so Claude Code can stop what its tools started, and so
+	// are they: its group (below).
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM) }
 	// In a process group of its own: the terminal's Ctrl-C goes to the
 	// foreground group, and would kill every call, compactions too. Calls
 	// stop only through ctx.
@@ -386,6 +387,9 @@ func (a *Agent) start(ctx context.Context, model, effort string, r role, window 
 		go a.mcpApply(p)
 	}
 	p.done = func() {
+		if p.ctx.Err() != nil { // stopped: nothing of it outlives it
+			syscall.Kill(-pid, syscall.SIGKILL)
+		}
 		children.Delete(pid)
 		a.mu.Lock()
 		delete(a.live, p)

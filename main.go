@@ -134,7 +134,7 @@ func main() {
 		close(stopStatus)
 	}
 	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
+	signal.Notify(sig, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP) // the terminal closed: quit as well, stopping every call
 	if !*repl {
 		w, err := serveWeb(h, *addr)
 		if err != nil {
@@ -180,9 +180,9 @@ func main() {
 			} else if strings.TrimSpace(text) != "" {
 				h.input(typed(c, text))
 			}
-		case <-sig:
+		case s := <-sig:
 			back, ok := h.stop()
-			if !ok {
+			if !ok || s != os.Interrupt { // only Ctrl-C stops a turn and stays
 				quit()
 				return
 			}

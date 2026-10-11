@@ -152,14 +152,18 @@ function onUpdate(u) {
       set(u.turn.phase ? { turn: u.turn, turnChars: 0 } : { turn: u.turn, turnChars: 0, live: '', thinking: '', input: '' });
       break;
     case 'queue': set({ queue: u.queue }); break;
-    case 'asks': set({ asks: u.asks, askSel: u.asks[0]?.id === S.asks[0]?.id ? S.askSel : 0 }); break;
+    case 'asks': {
+      const fresh = u.asks.some(q => !S.asks.some(x => x.id === q.id));
+      set({ asks: u.asks, askSel: u.asks[0]?.id === S.asks[0]?.id ? S.askSel : 0, unseen: S.unseen || (fresh && document.hidden) }); // a question: news too
+      break;
+    }
     case 'thought': set({ thinking: '' }); break;
     case 'status': set({ status: u.status }); break;
     case 'end': set({ last: u.end }); break;
     case 'notice': notice(u.level, u.s); break;
-    case 'history': {
-      const first = S.msgs.length ? S.msgs[0].i : Infinity;
-      set({ msgs: u.msgs.filter(m => m.i < first).concat(S.msgs), older: false });
+    case 'history': { // asked before a reconnect's hello reset the log: not the page before it now
+      const fits = u.msgs.length && u.msgs[u.msgs.length - 1].i + 1 === S.msgs[0]?.i;
+      set({ msgs: fits ? u.msgs.concat(S.msgs) : S.msgs, older: false });
       break;
     }
     case 'paths': {
@@ -234,8 +238,14 @@ function autosize() {
   if (log) log.scrollTop = atEnd ? log.scrollHeight : top;
 }
 
+// keepDraft keeps the input's text for a reload; its attachments go.
+function keepDraft() {
+  try { if (inputEl.value) localStorage.setItem('draft', inputEl.value); else localStorage.removeItem('draft'); } catch {}
+}
+
 function setInput(text) {
   inputEl.value = text;
+  keepDraft();
   autosize();
   inputEl.focus();
   inputEl.setSelectionRange(text.length, text.length);
@@ -418,6 +428,7 @@ async function submit(now) {
   const seq = ++sendSeq;
   const payload = { t: 'send', text, files, paths, skip: [...S.skipped], chosen: [...S.chosen], now, seq, key: pageKey + ':' + seq };
   if (!send(payload)) return;
+  toEnd = true; // what was sent, and its answer, show
   sending.set(seq, { payload, text, files: S.atts });
   if (histText(text) && !isCommand(text)) set({ inputs: mergeInputs(S.inputs, [histText(text)]) });
   if (inputEl.value === text) setInput('');
@@ -434,8 +445,27 @@ function escape() {
   if (S.turn.phase) send({ t: 'stop' });
 }
 
-function caretFirstLine(el) { return !el.value.slice(0, el.selectionStart).includes('\n'); }
-function caretLastLine(el) { return !el.value.slice(el.selectionEnd).includes('\n'); }
+// caretFirstLine and caretLastLine tell whether ↑ or ↓ leaves the input's
+// text, as in Claude Code: a long line wraps, and they move in it first.
+// A hidden copy of the input, laid out alike, shows which row i is on.
+let mirror = null;
+function caretRow(el, i) {
+  if (!mirror) { mirror = document.createElement('div'); mirror.className = 'mirror'; document.body.append(mirror); }
+  const cs = getComputedStyle(el);
+  Object.assign(mirror.style, { width: el.clientWidth + 'px', fontFamily: cs.fontFamily, fontSize: cs.fontSize, lineHeight: cs.lineHeight, tabSize: cs.tabSize });
+  mirror.textContent = el.value.slice(0, i);
+  const at = mirror.appendChild(document.createElement('span')); // the character at i, in a box of its own: no break moves
+  at.textContent = i < el.value.length ? String.fromCodePoint(el.value.codePointAt(i)) : '​';
+  mirror.append(el.value.slice(i + at.textContent.length) + '​'); // a last empty line has a height
+  const lh = parseFloat(cs.lineHeight), top = mirror.getBoundingClientRect().top;
+  return [Math.round((at.getBoundingClientRect().top - top) / lh), Math.round(mirror.offsetHeight / lh) - 1];
+}
+function caretFirstLine(el) { return !el.value.slice(0, el.selectionStart).includes('\n') && caretRow(el, el.selectionStart)[0] === 0; }
+function caretLastLine(el) {
+  if (el.value.slice(el.selectionEnd).includes('\n')) return false;
+  const [row, last] = caretRow(el, el.selectionEnd);
+  return row >= last;
+}
 
 let composedAt = -1e9; // Safari sends the Enter that ends a composition after compositionend
 
@@ -639,13 +669,21 @@ marked.use({
   breaks: true, // a line break shows, as in Claude Code
   renderer: {
     checkbox({ checked }) { return checked ? '☑ ' : '☐ '; },
+    // A reply's HTML shows as the text it is, as in Claude Code: Vec<String>
+    // or "a <details> element" are words, not markup. A <br>, as in a table's
+    // cell, still breaks.
+    html({ text, block }) {
+      if (/^<br\s*\/?>$/i.test(text)) return text;
+      return block ? `<p>${esc(text.trim()).replace(/\n/g, '<br>')}</p>` : esc(text);
+    },
     code({ text, lang }) {
       // Only a named language is highlighted, as Claude Code does: a guess
-      // costs much and would change the colours when the reply is done.
+      // costs much and would change the colours when the reply is done. A
+      // fence still open as it streams waits to be closed.
       const language = (lang || '').split(/\s/)[0];
       let body;
       try {
-        body = language && hljs.getLanguage(language) ? hljs.highlight(text, { language }).value : esc(text);
+        body = language && !plainCode && hljs.getLanguage(language) ? hljs.highlight(text, { language }).value : esc(text);
       } catch { body = esc(text); }
       return `<div class="code"><span class="copy" role="button" tabindex="0">copy</span><pre><code class="hljs">${body}</code></pre></div>`;
     },
@@ -654,6 +692,11 @@ marked.use({
 
 DOMPurify.addHook('afterSanitizeAttributes', node => {
   if (node.tagName === 'A') { node.setAttribute('target', '_blank'); node.setAttribute('rel', 'noopener noreferrer'); }
+});
+// Only the classes the renderer and hljs write: no reply passes for a
+// question or a message of the user's.
+DOMPurify.addHook('uponSanitizeAttribute', (node, data) => {
+  if (data.attrName === 'class') data.attrValue = data.attrValue.split(/\s+/).filter(c => /^(hljs|language-)|_$|^(code|copy)$/.test(c)).join(' ');
 });
 
 // What a reply may not hold: anything that could restyle or overlay the
@@ -681,9 +724,9 @@ function md(text) {
 // mdLive renders the reply being written: each block once, when done, so a
 // frame costs the block underway, not the whole reply again.
 const blockCache = new Map();
+let plainCode = false; // the block underway is a fence not closed yet: hljs on every frame would cost
 function mdLive(text) {
   const tokens = marked.lexer(text);
-  if (tokens.some(t => t.type === 'html')) return pure(marked.parser(tokens)); // markup can span blocks: whole
   const links = JSON.stringify(tokens.links || {}); // a block's links can be defined below it
   let out = '';
   tokens.forEach((t, j) => {
@@ -692,7 +735,8 @@ function mdLive(text) {
     if (h === undefined) {
       const one = [t];
       one.links = tokens.links;
-      h = pure(marked.parser(one));
+      plainCode = j === tokens.length - 1 && t.type === 'code' && !/\n {0,3}(`{3,}|~{3,})\s*$/.test(t.raw);
+      try { h = pure(marked.parser(one)); } finally { plainCode = false; }
       if (j < tokens.length - 1) { // the last may still grow
         blockCache.set(key, h);
         if (blockCache.size > 500) blockCache.delete(blockCache.keys().next().value);
@@ -830,8 +874,8 @@ const MsgView = memo(({ m, echo, state }) => {
     case 'user': return html`<${UserMsg} m=${m}/>`;
     case 'opt': {
       const cut = m.text.endsWith(' [interrupted]'); // a reply stopped midway, as Turn.Run logs it
-      return html`<div class="msg opt" title=${when(m.date)}><span class="mark">●</span><div class="body"><${Markdown} text=${cut ? m.text.slice(0, -14) : m.text}/>
-        ${cut && html`<div class="result"><span>  ⎿</span><span class="cut-note">Interrupted</span></div>`}</div></div>`;
+      return html`<div class="msg opt" title=${when(m.date)}><span class="mark" aria-hidden="true">●</span><div class="body"><${Markdown} text=${cut ? m.text.slice(0, -14) : m.text}/>
+        ${cut && html`<div class="result"><span aria-hidden="true">  ⎿</span><span class="cut-note">Interrupted</span></div>`}</div></div>`;
     }
     case 'tool': return html`<${ToolMsg} m=${m} echo=${echo} state=${state}/>`;
     case 'echo': return html`<${ToolMsg} echo=${m} state="done"/>`;
@@ -867,12 +911,14 @@ function UserMsg({ m }) {
   const [open, setOpen] = useState(false);
   const [shown, setShown] = useState(-1); // the inline text file opened
   const lines = body.split('\n');
-  const long = lines.length > 20; // a big paste shows folded, as in Claude Code
+  const long = lines.length > 20 || body.length > 3000; // a big paste shows folded, as in Claude Code: one long line too
+  const head = long ? lines.slice(0, 12).join('\n').slice(0, 1500) : body;
+  const hidden = lines.length - head.split('\n').length;
   if (parts.length && body && !long) { // attachments alone show in a row, as ever
     const rest = splitMarks(tail);
     const inline = parts.filter(p => typeof p !== 'string');
     return html`<div class="msg user" title=${when(m.date)}>
-      <span class="mark">></span>
+      <span class="mark" aria-hidden="true">▸</span>
       <div class="body">
         <div class="text">${parts.map((p, j) => typeof p === 'string' ? p : html`<${MarkView} mk=${p} images=${m.images} inline=${true} onOpen=${() => setShown(shown === j ? -1 : j)} open=${shown === j}/>`)}${rest.body}</div>
         ${shown >= 0 && parts[shown]?.content !== undefined && html`<div class="attach-text"><pre>${parts[shown].content}</pre></div>`}
@@ -881,10 +927,10 @@ function UserMsg({ m }) {
     </div>`;
   }
   return html`<div class="msg user" title=${when(m.date)}>
-    <span class="mark">></span>
+    <span class="mark" aria-hidden="true">▸</span>
     <div class="body">
-      ${body && html`<div class="text">${long && !open ? lines.slice(0, 12).join('\n') : body}</div>`}
-      ${long && html`<button class="more" onClick=${() => setOpen(!open)}>${open ? '▴ fold' : `… +${lines.length - 12} lines (click to expand)`}</button>`}
+      ${body && html`<div class="text">${long && !open ? head : body}</div>`}
+      ${long && html`<button class="more" onClick=${() => setOpen(!open)}>${open ? '▴ fold' : `… +${hidden ? count(hidden, 'line') : count(body.length - head.length, 'character')} (click to expand)`}</button>`}
       <${Attached} marks=${marks} images=${m.images}/>
     </div>
   </div>`;
@@ -940,7 +986,7 @@ function WorkMsg({ m }) {
   const match = m.text.match(/^\[([^\]]+)\]\s*/);
   const who = match ? match[1] : 'subagent';
   const text = match ? m.text.slice(match[0].length) : m.text;
-  return html`<div class="msg work" title=${when(m.date)}><span class="mark">◆</span><div class="body">
+  return html`<div class="msg work" title=${when(m.date)}><span class="mark" aria-hidden="true">◆</span><div class="body">
     <div class="who">[${who}] report</div><${Markdown} text=${text}/></div></div>`;
 }
 
@@ -948,7 +994,7 @@ function NoteMsg({ m }) {
   if (!m.text.includes('\n') && / \(imported\)$/.test(m.text)) {
     return html`<div class="sep" title=${m.text}><span class="lbl">${m.text.replace(/ \(imported\)$/, '')} · imported</span></div>`;
   }
-  return html`<div class="msg note" title=${when(m.date)}><span class="mark">※</span><div class="body"><div class="text">${m.text}</div>
+  return html`<div class="msg note" title=${when(m.date)}><span class="mark" aria-hidden="true">※</span><div class="body"><div class="text">${m.text}</div>
     <${Attached} images=${m.images}/></div></div>`;
 }
 
@@ -997,7 +1043,7 @@ function partial(raw) {
 function LiveTool({ name, raw }) {
   const x = partial(raw);
   const long = name === 'Bash' && typeof x?.command === 'string' && x.command.includes('\n');
-  return html`<div class="msg tool run live"><span class="mark">●</span><div class="body">
+  return html`<div class="msg tool run live"><span class="mark" aria-hidden="true">●</span><div class="body">
     <div class="head"><span class="name">${name}</span><span class="args">(${toolArgs(name, x, raw)})</span></div>
     ${long && html`<div class="full"><pre>${x.command}</pre></div>`}
   </div></div>`;
@@ -1049,13 +1095,13 @@ function ToolMsg({ m, echo, state }) {
   const toggle = () => { if (!getSelection().toString()) setOpen(!open); }; // not when selecting its text
   const sum = echo && !failed && tool ? brief(tool.name, tool.input, lines, echo) : '';
   return html`<div class=${cls} title=${when((m || echo).date)}>
-    <span class="mark">●</span>
+    <span class="mark" aria-hidden="true">●</span>
     <div class="body">
       ${tool && html`<div class="head" role="button" tabindex="0" aria-expanded=${open} onClick=${toggle}><span class="name">${tool.name}</span><span class="args">(${toolArgs(tool.name, tool.input, tool.raw)})</span></div>`}
-      ${echo && !open && sum && html`<div class="result" role="button" tabindex=${tool ? -1 : 0} onClick=${toggle}><span>  ⎿</span><span class="lines">${sum} <span class="more">(click to expand)</span></span></div>`}
-      ${echo && !open && refused && html`<div class="result" role="button" tabindex=${tool ? -1 : 0} onClick=${toggle}><span>  ⎿</span><span class="cut-note">No (you said no)</span></div>`}
-      ${echo && !open && !sum && !refused && html`<div class="result" role="button" tabindex=${tool ? -1 : 0} onClick=${toggle}><span>  ⎿</span><span class="lines">${lines.slice(0, 3).map(l => oneLine(l, 160)).join('\n') || '(no output)'}${lines.length > 3 && html`<span class="more">${'\n'}… +${lines.length - 3} lines (click to expand)</span>`}</span></div>`}
-      ${state === 'cut' && !echo && html`<div class="result"><span>  ⎿</span><span class="cut-note">Interrupted</span></div>`}
+      ${echo && !open && sum && html`<div class="result" role="button" tabindex=${tool ? -1 : 0} onClick=${toggle}><span aria-hidden="true">  ⎿</span><span class="lines">${sum} <span class="more">(click to expand)</span></span></div>`}
+      ${echo && !open && refused && html`<div class="result" role="button" tabindex=${tool ? -1 : 0} onClick=${toggle}><span aria-hidden="true">  ⎿</span><span class="cut-note">No (you said no)</span></div>`}
+      ${echo && !open && !sum && !refused && html`<div class="result" role="button" tabindex=${tool ? -1 : 0} onClick=${toggle}><span aria-hidden="true">  ⎿</span><span class="lines">${lines.slice(0, 3).map(l => oneLine(l, 160)).join('\n') || '(no output)'}${lines.length > 3 && html`<span class="more">${'\n'}… +${lines.length - 3} lines (click to expand)</span>`}</span></div>`}
+      ${state === 'cut' && !echo && html`<div class="result"><span aria-hidden="true">  ⎿</span><span class="cut-note">Interrupted</span></div>`}
       ${open && html`<div class="full">
         ${tool && html`<div class="label">input</div><${ToolInput} name=${tool.name} x=${tool.input} raw=${tool.raw}/>`}
         ${echo && html`<div class="label">output</div><pre onClick=${toggle}>${out || '(no output)'}</pre>`}
@@ -1359,6 +1405,7 @@ function Panel() {
 
 // ---------------------------------------------------------------- the page
 
+const still = matchMedia('(prefers-reduced-motion: reduce)'); // then the glyph stays put
 const glyphs = ['·', '✢', '✳', '✶', '✻', '✽', '✻', '✶', '✳', '✢'];
 
 function Spinner({ turn, chars, queued }) {
@@ -1367,7 +1414,7 @@ function Spinner({ turn, chars, queued }) {
     const t = setInterval(() => tick(n => n + 1), 120);
     return () => clearInterval(t);
   }, []);
-  const g = glyphs[Math.floor(Date.now() / 120) % glyphs.length];
+  const g = still.matches ? '✻' : glyphs[Math.floor(Date.now() / 120) % glyphs.length];
   let verb = 'Thinking';
   switch (S.asks.length ? 'asks' : turn.phase) {
     case 'asks': verb = 'Waiting for your permission'; break;
@@ -1382,7 +1429,7 @@ function Spinner({ turn, chars, queued }) {
   if (turn.phase === 'settling' && turn.written) meta.push(`${count(turn.written, 'line')} written`);
   meta.push(html`<button title="stop the turn" onClick=${() => send({ t: 'stop' })}>esc to interrupt</button>`);
   if (queued || turn.phase === 'settling') meta.push(html`<button title="stop the turn and send the queue now" onClick=${() => send({ t: 'now' })}>⌘⏎ send now</button>`);
-  return html`<div class="spinner"><span><span class="glyph">${g}</span>${verb}…</span><span class="meta">(${meta.map((x, j) => html`${j ? ' · ' : ''}${x}`)})</span>
+  return html`<div class="spinner"><span><span class="glyph" aria-hidden="true">${g}</span>${verb}…</span><span class="meta">(${meta.map((x, j) => html`${j ? ' · ' : ''}${x}`)})</span>
     ${turn.partial > 0 && html`<span class="meta">memory partial: ${count(turn.partial, 'message')} not summarized yet</span>`}</div>`;
 }
 
@@ -1391,7 +1438,7 @@ function Queue({ queue }) {
   if (!queue.length) return null;
   return html`<div class="queue">
     ${queue.map(q => html`<div class="item" key=${q.id}>
-      <span>></span>
+      <span aria-hidden="true">▸</span>
       ${editing === q.id
         ? html`<textarea rows="2" ref=${el => el && !el.dataset.ready && (el.dataset.ready = '1', el.value = q.text, el.focus())}
             onCompositionEnd=${e => { composedAt = e.timeStamp; }}
@@ -1497,6 +1544,9 @@ function Input() {
   useEffect(() => {
     inputEl = ref.current;
     inputEl.focus();
+    let d = '';
+    try { d = localStorage.getItem('draft') || ''; } catch {}
+    if (d && !inputEl.value) setInput(histText(d)); // as ↑ recalls: its attachments stayed behind
   }, []);
   const sugg = inputEl ? suggestions(inputEl.value) : [];
   return html`
@@ -1504,9 +1554,9 @@ function Input() {
     ${sugg.length > 0 && html`<${Cmds} sugg=${sugg}/>`}
     <div class="box">
       <${Chips}/>
-      <span class="gt">></span>
+      <span class="gt" aria-hidden="true">▸</span>
       <textarea ref=${ref} rows="1" spellcheck="false" aria-label="Message Opt" placeholder=${S.turn.phase ? 'Queue a message for Opt…' : 'Message Opt'}
-        onInput=${() => { histPos = -1; if (S.cmdSel || S.cmdShut !== null) set({ cmdSel: 0, cmdShut: null }); autosize(); placesGone(); lookForPaths(); lookForMention(); tick(n => n + 1); }}
+        onInput=${() => { histPos = -1; keepDraft(); if (S.cmdSel || S.cmdShut !== null) set({ cmdSel: 0, cmdShut: null }); autosize(); placesGone(); lookForPaths(); lookForMention(); tick(n => n + 1); }}
         onKeyUp=${e => { if (e.key.startsWith('Arrow') || e.key === 'Home' || e.key === 'End') lookForMention(); }}
         onClick=${lookForMention}
         onBlur=${() => S.mention && set({ mention: null })}
@@ -1550,12 +1600,12 @@ function Scroller() {
   };
   const first = S.msgs.length ? S.msgs[0].i : 0;
   return html`<div class="scroll" ref=${ref} onScroll=${onScroll}>
-    <div class="column log" ref=${inner}>
+    <div class="column log" ref=${inner} role="log" aria-live="polite" aria-busy=${!!S.live}>
       <div class="edge">${S.conn === 'connecting' ? 'Connecting…' : first > 0 ? (S.older ? 'Loading older messages…' : '↑ older messages') : S.msgs.length ? 'The beginning of the chat' : 'An empty chat: say something.'}</div>
       <${Log} msgs=${S.msgs} phase=${S.turn.phase} from=${S.turn.from || 0} notices=${S.notices}/>
       ${S.thinking && (S.turn.phase === 'thinking') && html`<div class="thinking"><div>${S.thinking}</div></div>`}
       ${S.input && S.turn.phase === 'tool' && S.turn.tool && html`<${LiveTool} name=${S.turn.tool} raw=${S.input}/>`}
-      ${S.live && html`<div class="msg opt live"><span class="mark">●</span><div class="body"><${Markdown} text=${S.live} live=${true}/></div></div>`}
+      ${S.live && html`<div class="msg opt live"><span class="mark" aria-hidden="true">●</span><div class="body"><${Markdown} text=${S.live} live=${true}/></div></div>`}
     </div>
     ${newer && html`<div class="newer"><button onClick=${() => { stick.current = true; setNewer(false); toBottom(); }}>↓ new messages</button></div>`}
   </div>`;
@@ -1564,7 +1614,7 @@ function Scroller() {
 function App() {
   useStore();
   useEffect(() => {
-    document.title = (S.turn.phase ? '✻ ' : S.unseen ? '● ' : '') + 'opt-chat';
+    document.title = (S.asks.length ? '? ' : S.turn.phase ? '✻ ' : S.unseen ? '● ' : '') + 'opt-chat'; // ?: waiting on the user's yes or no
   });
   return html`<div class="shell">
     ${S.conn === 'denied' && html`<div class="banner">This page has no key to the chat: open the address opt-chat printed in the terminal.</div>`}

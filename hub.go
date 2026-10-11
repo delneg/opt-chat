@@ -437,7 +437,7 @@ func currentStatus(c *Chat, a *Agent) status {
 	a.mu.Unlock()
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	s.Msgs, s.ViewLines, s.ViewBytes = len(c.msgs), len(c.view.keys), c.view.size(c)
+	s.Msgs, s.ViewLines, s.ViewBytes = len(c.msgs), len(c.view.keys), c.view.size()
 	s.Backlog, s.Merges, s.Running, s.Failing, s.Written = len(c.ready0), len(c.readyM), len(c.busy), len(c.cooling), c.written
 	s.Dir = c.dir
 	return s

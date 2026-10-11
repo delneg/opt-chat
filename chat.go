@@ -136,6 +136,7 @@ func openChat(dir string) (*Chat, error) {
 			warn("view.json: %v; the view starts over from the log", err)
 		} else {
 			c.view.keys = lo.Map(pairs, func(p [2]int, _ int) key { return key{p[0], p[1]} })
+			c.view.recount(c)
 		}
 	}
 	end := 0
@@ -354,6 +355,7 @@ func (c *Chat) saveView() {
 
 func (c *Chat) resetCview() {
 	c.cview.keys = slices.Clone(c.view.keys)
+	c.cview.bytes = c.view.bytes
 	c.cview.shrinking = true
 	c.cview.fit(c)
 }
@@ -405,6 +407,8 @@ func (c *Chat) need(k key) {
 
 func (c *Chat) setNode(k key, text string) {
 	c.tree[k] = text
+	c.view.built(c, k)
+	c.cview.built(c, k)
 	c.appendDay("tree", Node{L: k.L, I: k.I, Text: text, Size: len(text)})
 	if c.queued[k] {
 		delete(c.queued, k)

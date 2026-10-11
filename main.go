@@ -119,7 +119,7 @@ func main() {
 	if n := len(c.ready0); n > 0 {
 		backlog = fmt.Sprintf("; %s to summarize", count(n, "message"))
 	}
-	dim(fmt.Sprintf("[%d messages; the view is %d lines, %d bytes; %s%s]", len(c.msgs), len(c.view.keys), c.view.size(c), *dir, backlog))
+	dim(fmt.Sprintf("[%d messages; the view is %d lines, %d bytes; %s%s]", len(c.msgs), len(c.view.keys), c.view.size(), *dir, backlog))
 	c.pump()
 	c.mu.Unlock()
 	stopStatus := make(chan struct{})

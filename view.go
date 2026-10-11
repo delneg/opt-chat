@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"slices"
 
 	"github.com/samber/lo"
@@ -13,39 +14,59 @@ type view struct {
 	keys      []key
 	lo, hi    int
 	shrinking bool // a batch that could not reach lo yet, for want of built parents
+	bytes     int  // its size: see cost
+}
+
+// cost is line k's bytes in a view: none until built, as in UniiChat, so a
+// backlog's placeholders never make a view merge more than its lines need.
+func cost(c *Chat, k key) int {
+	if !c.built(k) {
+		return 0
+	}
+	return len(c.line(k)) + 1
 }
 
 // push appends a message's line and reports whether the view merged.
 func (v *view) push(k key, c *Chat) bool {
 	v.keys = append(v.keys, k)
+	v.bytes += cost(c, k)
 	return v.check(c)
+}
+
+// recount measures the view anew, once its keys are set.
+func (v *view) recount(c *Chat) { v.bytes = lo.SumBy(v.keys, func(k key) int { return cost(c, k) }) }
+
+// built counts line k, built now, if the view holds it.
+func (v *view) built(c *Chat, k key) {
+	j, ok := slices.BinarySearchFunc(v.keys, k.start(), func(x key, s int) int { return cmp.Compare(x.start(), s) })
+	if ok && v.keys[j] == k {
+		v.bytes += cost(c, k)
+	}
 }
 
 // check starts a batch once the view is past hi, goes on with one cut short,
 // and reports whether the view merged.
 func (v *view) check(c *Chat) bool {
-	if v.size(c) > v.hi {
+	if v.bytes > v.hi {
 		v.shrinking = true
 	}
 	return v.fit(c)
 }
 
-func (v *view) size(c *Chat) int {
-	return lo.SumBy(v.keys, func(k key) int { return len(c.line(k)) + 1 })
-}
+func (v *view) size() int { return v.bytes }
 
 func (v *view) fit(c *Chat) bool {
 	if !v.shrinking {
 		return false
 	}
 	merged := false
-	for size := v.size(c); size > v.lo; {
+	for v.bytes > v.lo {
 		j := mostDue(v.keys, len(c.msgs), c.built)
 		if j < 0 {
 			return merged // the rest merges at the next messages, as parents get built
 		}
 		p := v.keys[j].parent()
-		size += len(c.line(p)) - len(c.line(v.keys[j])) - len(c.line(v.keys[j+1])) - 1
+		v.bytes += cost(c, p) - cost(c, v.keys[j]) - cost(c, v.keys[j+1])
 		v.keys = slices.Replace(v.keys, j, j+2, p)
 		merged = true
 	}

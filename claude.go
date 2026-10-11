@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -576,7 +577,7 @@ func (a *Agent) Compact(ctx context.Context, lines []string, task []block) (stri
 	}
 	p.send(second...)
 	best := ""
-	for try := 1; ; try++ {
+	for try := 1; ; {
 		e, ok := p.next()
 		if !ok && best != "" {
 			return best, nil // the shortest line so far
@@ -587,7 +588,7 @@ func (a *Agent) Compact(ctx context.Context, lines []string, task []block) (stri
 			continue
 		}
 		u.add(e.Usage)
-		line := strings.TrimSpace(e.Result)
+		line := strings.TrimSpace(echoedHead.ReplaceAllString(strings.TrimSpace(e.Result), ""))
 		if (e.IsError || line == "") && best != "" {
 			return best, nil
 		} else if e.IsError {
@@ -602,11 +603,16 @@ func (a *Agent) Compact(ctx context.Context, lines []string, task []block) (stri
 		if len(line) <= nodeMax || try >= 5 {
 			return best, nil
 		}
+		try++
 		p.send(textBlock(fmt.Sprintf("Too long: your line is %d bytes, over the 512-byte limit. Write\n"+
 			"the whole line again for the same <input>, cutting just enough of the\n"+
 			"least valuable items to fit before this cut:\n%s| ← LIMIT", len(line), head(line, nodeMax))))
 	}
 }
+
+// echoedHead is a line's id+n| head, which a compaction sees on the lines it
+// merges and may write back.
+var echoedHead = regexp.MustCompile(`^\d+\+\d+\|\s*`)
 
 // message is one the chat hands a turn: the user's (kind user) or an agent's report (kind work).
 type message struct {

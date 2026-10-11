@@ -146,7 +146,7 @@ func fakeClaude() {
 		}
 		return true
 	}
-	failRetry := false
+	failRetry, longTries := false, -1
 	for line := range lines {
 		if control(line) {
 			continue
@@ -162,6 +162,9 @@ func fakeClaude() {
 				time.Sleep(300 * time.Millisecond)
 			}
 			result("ok")
+		case strings.Contains(in, "Too long:") && longTries >= 0: // each try a byte shorter, a head echoed
+			longTries++
+			result(fmt.Sprintf("3+1|%s", strings.Repeat("y", 700-longTries)))
 		case strings.Contains(in, "Too long:") && failRetry:
 			emit(map[string]any{"type": "result", "is_error": true, "result": "overloaded"})
 		case strings.Contains(in, "Too long:"):
@@ -172,6 +175,9 @@ func fakeClaude() {
 			}
 		case strings.Contains(in, "Compaction:") && strings.Contains(in, "empty-error"):
 			emit(map[string]any{"type": "result", "subtype": "error_during_execution", "is_error": true, "result": ""})
+		case strings.Contains(in, "Compaction:") && strings.Contains(in, "always-long"):
+			longTries = 0
+			result(fmt.Sprintf("3+1|%s", strings.Repeat("y", 700)))
 		case strings.Contains(in, "Compaction:") && strings.Contains(in, "make-it-long"):
 			failRetry = strings.Contains(in, "then-fail")
 			result(strings.Repeat("x", 600))
@@ -367,7 +373,12 @@ func TestCompact(t *testing.T) {
 	if err != nil || got != strings.Repeat("x", 600) {
 		t.Fatalf("a failed retry lost the line in hand: %q, %v", got, err)
 	}
-	if n, u := a.takeCompactions(); n != 3 || u.Read == 0 {
+	// Five tries, the shortest line kept, without a head it echoed.
+	got, err = a.Compact(context.Background(), nil, []block{textBlock("Compaction: always-long")})
+	if err != nil || got != strings.Repeat("y", 696) {
+		t.Fatalf("Compact = %d bytes %.8q, %v; want the fifth try's 696", len(got), got, err)
+	}
+	if n, u := a.takeCompactions(); n != 4 || u.Read == 0 {
 		t.Fatalf("compactions counted: %d, %v", n, u)
 	}
 }

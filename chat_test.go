@@ -177,7 +177,13 @@ func TestViewSawtooth(t *testing.T) {
 		c.Log("user", fmt.Sprintf("%04d %s", i, strings.Repeat("m", 480))) // a free, ~500-byte line
 		waitIdle(t, c)
 		c.mu.Lock()
-		cur, size, csize := c.view.keys, c.view.size(c), c.cview.size(c)
+		cur, size, csize := c.view.keys, c.view.size(), c.cview.size()
+		for _, v := range []view{c.view, c.cview} {
+			w := v
+			if w.recount(c); w.bytes != v.bytes {
+				t.Fatalf("message %d: a view counted at %d bytes, measured at %d", i, v.bytes, w.bytes)
+			}
+		}
 		c.mu.Unlock()
 		if len(cur) == len(prev)+1 && slices.Equal(cur[:len(prev)], prev) {
 			if size > viewHi {
@@ -391,7 +397,7 @@ func TestBacklog(t *testing.T) {
 	c.mu.Unlock()
 	waitIdle(t, c)
 	c.mu.Lock()
-	size, csize := c.view.size(c), c.cview.size(c)
+	size, csize := c.view.size(), c.cview.size()
 	c.mu.Unlock()
 	if size > viewHi || csize > cviewHi {
 		t.Fatalf("after the backlog: view %d bytes, compaction view %d", size, csize)
@@ -424,5 +430,42 @@ func TestLoadOrder(t *testing.T) {
 	}
 	if !tiles([][2]int{{1, 0}, {0, 2}}, 3) || tiles([][2]int{{0, 0}, {0, 2}}, 3) || tiles([][2]int{{2, 0}}, 3) || tiles([][2]int{{99, 0}}, 3) {
 		t.Fatal("tiles")
+	}
+}
+
+// An import's placeholders weigh nothing in the view: built, the lines from
+// before it stay as fine as without one (lines of 64 messages here), never
+// merged further for want of the space the placeholders took.
+func TestImportKeepsDetail(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds about 2,800 lines")
+	}
+	c, _ := fakeChat(t, t.TempDir(), 400)
+	for i := range 400 {
+		c.Log("user", fmt.Sprintf("%04d %s", i, strings.Repeat("u", 600)))
+	}
+	waitIdle(t, c)
+	c.mu.Lock()
+	inner := c.compact
+	c.compact = nil // importing: nothing builds
+	c.mu.Unlock()
+	msgs := make([]Msg, 2000)
+	for i := range msgs {
+		msgs[i] = Msg{Kind: "opt", Text: fmt.Sprintf("imp %04d %s", i, strings.Repeat("n", 600))}
+	}
+	c.logMsgs(msgs)
+	c.mu.Lock()
+	c.compact = inner
+	c.pump()
+	c.mu.Unlock()
+	waitFor(t, "the import built", func() bool { // fsyncs make it slow
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		return len(c.busy) == 0 && len(c.ready0) == 0 && len(c.readyM) == 0
+	})
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if k := c.view.keys[0]; k.L > 6 {
+		t.Fatalf("the oldest line, %s, covers more than 64 messages", k.name())
 	}
 }

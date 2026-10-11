@@ -334,9 +334,9 @@ func (c *Chat) fileBlocks(names []string) []block {
 		}
 		data := base64.StdEncoding.EncodeToString(b)
 		if ext := strings.TrimPrefix(filepath.Ext(name), "."); ext != "pdf" {
-			return block{Type: "image", Source: &source{Type: "base64", MediaType: "image/" + ext, Data: data}}
+			return block{Type: "image", Source: &source{Type: "base64", MediaType: "image/" + ext, Data: data}, file: name}
 		}
-		return block{Type: "document", Source: &source{Type: "base64", MediaType: "application/pdf", Data: data}}
+		return block{Type: "document", Source: &source{Type: "base64", MediaType: "application/pdf", Data: data}, file: name}
 	})
 }
 
@@ -528,7 +528,7 @@ func (c *Chat) compactInput(k key) ([]string, []block) {
 		if len(m.Images) == 0 {
 			return c.lines(keys), []block{textBlock(in + "</input>")}
 		}
-		return c.lines(keys), slices.Concat([]block{textBlock(in)}, c.fileBlocks(m.Images), []block{textBlock("</input>")})
+		return c.lines(keys), append(c.interleave(in, m.Images), textBlock("</input>"))
 	}
 	a, b := k.kids()
 	return c.lines(keys), []block{textBlock(fmt.Sprintf("Compaction: merge lines %s and %s, adjacent, into one line of at most\n"+

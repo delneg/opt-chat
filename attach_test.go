@@ -263,3 +263,42 @@ func TestCompose(t *testing.T) {
 		t.Fatalf("fileBlocks: %v %v", b[0].Type, b[1].Type)
 	}
 }
+
+// Marks go where their attachments were put, and the images after their
+// marks: "do this <img> not this <img>" reaches the model as written.
+func TestPlaced(t *testing.T) {
+	c, _ := fakeChat(t, t.TempDir(), 100)
+	one, _ := c.saveImage([]byte(pngHead))
+	two, _ := c.saveImage([]byte(pngHead + "x"))
+	atts := []attachment{
+		{Name: one, Orig: "one.png", Kind: "image", Size: 1, At: "[Image #1]"},
+		{Name: two, Orig: "two.png", Kind: "image", Size: 1, At: "[Image #2]"},
+		{Name: one, Orig: "again.png", Kind: "image", Size: 1}, // no place: at the end
+	}
+	m := c.compose("do this [Image #2] not this [Image #1] ok", atts)
+	full := m.full()
+	mark := func(name, file string) string {
+		return `<attachment name="` + name + `" path="` + filepath.Join(c.dir, file) + `" size="1 B"/>`
+	}
+	if want := "do this " + mark("two.png", two) + " not this " + mark("one.png", one) + " ok\n\n" + mark("again.png", one); full != want {
+		t.Fatalf("full:\n%s\nwant:\n%s", full, want)
+	}
+	var got []string
+	for _, b := range c.content(m) {
+		if b.Type == "text" {
+			got = append(got, b.Text)
+		} else {
+			got = append(got, b.Type+":"+b.file)
+		}
+	}
+	want := []string{"do this " + mark("two.png", two), "image:" + two, " not this " + mark("one.png", one), "image:" + one,
+		" ok\n\n" + mark("again.png", one), "image:" + one}
+	if !slices.Equal(got, want) {
+		t.Fatalf("content:\n%q\nwant:\n%q", got, want)
+	}
+	// An edit that takes a placeholder out moves its mark to the end.
+	m.text = "just this [Image #1]"
+	if full := m.full(); full != "just this "+mark("one.png", one)+"\n\n"+mark("two.png", two)+"\n"+mark("again.png", one) {
+		t.Fatalf("after the edit: %s", full)
+	}
+}

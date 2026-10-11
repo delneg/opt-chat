@@ -97,13 +97,13 @@ func mcpResult(a *Agent, method string, params jsontext.Value, fromAgent bool) (
 		}
 		json.Unmarshal(params, &p)
 		text, images := callTool(a, fromAgent, p.Name, p.Args)
-		content := []map[string]any{{"type": "text", "text": text}}
-		for i, b := range a.chat.fileBlocks(images) {
+		content := []map[string]any{}
+		for _, b := range a.chat.interleave(text, images) { // each image where its message has it
 			switch {
-			case b.Source == nil: // lost
+			case b.Source == nil: // text, or a file lost
 				content = append(content, map[string]any{"type": "text", "text": b.Text})
-			case b.Type == "document": // a tool result carries no PDF: Read opens it
-				content = append(content, map[string]any{"type": "text", "text": "[PDF: " + filepath.Join(a.chat.dir, images[i]) + "]"})
+			case b.Type == "document": // a tool result carries no PDF: its mark names its path, which Read opens
+				content = append(content, map[string]any{"type": "text", "text": "[PDF: " + filepath.Join(a.chat.dir, b.file) + "]"})
 			default:
 				content = append(content, map[string]any{"type": "image", "data": b.Source.Data, "mimeType": b.Source.MediaType})
 			}

@@ -277,7 +277,7 @@ async function submit(now) {
   if (S.atts.some(a => a.status === 'error')) { notice('warn', 'An attachment failed: take it off (×) and send again.'); return; }
   const text = inputEl.value; // as it is now: typing went on meanwhile
   if (!text.trim() && !S.atts.length) return;
-  const files = S.atts.map(({ name, orig, kind, size }) => ({ name, orig, kind, size }));
+  const files = S.atts.map(({ name, orig, kind, size, at }) => ({ name, orig, kind, size, at: at && text.includes(at) ? at : undefined }));
   // Not looked for yet (opt-chat slow to answer): the server looks, as told.
   const paths = pathsDone ? S.paths.map(p => p.path).filter(p => !S.skipped.has(p)) : null;
   const seq = ++sendSeq;
@@ -357,14 +357,43 @@ function addFiles(list) {
   for (const file of list) upload(file);
 }
 
+// nextPlace is the placeholder for the next attachment, as Claude Code
+// writes it: "[Image #2]". It marks the attachment's place in the message.
+function nextPlace(kind) {
+  let n = 0;
+  for (const a of S.atts) n = Math.max(n, +(a.at?.match(/#(\d+)\]$/)?.[1] || 0));
+  return `[${{ image: 'Image', pdf: 'PDF' }[kind] || 'File'} #${n + 1}]`;
+}
+
+// insertAtCaret types s where the caret is, or was when the input lost the
+// focus (to 📎, say), spaced from the words around it; undo takes it back.
+function insertAtCaret(s) {
+  const el = inputEl;
+  const i = el.selectionStart, j = el.selectionEnd;
+  const before = el.value.slice(0, i), after = el.value.slice(j);
+  const text = (before && !/\s$/.test(before) ? ' ' : '') + s + (!after || !/^\s/.test(after) ? ' ' : '');
+  el.focus();
+  el.setSelectionRange(i, j);
+  if (!document.execCommand('insertText', false, text)) el.setRangeText(text, i, j, 'end');
+  autosize();
+}
+
+// placesGone takes off the attachments whose placeholder the user deleted.
+function placesGone() {
+  const gone = S.atts.filter(a => a.at && !inputEl.value.includes(a.at));
+  for (const a of gone) takeOff(a, true);
+}
+
 function upload(file) {
   const id = ++uploadSeq;
   let orig = file.name || 'file';
   if (/^image\.(png|jpe?g|gif|webp)$/i.test(orig)) orig = `pasted-${new Date().toISOString().replace(/[:.]/g, '-')}.${orig.split('.').pop()}`;
+  const kind = file.type.startsWith('image/') ? 'image' : file.type === 'application/pdf' ? 'pdf' : 'file';
   const att = {
-    id, orig, size: file.size, kind: file.type.startsWith('image/') ? 'image' : 'file', status: 'uploading', progress: 0,
+    id, orig, size: file.size, kind, status: 'uploading', progress: 0, at: nextPlace(kind),
     url: file.type.startsWith('image/') ? URL.createObjectURL(file) : null,
   };
+  if (inputEl) insertAtCaret(att.at); // before it is listed: the input's change can't take it off
   const update = patch => set({ atts: S.atts.map(a => a.id === id ? Object.assign(a, patch) : a) });
   const blob = att.url;
   att.promise = new Promise(resolve => {
@@ -645,11 +674,40 @@ function Markdown({ text, live }) {
   return html`<div class="md" dangerouslySetInnerHTML=${{ __html: live ? mdLive(text) : md(text) }}/>`;
 }
 
+// inlineParts splits a message's text at the attachment marks put in its
+// words ("do this <img> not this <img>"), which show there; the marks after
+// its text, each on a line of its own, show in a row below.
+function inlineParts(text) {
+  const parts = [];
+  let prev = 0, m;
+  const re = new RegExp(MARK.source, 'g');
+  while ((m = re.exec(text))) {
+    if (m[0].startsWith('\n')) break; // the marks at the end
+    parts.push(text.slice(prev, m.index), { name: unesc(m[1]), path: unesc(m[2]), size: m[3], content: m[4] });
+    prev = m.index + m[0].length;
+  }
+  return { parts, tail: text.slice(prev) };
+}
+
 function UserMsg({ m }) {
   const { body, marks } = useMemo(() => splitMarks(m.text), [m.text]);
+  const { parts, tail } = useMemo(() => inlineParts(m.text), [m.text]);
   const [open, setOpen] = useState(false);
+  const [shown, setShown] = useState(-1); // the inline text file opened
   const lines = body.split('\n');
   const long = lines.length > 20; // a big paste shows folded, as in Claude Code
+  if (parts.length && body && !long) { // attachments alone show in a row, as ever
+    const rest = splitMarks(tail);
+    const inline = parts.filter(p => typeof p !== 'string');
+    return html`<div class="msg user" title=${when(m.date)}>
+      <span class="mark">></span>
+      <div class="body">
+        <div class="text">${parts.map((p, j) => typeof p === 'string' ? p : html`<${MarkView} mk=${p} images=${m.images} inline=${true} onOpen=${() => setShown(shown === j ? -1 : j)} open=${shown === j}/>`)}${rest.body}</div>
+        ${shown >= 0 && parts[shown]?.content !== undefined && html`<div class="attach-text"><pre>${parts[shown].content}</pre></div>`}
+        <${Attached} marks=${rest.marks} images=${(m.images || []).filter(n => !inline.some(p => n.endsWith('/' + p.path.split('/').pop())))}/>
+      </div>
+    </div>`;
+  }
   return html`<div class="msg user" title=${when(m.date)}>
     <span class="mark">></span>
     <div class="body">
@@ -658,6 +716,21 @@ function UserMsg({ m }) {
       <${Attached} marks=${marks} images=${m.images}/>
     </div>
   </div>`;
+}
+
+// MarkView is one attachment where its message put it: an image as a
+// thumbnail, a text file as a chip that opens its text, any other a chip.
+function MarkView({ mk, images = [], inline, open, onOpen }) {
+  const url = fileURL(mk.path);
+  const base = mk.path.split('/').pop();
+  const cls = inline ? ' inline' : '';
+  if (url && images.some(n => n.endsWith('/' + base)) && /\.(png|jpe?g|gif|webp)$/.test(base)) {
+    return html`<img class=${'thumb' + cls} src=${url} alt=${mk.name} title=${mk.name + ' · ' + mk.size} loading="lazy" role="button" tabindex="0" onClick=${() => set({ lightbox: url })}/>`;
+  }
+  if (mk.content !== undefined) {
+    return html`<button class=${'chip' + cls} title=${mk.path} onClick=${onOpen}>📄 <span class="name">${mk.name}</span> <span class="size">${mk.size}</span> ${open ? '▴' : '▾'}</button>`;
+  }
+  return html`<a class=${'chip' + cls} href=${url || undefined} target="_blank" rel="noopener" title=${mk.path}>${/\.pdf$/i.test(mk.name) ? '📕' : '📎'} <span class="name">${mk.name}</span> <span class="size">${mk.size}</span></a>`;
 }
 
 // Attached shows a message's attachments: images as thumbnails, other
@@ -1141,11 +1214,21 @@ function Queue({ queue }) {
   </div>`;
 }
 
-function takeOff(a) {
+// takeOff removes an attachment, and its placeholder from the input
+// unless the user just deleted it (typed).
+function takeOff(a, typed) {
   if (a.xhr && a.xhr.readyState < 4) a.xhr.abort(); // not uploaded for nothing
   if (a.url?.startsWith('blob:')) URL.revokeObjectURL(a.url);
   set({ atts: S.atts.filter(x => x.id !== a.id) });
-  inputEl?.focus();
+  if (!typed && a.at && inputEl?.value.includes(a.at)) {
+    const v = inputEl.value, i = v.indexOf(a.at);
+    const j = i + a.at.length + (v[i + a.at.length] === ' ' ? 1 : 0);
+    inputEl.focus();
+    inputEl.setSelectionRange(i, j);
+    if (!document.execCommand('delete')) inputEl.setRangeText('', i, j, 'end');
+    autosize();
+  }
+  if (!typed) inputEl?.focus();
 }
 
 function Chips() {
@@ -1156,7 +1239,7 @@ function Chips() {
   return html`<div class="atts">
     ${atts.map(a => html`<span class=${'chip' + (a.status === 'error' ? ' err' : '')} key=${a.id} title=${a.error || a.orig}>
       ${a.url ? html`<img src=${a.url} alt=""/>` : icon(kindOf(a))}
-      <span class="name">${a.orig}</span>
+      ${a.at && html`<span class="at">${a.at}</span>`}<span class="name">${a.orig}</span>
       ${a.status === 'uploading' ? html`<span class="bar"><i style=${{ width: Math.round((a.progress || 0) * 100) + '%' }}/></span>` : html`<span class="size">${a.status === 'error' ? a.error : size(a.size)}</span>`}
       <button class="x" title="remove" onClick=${() => takeOff(a)}>×</button>
     </span>`)}
@@ -1225,7 +1308,7 @@ function Input() {
       <${Chips}/>
       <span class="gt">></span>
       <textarea ref=${ref} rows="1" spellcheck="false" aria-label="Message Opt" placeholder=${S.turn.phase ? 'Queue a message for Opt…' : 'Message Opt'}
-        onInput=${() => { histPos = -1; autosize(); lookForPaths(); tick(n => n + 1); }}
+        onInput=${() => { histPos = -1; autosize(); placesGone(); lookForPaths(); tick(n => n + 1); }}
         onKeyDown=${onKey}
         onCompositionEnd=${e => { composedAt = e.timeStamp; }}
         onPaste=${onPaste}/>

@@ -214,12 +214,22 @@ message gets a mark for it, which the model and its summaries see:
   message in all; a longer one is a path, which Read opens.
 - Any other file is a path the model's tools can read.
 
+An attachment has a place in your message, as in Claude Code: attaching
+one (paste, drop or 📎) types `[Image #1]` (`[PDF #2]`, `[File #3]`) where
+the caret is, and deleting that takes the attachment off. "Do this
+[Image #1], not this [Image #2]" reaches the model as written: each mark
+where its placeholder was, each image right after its mark. A file named by
+a path you type gets its mark after the path. An attachment with no place
+(its placeholder deleted in a queued message's edit) goes at the end. The
+page shows each image where you put it.
+
 A message's images and PDFs are part of it. Yours go with your message; a
 tool result's images, such as an image file that Read opened, go with its
-`echo`. The call sees them after the text, and so does the compaction that
-writes the message's line, which says in words what they show: such a
-message is never its own line. `zoom(id, 1)` gives the message whole, with
-its images (a PDF there is a path).
+`echo`. The call sees each after its mark (a tool result's after the
+text), and so does the compaction that writes the message's line, which
+says in words what they show: such a message is never its own line.
+`zoom(id, 1)` gives the message whole, its images in their places (a PDF
+there is a path).
 
 ## Your Claude Code setup
 

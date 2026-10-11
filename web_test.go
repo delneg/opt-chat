@@ -209,14 +209,17 @@ func TestWebChat(t *testing.T) {
 	if u := ws.next("paths", typ("paths")); u["seq"].(float64) != 7 || len(u["found"].([]any)) != 1 {
 		t.Fatalf("paths: %v", u)
 	}
-	ws.send(map[string]any{"t": "send", "text": "look " + typed, "files": []attachment{img}, "paths": []string{typed}, "seq": 1})
+	img.At = "[Image #1]"
+	ws.send(map[string]any{"t": "send", "text": "look [Image #1] then " + typed, "files": []attachment{img}, "paths": []string{typed}, "seq": 1})
 	ws.next("sent", func(u map[string]any) bool { return u["t"] == "sent" && u["seq"].(float64) == 1 })
 	user := ws.next("the user's message", func(u map[string]any) bool {
 		return u["t"] == "msgs" && u["msgs"].([]any)[0].(map[string]any)["kind"] == "user"
 	})["msgs"].([]any)[0].(map[string]any)
 	text := user["text"].(string)
-	if !strings.HasPrefix(text, "look "+typed+"\n\n<attachment name=\"a.png\" path=") || !strings.Contains(text, "<attachment name=\"notes.txt\"") ||
-		!strings.Contains(text, ">\nthe answer is 42\n</attachment>") || len(user["images"].([]any)) != 1 {
+	// each attachment where it was put: the image for its placeholder, the
+	// typed file after its path
+	if !strings.HasPrefix(text, "look <attachment name=\"a.png\" path=") || !strings.Contains(text, "/> then "+typed+" <attachment name=\"notes.txt\"") ||
+		!strings.HasSuffix(text, ">\nthe answer is 42\n</attachment>") || len(user["images"].([]any)) != 1 {
 		t.Fatalf("the user's message: %v", user)
 	}
 	ws.next("the reply", func(u map[string]any) bool {

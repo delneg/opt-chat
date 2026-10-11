@@ -12,6 +12,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -105,6 +106,8 @@ type block struct {
 	Content  jsontext.Value `json:"content,omitzero"`      // tool_result: a string or blocks
 	IsError  bool           `json:"is_error,omitzero"`
 	ImageURL jsontext.Value `json:"image_url,omitzero"` // Codex's input_image, read by import
+
+	file string // fileBlocks: the saved file it holds, files/...
 }
 
 type source struct {
@@ -581,27 +584,76 @@ func (a *Agent) Compact(ctx context.Context, lines []string, task []block) (stri
 // message is one the chat hands a turn: the user's (kind user) or an agent's report (kind work).
 type message struct {
 	kind, text string
-	extra      string       // what attachments add to the text, which an edit of it keeps
+	inline     []placed     // attachments' marks with a place in the text: an edit keeps them
+	extra      string       // and those with none, after it
 	images     []string     // saved with Chat.saveFile: images and PDFs
 	files      []string     // the attachments' names, as the queue shows them
 	uploads    []attachment // those a page uploaded, which a stop hands back to it
 	logged     bool         // by a call that died before it could answer
 }
 
-// full is m's text as the chat logs it: its own, then what its attachments add.
+// full is m's text as the chat logs it: its own, with its attachments'
+// marks in their places, and the rest after it. (An edit that took a
+// placeholder out moves its mark to the end.)
 func (m message) full() string {
+	text, left := place(m.text, m.inline)
+	extra := strings.Join(slices.DeleteFunc(append(left, m.extra), func(s string) bool { return s == "" }), "\n")
 	switch {
-	case m.extra == "":
-		return m.text
-	case m.text == "":
-		return m.extra
+	case extra == "":
+		return text
+	case text == "":
+		return extra
 	}
-	return m.text + "\n\n" + m.extra
+	return text + "\n\n" + extra
 }
 
-// content is m as a call gets it: its text, then its images and PDFs.
+// content is m as a call gets it: its text, each image or PDF right after
+// its mark in it.
 func (c *Chat) content(m message) []block {
-	return append([]block{textBlock(m.full())}, c.fileBlocks(m.images)...)
+	return c.interleave(m.full(), m.images)
+}
+
+// interleave is text with each of the images and PDFs named (files/...)
+// right after its attachment mark in it, so that "do this <img> not this
+// <img>" reaches the model as written; those with no mark go at the end.
+func (c *Chat) interleave(text string, names []string) []block {
+	type at struct {
+		end  int
+		name string
+	}
+	var ats []at
+	var rest []string
+	from := map[string]int{} // a file attached twice: its second mark
+	for _, name := range names {
+		key := `path="` + attr(filepath.Join(c.dir, name)) + `"`
+		i := strings.Index(text[from[key]:], key)
+		if i < 0 {
+			rest = append(rest, name)
+			continue
+		}
+		i += from[key]
+		end := strings.Index(text[i:], ">")
+		if end < 0 {
+			rest = append(rest, name)
+			continue
+		}
+		from[key] = i + end + 1
+		ats = append(ats, at{i + end + 1, name})
+	}
+	slices.SortStableFunc(ats, func(a, b at) int { return a.end - b.end })
+	var out []block
+	prev := 0
+	for _, a := range ats {
+		if s := text[prev:a.end]; s != "" {
+			out = append(out, textBlock(s))
+		}
+		out = append(out, c.fileBlocks([]string{a.name})...)
+		prev = a.end
+	}
+	if s := text[prev:]; s != "" || len(out) == 0 {
+		out = append(out, textBlock(s))
+	}
+	return append(out, c.fileBlocks(rest)...)
 }
 
 // Turn is one fresh `claude -p` call: [system] [view] [message], logging

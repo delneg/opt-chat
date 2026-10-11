@@ -125,6 +125,10 @@ a { color: var(--blue); }
 .chip.off { color: var(--dim); }
 .chip.off .name { text-decoration: line-through; }
 .attach-text { width: 100%; }
+/* an attachment put in the middle of a message, where it was put */
+.thumb.inline { display: inline-block; height: 4em; max-width: 12em; vertical-align: text-top; margin: 0 .3ch .2em; }
+.chip.inline { vertical-align: baseline; margin: 0 .3ch; }
+.chip .at { color: var(--accent); }
 
 /* live turn */
 .thinking { color: var(--dim); font-style: italic; white-space: pre-wrap; max-height: 9em; overflow: hidden; display: flex; flex-direction: column-reverse; margin: 0 0 1em 2ch; border-left: 2px solid var(--border); padding-left: 1.5ch; }

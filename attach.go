@@ -55,6 +55,9 @@ type attachment struct {
 	Orig string `json:"orig"` // the file's own name
 	Kind string `json:"kind"` // image, pdf, text or file
 	Size int64  `json:"size"`
+	At   string `json:"at,omitzero"` // its place in the message: the placeholder the page put there, as "[Image #1]"
+
+	path string // typed: the path it was named by, which its mark follows
 }
 
 var (
@@ -366,6 +369,7 @@ func (c *Chat) attachPaths(paths []string) ([]attachment, error) {
 			errs = append(errs, err)
 			continue
 		}
+		at.path = p
 		atts = append(atts, at)
 	}
 	return atts, errors.Join(errs...)
@@ -392,7 +396,9 @@ func (c *Chat) uploaded(atts []attachment) ([]attachment, error) {
 	return out, nil
 }
 
-// compose makes the user's message: their text, and a mark for each attachment.
+// compose makes the user's message: their text, and a mark for each
+// attachment, where it was put: in place of its placeholder, or after the
+// path that named it; at the end when it has no place.
 func (c *Chat) compose(text string, atts []attachment) message {
 	m := message{kind: "user", text: text}
 	budget := inlineMax - utf8.RuneCountInString(text)
@@ -404,19 +410,80 @@ func (c *Chat) compose(text string, atts []attachment) message {
 		switch at.Kind {
 		case "image", "pdf":
 			m.images = append(m.images, at.Name)
+			mark += "/>"
 		case "text":
 			b, err := os.ReadFile(path)
 			s := strings.TrimSuffix(string(b), "\n")
 			if n := utf8.RuneCountInString(s); err == nil && n <= budget && !strings.Contains(s, "</attachment>") {
 				budget -= n
-				marks = append(marks, mark+">\n"+s+"\n</attachment>")
-				continue
+				mark += ">\n" + s + "\n</attachment>"
+			} else {
+				mark += "/>"
 			}
+		default:
+			mark += "/>"
 		}
-		marks = append(marks, mark+"/>")
+		switch {
+		case at.At != "":
+			m.inline = append(m.inline, placed{anchors: []string{at.At}, mark: mark})
+		case at.path != "":
+			anchors := []string{at.path}
+			if home, _ := os.UserHomeDir(); home != "" && strings.HasPrefix(at.path, home+"/") {
+				anchors = append(anchors, "~"+strings.TrimPrefix(at.path, home))
+			}
+			m.inline = append(m.inline, placed{anchors: anchors, mark: mark, keep: true})
+		default:
+			marks = append(marks, mark)
+		}
 	}
 	m.extra = strings.Join(marks, "\n")
 	return m
+}
+
+// placed is an attachment's mark with its place in the message's text.
+type placed struct {
+	anchors []string // the text it goes at: the first of these found
+	mark    string
+	keep    bool // the anchor stays, the mark after it (a path); else the mark replaces it (a placeholder)
+}
+
+// place puts each mark in text, where its anchor first is; the marks with
+// no place found are returned, in order.
+func place(text string, marks []placed) (string, []string) {
+	type hit struct {
+		i, j int
+		p    placed
+	}
+	var hits []hit
+	var left []string
+	for _, p := range marks {
+		i := -1
+		var anchor string
+		for _, a := range p.anchors {
+			if i = strings.Index(text, a); i >= 0 {
+				anchor = a
+				break
+			}
+		}
+		if i < 0 || slices.ContainsFunc(hits, func(h hit) bool { return i < h.j && h.i < i+len(anchor) }) {
+			left = append(left, p.mark)
+			continue
+		}
+		hits = append(hits, hit{i, i + len(anchor), p})
+	}
+	slices.SortFunc(hits, func(a, b hit) int { return a.i - b.i })
+	var out strings.Builder
+	prev := 0
+	for _, h := range hits {
+		out.WriteString(text[prev:h.i])
+		if h.p.keep {
+			out.WriteString(text[h.i:h.j] + " ")
+		}
+		out.WriteString(h.p.mark)
+		prev = h.j
+	}
+	out.WriteString(text[prev:])
+	return out.String(), left
 }
 
 // stripAttachments is a message's text without its attachments' marks.

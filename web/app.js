@@ -354,6 +354,7 @@ const commands = [
   ['/model', 'choose the model and effort for turns (Alt+P)'],
   ['/effort', 'show or set their effort'],
   ['/mode', 'show or set the permission mode (Shift+Tab)'],
+  ['/autocompact', 'show or set when subagents\' contexts compact, as 250k (never the chat\'s)'],
   ['/mcp', 'your Claude Code MCP servers: status, on or off, sign in'],
   ['/skills', 'your Claude Code skills: on or off'],
   ['/plugins', 'your Claude Code plugins, their skills and MCP servers at once: on or off'],

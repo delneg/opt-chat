@@ -288,19 +288,27 @@ per turn with threads, a few hundred without.
 
 ## Subagents
 
-`spawn(name, task, effort, model)` starts a subagent in the background and
-returns at once; `effort` and `model` are optional (`-agent-effort` and
-`-agent-model`, Opus, when left out; ask Opt for "a Fable subagent" and it
-passes `fable`). A subagent is
+`spawn(name, task, effort, model, autocompact)` starts a subagent in the
+background and returns at once; `effort`, `model` and `autocompact` are
+optional (`-agent-effort` and `-agent-model`, Opus, when left out; ask Opt
+for "a Fable subagent" and it passes `fable`). A subagent is
 a fresh call with the same prompt and tools, which gets the view, then its
 task. Its steps go to `agents/<Name>.log`, which `zoom("Name")` opens whole
 (Claude Code saves a long one to a file the model reads). Its final reply
-comes back as a `work` message, `[Name] report`, ending with
-`Full chat: zoom("Name")`. If a turn is running, the report is injected into
+comes back as a `work` message, `[Name] report`, ending with the model it
+ran on and `Full chat: zoom("Name")`. If a turn is running, the report is injected into
 it; otherwise it starts a new turn. The chat never waits for a subagent.
 `tell(name, message)` reaches a running subagent between its tool calls.
 Subagents can't start or tell subagents. Quitting stops them, and each one's
 report then says it was stopped.
+
+A long task can outgrow a subagent's context. `/autocompact 250k` (saved in
+`<dir>/settings.json`; `/autocompact off` undoes it) lets Claude Code compact
+a subagent's context at 250k tokens, and `spawn`'s `autocompact` sets it for
+one subagent. After a compaction the subagent gets the view and its task
+again, as they are then, and goes on. It is off unless set, whatever your
+Claude Code's own setting. The chat's own calls never compact, whatever is
+set: the view is its memory, and it never outgrows its size.
 
 ## Where it departs from the recipe, and why
 

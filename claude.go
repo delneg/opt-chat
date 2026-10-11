@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -39,6 +40,7 @@ type Agent struct {
 	skillsSet       map[string]string // the user's skills' states set here: on, off, ...
 	pluginsSet      map[string]bool   // and plugins turned on or off here, by name@marketplace
 	skillsListed    []skill           // the skills Claude Code listed last, in its own states
+	agentWindow     int               // subagents' auto-compaction window, in tokens; 0: off
 	mcpUp           []string          // the servers connected when the last call sent its view: see mcpSettle
 	mcpSeen         []string          // and those listed then
 
@@ -156,6 +158,10 @@ type event struct {
 	Usage   usage          `json:"usage"`
 	Event   jsontext.Value `json:"event"`                  // stream_event: one of the API's own
 	Think   int            `json:"estimated_tokens_delta"` // system thinking_tokens
+	Compact struct {
+		Pre  int `json:"pre_tokens"`
+		Post int `json:"post_tokens"`
+	} `json:"compact_metadata"` // system compact_boundary: Claude Code compacted the call's context
 
 	RequestID string          `json:"request_id"` // control_request: Claude Code asks
 	Request   jsontext.Value  `json:"request"`
@@ -232,13 +238,15 @@ const (
 // same as a turn's, so that on one model both read one cache entry (gist §4);
 // with the user's own setup, a turn's add Skill and ToolSearch.
 // ownSettings are a call's settings over the user's own: never their hooks;
-// their skills and plugins on or off as set here. Under a.mu.
-func (a *Agent) ownSettings() string {
+// auto-compaction only for a subagent given a window (see start); their
+// skills and plugins on or off as set here. Under a.mu.
+func (a *Agent) ownSettings(window int) string {
 	b, _ := json.Marshal(struct {
-		DisableAllHooks bool              `json:"disableAllHooks"`
-		SkillOverrides  map[string]string `json:"skillOverrides,omitzero"`
-		EnabledPlugins  map[string]bool   `json:"enabledPlugins,omitzero"`
-	}{true, a.skillsSet, a.pluginsSet}, json.Deterministic(true))
+		DisableAllHooks    bool              `json:"disableAllHooks"`
+		AutoCompactEnabled bool              `json:"autoCompactEnabled"`
+		SkillOverrides     map[string]string `json:"skillOverrides,omitzero"`
+		EnabledPlugins     map[string]bool   `json:"enabledPlugins,omitzero"`
+	}{true, window > 0, a.skillsSet, a.pluginsSet}, json.Deterministic(true))
 	return string(b)
 }
 
@@ -253,9 +261,15 @@ func withTools(list string, names ...string) string {
 	return strings.Join(slices.DeleteFunc(have, func(s string) bool { return s == "" }), ",")
 }
 
-const noTools = `{"hooks":{"PreToolUse":[{"matcher":"*","hooks":[{"type":"command","command":"echo 'Compactions call no tools.' >&2; exit 2"}]}]}}`
+const noTools = `{"autoCompactEnabled":false,"hooks":{"PreToolUse":[{"matcher":"*","hooks":[{"type":"command","command":"echo 'Compactions call no tools.' >&2; exit 2"}]}]}}`
 
-func (a *Agent) start(ctx context.Context, model, effort string, r role) (p *proc, err error) {
+// start starts a call. window is a subagent's auto-compaction window, in
+// tokens, 0 for none. The chat's own calls never compact, whatever the
+// user's settings: the chat never ends, and its view never needs it.
+func (a *Agent) start(ctx context.Context, model, effort string, r role, window int) (p *proc, err error) {
+	if r != roleAgent {
+		window = 0
+	}
 	if !a.begin() {
 		return nil, errors.New("opt-chat is quitting")
 	}
@@ -270,7 +284,7 @@ func (a *Agent) start(ctx context.Context, model, effort string, r role) (p *pro
 	a.mu.Lock()
 	mcp, perm, allowed := a.mcpConfig, a.perm, append([]string{"mcp__opt__zoom", "mcp__opt__date", "mcp__opt__spawn", "mcp__opt__tell"}, a.allowed...)
 	dirs, own := slices.Clone(a.dirs), a.ownConfig && r != roleCompact
-	settings := a.ownSettings()
+	settings := a.ownSettings(window)
 	a.mu.Unlock()
 	switch r {
 	case roleAgent:
@@ -297,6 +311,12 @@ func (a *Agent) start(ctx context.Context, model, effort string, r role) (p *pro
 	} else {
 		// Nothing of the user's Claude Code setup leaks in: no hooks, plugins, CLAUDE.md or MCP servers.
 		args = append(args, "--setting-sources", "", "--strict-mcp-config", "--disable-slash-commands")
+		if r != roleCompact { // noTools says it for compactions
+			args = append(args, "--settings", fmt.Sprintf(`{"autoCompactEnabled":%t}`, window > 0))
+		}
+	}
+	if window > 0 {
+		args = append(args, "--autocompact", strconv.Itoa(window))
 	}
 	if effort != "" {
 		args = append(args, "--effort", effort)
@@ -559,7 +579,7 @@ func awaitResult(p *proc, u *usage, each func(event)) error {
 
 // Compact builds one tree line, enforcing the size with the ruler, the cut, and retries.
 func (a *Agent) Compact(ctx context.Context, lines []string, task []block) (string, error) {
-	p, err := a.start(ctx, a.cmodel, a.ceffort, roleCompact)
+	p, err := a.start(ctx, a.cmodel, a.ceffort, roleCompact, 0)
 	if err != nil {
 		return "", err
 	}
@@ -775,7 +795,7 @@ func (t *Turn) Run(ctx context.Context, msgs []message) error {
 	a.mu.Lock()
 	model, effort := a.model, a.effort // /model and /effort change them
 	a.mu.Unlock()
-	p, err := a.start(ctx, model, effort, roleTurn)
+	p, err := a.start(ctx, model, effort, roleTurn, 0)
 	if err != nil {
 		return err
 	}

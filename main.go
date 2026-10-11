@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -97,7 +98,7 @@ func main() {
 	}
 	h := &harness{}
 	a := &Agent{chat: c, system: system, model: *model, effort: *effort,
-		amodel: *amodel, aeffort: *aeffort, cmodel: *cmodel, ceffort: *ceffort, perm: *perm, cwd: *cwd, tools: *tools, ownConfig: *ownConfig, mcpOff: saved.MCPOff, skillsSet: saved.Skills, pluginsSet: saved.Plugins,
+		amodel: *amodel, aeffort: *aeffort, cmodel: *cmodel, ceffort: *ceffort, perm: *perm, cwd: *cwd, tools: *tools, ownConfig: *ownConfig, mcpOff: saved.MCPOff, skillsSet: saved.Skills, pluginsSet: saved.Plugins, agentWindow: saved.AgentAutocompact,
 		running: map[string]*proc{}, writing: map[string]chan struct{}{}, report: func(text string) { h.input(message{kind: "work", text: text}) }}
 	a.life, a.stop = context.WithCancel(context.Background())
 	h.agent = a
@@ -490,7 +491,7 @@ func (h *harness) loop() {
 var (
 	commandWord = regexp.MustCompile(`(?s)^\s*/([A-Za-z][\w:.-]*)(?:\s+(.*?))?\s*$`) // "/word args", never a path like /Users/me/shot.png
 	modelName   = regexp.MustCompile(`^[\w.:\[\]-]+$`)
-	commands    = []string{"model", "effort", "mode", "mcp", "skills", "plugins", "agents", "help"}
+	commands    = []string{"model", "effort", "mode", "autocompact", "mcp", "skills", "plugins", "agents", "help"}
 )
 
 // command runs a line that starts with /word, and says what it did; false
@@ -514,6 +515,9 @@ func command(a *Agent, line string) (string, bool, error) {
 	}
 	if word == "mcp" || word == "skills" || word == "plugins" { // asks Claude Code: outside a.mu
 		return configCommand(a, word, arg), true, nil
+	}
+	if word == "autocompact" {
+		return autocompact(a, arg)
 	}
 	if word == "mode" && arg != "" {
 		if err := a.setMode(arg); err != nil {
@@ -542,6 +546,7 @@ func command(a *Agent, line string) (string, bool, error) {
 		return "/model [name]       show or set the model for turns, as -model (until quit)\n" +
 			"/effort [level]     show or set their effort: " + joinEfforts() + "\n" +
 			"/mode [mode]        show or set the permission mode: " + strings.Join(modes, ", ") + "\n" +
+			"/autocompact [tokens|off] show or set when subagents' contexts compact, as 250k (never the chat's)\n" +
 			"/mcp [on|off name]  your Claude Code MCP servers: list them, or turn one on or off for Opt\n" +
 			"/skills [on|off name] your Claude Code skills: list them, or turn one on or off for Opt\n" +
 			"/plugins [on|off id] your Claude Code plugins (skills and MCP servers together), as name@marketplace\n" +
@@ -566,6 +571,41 @@ func asks(a *Agent, line string) bool {
 		_, known := a.skillState(m[1], true)
 		return !slices.Contains(commands, word) && !known
 	}
+}
+
+const windowMin, windowMax = 100_000, 1_000_000 // Claude Code's --autocompact
+
+// autocompact shows or sets the window at which subagents' contexts compact,
+// for good (settings.json). The chat's own calls never compact: see start.
+func autocompact(a *Agent, arg string) (string, bool, error) {
+	if arg != "" {
+		n := 0
+		if arg != "off" {
+			num, mult := strings.ToLower(arg), 1
+			if s, ok := strings.CutSuffix(num, "k"); ok {
+				num, mult = s, 1_000
+			} else if s, ok := strings.CutSuffix(num, "m"); ok {
+				num, mult = s, 1_000_000
+			}
+			f, err := strconv.ParseFloat(num, 64)
+			if n = int(f * float64(mult)); err != nil || n < windowMin || n > windowMax {
+				return "", true, fmt.Errorf("autocompact is off, or a window from %dk to %dk tokens, as 250k", windowMin/1000, windowMax/1000)
+			}
+		}
+		a.mu.Lock()
+		a.agentWindow = n
+		a.mu.Unlock()
+		if err := a.updateSettings(func(s *settings) { s.AgentAutocompact = n }); err != nil {
+			return "", true, err
+		}
+	}
+	a.mu.Lock()
+	n := a.agentWindow
+	a.mu.Unlock()
+	if n == 0 {
+		return "Subagents' contexts never compact (/autocompact 250k: at 250k tokens). The chat's own never do.", true, nil
+	}
+	return fmt.Sprintf("Subagents' contexts compact at %dk tokens, and each then gets the view and its task again. The chat's own never do.", n/1000), true, nil
 }
 
 func logAll(c *Chat, msgs []message) {

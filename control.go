@@ -57,7 +57,7 @@ func (a *Agent) controller() (*control, error) {
 	a.mu.Lock()
 	model := a.model
 	a.mu.Unlock()
-	p, err := a.start(a.life, model, "", roleControl)
+	p, err := a.start(a.life, model, "", roleControl, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -238,6 +238,9 @@ type settings struct {
 	MCPOff  []string          `json:"mcpOff,omitzero"`  // the user's MCP servers turned off for Opt
 	Skills  map[string]string `json:"skills,omitzero"`  // the user's skills' states for Opt, by name
 	Plugins map[string]bool   `json:"plugins,omitzero"` // the user's plugins on or off for Opt, by name@marketplace
+	// Subagents' auto-compaction window in tokens; none: off. Never the
+	// chat's own calls: see Agent.start.
+	AgentAutocompact int `json:"agentAutocompact,omitzero"`
 }
 
 func loadSettings(dir string) settings {

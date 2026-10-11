@@ -32,7 +32,7 @@ func TestOwnConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	args := calls()[0]
-	if flagOf(args, "--setting-sources") != "user,project,local" || flagOf(args, "--settings") != `{"disableAllHooks":true}` ||
+	if flagOf(args, "--setting-sources") != "user,project,local" || flagOf(args, "--settings") != `{"disableAllHooks":true,"autoCompactEnabled":false}` ||
 		flagOf(args, "--tools") != "Read,Skill,ToolSearch" || slices.Contains(args, "--strict-mcp-config") || slices.Contains(args, "--disable-slash-commands") {
 		t.Fatalf("turn args: %q", args)
 	}
@@ -102,9 +102,9 @@ func TestWebConfig(t *testing.T) {
 		t.Fatalf("settings: %+v", s)
 	}
 	a.mu.Lock()
-	set := a.ownSettings()
+	set := a.ownSettings(0)
 	a.mu.Unlock()
-	if set != `{"disableAllHooks":true,"skillOverrides":{"one":"off"}}` {
+	if set != `{"disableAllHooks":true,"autoCompactEnabled":false,"skillOverrides":{"one":"off"}}` {
 		t.Fatalf("a call's settings: %s", set)
 	}
 	ws.send(map[string]any{"t": "skills", "action": "set", "name": "plug:two", "state": "off"})
@@ -126,10 +126,10 @@ func TestWebConfig(t *testing.T) {
 		t.Fatalf("after off: %v", u)
 	}
 	a.mu.Lock()
-	set = a.ownSettings()
+	set = a.ownSettings(0)
 	a.mu.Unlock()
 	if s := loadSettings(a.chat.dir); s.Plugins["plug@market"] != false || len(s.Plugins) != 1 ||
-		set != `{"disableAllHooks":true,"skillOverrides":{"one":"off"},"enabledPlugins":{"plug@market":false}}` {
+		set != `{"disableAllHooks":true,"autoCompactEnabled":false,"skillOverrides":{"one":"off"},"enabledPlugins":{"plug@market":false}}` {
 		t.Fatalf("settings: %+v; a call's: %s", s, set)
 	}
 	a.ctlMu.Lock()

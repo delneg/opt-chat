@@ -33,7 +33,7 @@ func joinEfforts() string { return strings.Join(efforts, ", ") }
 
 // Spawn starts an agent and returns at once. An empty effort is
 // -agent-effort; an empty model, -agent-model.
-func (a *Agent) Spawn(name, task, effort, model string) string {
+func (a *Agent) Spawn(name, task, effort, model string, window int) string {
 	if strings.TrimSpace(task) == "" {
 		return "No task given."
 	}
@@ -42,6 +42,9 @@ func (a *Agent) Spawn(name, task, effort, model string) string {
 	}
 	if model != "" && !modelName.MatchString(model) {
 		return "model is one word: opus, fable, sonnet, haiku, or a full model name; or left out."
+	}
+	if window != 0 && (window < windowMin || window > windowMax) {
+		return fmt.Sprintf("autocompact must be from %d to %d tokens, or left out.", windowMin, windowMax)
 	}
 	if effort == "" {
 		effort = a.aeffort
@@ -70,7 +73,7 @@ func (a *Agent) Spawn(name, task, effort, model string) string {
 	a.mu.Unlock()
 	go func() {
 		defer a.calls.Done() // after its report is in the chat
-		a.runAgent(name, task, effort, model)
+		a.runAgent(name, task, effort, model, window)
 	}()
 	return fmt.Sprintf("Started [%s] in the background, on %s. Its report will come as a message starting \"[%s]\".", name, model, name)
 }
@@ -100,7 +103,7 @@ func (a *Agent) agentWrite(name, kind, text string) {
 	}
 }
 
-func (a *Agent) runAgent(name, task, effort, model string) {
+func (a *Agent) runAgent(name, task, effort, model string, window int) {
 	report := func(text string) {
 		a.mu.Lock()
 		delete(a.running, name)
@@ -109,7 +112,7 @@ func (a *Agent) runAgent(name, task, effort, model string) {
 		if !strings.HasPrefix(text, "["+name+"]") { // as the prompt asks of a report
 			text = "[" + name + "] " + text
 		}
-		a.report(fmt.Sprintf("%s\n\nFull chat: zoom(%q)", text, name)) // as UniiChat ends a report
+		a.report(fmt.Sprintf("%s\n\nRan on %s. Full chat: zoom(%q)", text, strings.TrimSpace(model+" "+effort), name)) // as UniiChat ends a report
 	}
 	if err := os.MkdirAll(filepath.Join(a.chat.dir, "agents"), 0o700); err != nil {
 		report("failed: " + err.Error())
@@ -117,6 +120,7 @@ func (a *Agent) runAgent(name, task, effort, model string) {
 	}
 	a.agentWrite(name, "task", task)
 	a.chat.hub.notice("info", "[%s] started on %s", name, strings.TrimSpace(model+" "+effort))
+	a.agentWrite(name, "on", strings.TrimSpace(model+" "+effort))
 	c := a.chat
 	failed := func(err error) string {
 		if a.life.Err() != nil {
@@ -131,7 +135,12 @@ func (a *Agent) runAgent(name, task, effort, model string) {
 	c.mu.Lock()
 	lines := c.callView()
 	c.mu.Unlock()
-	p, err := a.start(context.Background(), model, effort, roleAgent)
+	a.mu.Lock()
+	if window == 0 {
+		window = a.agentWindow
+	}
+	a.mu.Unlock()
+	p, err := a.start(context.Background(), model, effort, roleAgent, window)
 	if err != nil {
 		report(failed(err))
 		return
@@ -140,6 +149,19 @@ func (a *Agent) runAgent(name, task, effort, model string) {
 	acking := true
 	each := func(e event) {
 		if e.Parent != nil {
+			return
+		}
+		if e.Type == "system" && e.Subtype == "compact_boundary" && !acking {
+			// Claude Code's summary of the call stands in for the view and the
+			// task: they come again, as they are now.
+			a.agentWrite(name, "compacted", fmt.Sprintf("%d tokens to %d", e.Compact.Pre, e.Compact.Post))
+			a.chat.hub.notice("info", "[%s]'s context was compacted, %dk tokens to %dk: it gets the view and its task again", name, e.Compact.Pre/1000, e.Compact.Post/1000)
+			c.mu.Lock()
+			lines := c.callView()
+			c.mu.Unlock()
+			_, again := viewMessages(lines, []block{textBlock(fmt.Sprintf("Claude Code compacted your context. Above, the chat's view as it is now; "+
+				"you are still subagent [%s], and your task is:\n%s\nGo on from where you were.", name, task))})
+			p.send(again...)
 			return
 		}
 		for _, b := range e.blocks() {

@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -183,6 +184,10 @@ func fakeClaude() {
 			result(strings.Repeat("x", 600))
 		case strings.Contains(in, "Compaction:"):
 			result(fmt.Sprintf("line with %d images", images))
+		case strings.Contains(in, "Go on from where you were"): // after a compaction: the view and the task again
+			result(fmt.Sprintf("anchored again: view %v, task %v", strings.Contains(text, "<chat>"), strings.Contains(in, "compact-me")))
+		case strings.Contains(in, "compact-me"):
+			emit(map[string]any{"type": "system", "subtype": "compact_boundary", "compact_metadata": map[string]any{"trigger": "auto", "pre_tokens": 250000, "post_tokens": 20000}})
 		case strings.Contains(in, "ask-then-cancel"):
 			// Claude Code asks, then takes the question back.
 			emit(map[string]any{"type": "control_request", "request_id": "perm-9", "request": map[string]any{
@@ -341,7 +346,7 @@ func TestTurn(t *testing.T) {
 	}
 	args := calls()[0]
 	if flagOf(args, "--model") != "big" || flagOf(args, "--permission-mode") != "auto" || flagOf(args, "--mcp-config") != "turn-mcp" ||
-		flagOf(args, "--tools") != "Read" || flagOf(args, "--system-prompt") != "system" || slices.Contains(args, "--settings") {
+		flagOf(args, "--tools") != "Read" || flagOf(args, "--system-prompt") != "system" || flagOf(args, "--settings") != `{"autoCompactEnabled":false}` {
 		t.Fatalf("turn args: %q", args)
 	}
 }
@@ -428,7 +433,7 @@ func TestSubagentsAndQuit(t *testing.T) {
 	a, calls := fakeAgent(t, c)
 	reported := make(chan string, 2)
 	a.report = func(text string) { c.Log("work", text); reported <- text }
-	if got := a.Spawn("Scout", "look around", "", ""); !strings.HasPrefix(got, "Started [Scout]") {
+	if got := a.Spawn("Scout", "look around", "", "", 0); !strings.HasPrefix(got, "Started [Scout]") {
 		t.Fatal(got)
 	}
 	report := func() string {
@@ -440,30 +445,30 @@ func TestSubagentsAndQuit(t *testing.T) {
 			return ""
 		}
 	}
-	if got, want := report(), fmt.Sprintf("[Scout] answer to %q with 0 images\n\nFull chat: zoom(\"Scout\")", "<chat>\n</chat>You are subagent [Scout]. Your task:\nlook around"); got != want {
+	if got, want := report(), fmt.Sprintf("[Scout] answer to %q with 0 images\n\nRan on mid. Full chat: zoom(\"Scout\")", "<chat>\n</chat>You are subagent [Scout]. Your task:\nlook around"); got != want {
 		t.Fatalf("report %q, want %q", got, want)
 	}
 	if !strings.Contains(c.ZoomAgent("[Scout]"), `tool: Read {"file_path":"x.png"}`+"\n\ntool: date {\"id\":0}") {
 		t.Fatalf("Scout's log: %q", c.ZoomAgent("Scout"))
 	}
-	if got := a.Spawn("Scout", "again", "max", "fable"); !strings.HasPrefix(got, "Started [Scout-2]") || !strings.HasPrefix(report(), "[Scout-2] ") {
+	if got := a.Spawn("Scout", "again", "max", "fable", 0); !strings.HasPrefix(got, "Started [Scout-2]") || !strings.HasPrefix(report(), "[Scout-2] ") {
 		t.Fatalf("a second Scout: %q", got)
 	}
 	if args := calls()[0]; flagOf(args, "--model") != "mid" || flagOf(args, "--mcp-config") != "agent-mcp" || flagOf(args, "--tools") != "Read" ||
-		slices.Contains(args, "--settings") || slices.Contains(args, "--effort") {
+		flagOf(args, "--settings") != `{"autoCompactEnabled":false}` || slices.Contains(args, "--autocompact") || slices.Contains(args, "--effort") {
 		t.Fatalf("subagent args: %q", args)
 	}
 	if args := calls()[1]; flagOf(args, "--effort") != "max" || flagOf(args, "--model") != "fable" {
 		t.Fatalf("a subagent spawned on fable at max effort: %q", args)
 	}
-	if got := a.Spawn("Scout", "x", "", "two words"); !strings.HasPrefix(got, "model is one word") {
+	if got := a.Spawn("Scout", "x", "", "two words", 0); !strings.HasPrefix(got, "model is one word") {
 		t.Fatal(got)
 	}
-	if got := a.Spawn("Scout", "x", "huge", ""); !strings.HasPrefix(got, "effort must be one of") {
+	if got := a.Spawn("Scout", "x", "huge", "", 0); !strings.HasPrefix(got, "effort must be one of") {
 		t.Fatal(got)
 	}
 
-	a.Spawn("Sleeper", "wait-for-stop", "", "")
+	a.Spawn("Sleeper", "wait-for-stop", "", "", 0)
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		a.mu.Lock()
@@ -487,13 +492,13 @@ func TestSubagentsAndQuit(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("quit hung")
 	}
-	if last := c.msgs[len(c.msgs)-1]; last.Text != "[Sleeper] stopped: opt-chat quit before this subagent finished.\n\nFull chat: zoom(\"Sleeper\")" {
+	if last := c.msgs[len(c.msgs)-1]; last.Text != "[Sleeper] stopped: opt-chat quit before this subagent finished.\n\nRan on mid. Full chat: zoom(\"Sleeper\")" {
 		t.Fatalf("last message: %q", last.Text)
 	}
 	if !strings.Contains(c.ZoomAgent("Sleeper"), "opt: hurry") {
 		t.Fatalf("Sleeper's log: %q", c.ZoomAgent("Sleeper"))
 	}
-	if got := a.Spawn("Late", "x", "", ""); got != "opt-chat is quitting." {
+	if got := a.Spawn("Late", "x", "", "", 0); got != "opt-chat is quitting." {
 		t.Fatal(got)
 	}
 }
@@ -604,5 +609,75 @@ func TestHarness(t *testing.T) {
 	}
 	if !slices.Equal(got, []string{"user: wait-for-message", "opt: waiting", `tool: Bash {"command":"wait"}`, "user: banana", "opt: got: banana", "user: after quit"}) {
 		t.Fatalf("logged: %q", got)
+	}
+}
+
+// Subagents compact only as the user set it, or as spawn asks, and after a
+// compaction get the view and their task again; turns never compact,
+// whatever is set.
+func TestAgentAutocompact(t *testing.T) {
+	c, _ := fakeChat(t, t.TempDir(), 100)
+	a, calls := fakeAgent(t, c)
+	reported := make(chan string, 3)
+	a.report = func(text string) { reported <- text }
+	report := func() string {
+		select {
+		case got := <-reported:
+			return got
+		case <-time.After(10 * time.Second):
+			t.Fatal("no report")
+			return ""
+		}
+	}
+	if out, _, err := command(a, "/autocompact 250k"); err != nil || !strings.Contains(out, "at 250k tokens") {
+		t.Fatal(out, err)
+	}
+	if s := loadSettings(c.dir); s.AgentAutocompact != 250_000 {
+		t.Fatalf("saved: %d", s.AgentAutocompact)
+	}
+	for _, bad := range []string{"50k", "2m", "lots"} {
+		if _, _, err := command(a, "/autocompact "+bad); err == nil {
+			t.Fatalf("/autocompact %s taken", bad)
+		}
+	}
+	a.Spawn("Long", "compact-me", "", "", 0)
+	if got := report(); !strings.Contains(got, "anchored again: view true, task true") {
+		t.Fatalf("after a compaction: %q", got)
+	}
+	if !strings.Contains(c.ZoomAgent("Long"), "compacted: 250000 tokens to 20000") {
+		t.Fatalf("Long's log: %q", c.ZoomAgent("Long"))
+	}
+	if got := a.Spawn("Big", "x", "", "", 600_000); !strings.HasPrefix(got, "Started") {
+		t.Fatal(got)
+	}
+	report()
+	if got := a.Spawn("Bad", "x", "", "", 5); !strings.HasPrefix(got, "autocompact must be") {
+		t.Fatal(got)
+	}
+	if _, _, err := command(a, "/autocompact off"); err != nil {
+		t.Fatal(err)
+	}
+	a.Spawn("Short", "x", "", "", 0)
+	report()
+	if err := (&Turn{agent: a}).Run(context.Background(), []message{{kind: "user", text: "hi"}}); err != nil {
+		t.Fatal(err)
+	}
+	all := calls()
+	for i, want := range []string{"250000", "600000", "", ""} { // Long, Big, Short, the turn
+		args := all[i]
+		on := `{"autoCompactEnabled":` + strconv.FormatBool(want != "") + `}`
+		if flagOf(args, "--autocompact") != want || flagOf(args, "--settings") != on {
+			t.Fatalf("call %d: --autocompact %q, --settings %q; want %q", i, flagOf(args, "--autocompact"), flagOf(args, "--settings"), want)
+		}
+	}
+	a.mu.Lock()
+	a.agentWindow = 300_000 // set, and still never a turn's
+	a.mu.Unlock()
+	a.ownConfig = true
+	if err := (&Turn{agent: a}).Run(context.Background(), []message{{kind: "user", text: "hi"}}); err != nil {
+		t.Fatal(err)
+	}
+	if args := calls()[4]; slices.Contains(args, "--autocompact") || !strings.Contains(flagOf(args, "--settings"), `"autoCompactEnabled":false`) {
+		t.Fatalf("a turn's args: %q", args)
 	}
 }

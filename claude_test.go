@@ -681,3 +681,20 @@ func TestAgentAutocompact(t *testing.T) {
 		t.Fatalf("a turn's args: %q", args)
 	}
 }
+
+// A turn's input names the subagents at work, so Opt never starts one again.
+func TestTurnNamesRunning(t *testing.T) {
+	c, _ := fakeChat(t, t.TempDir(), 100)
+	a, _ := fakeAgent(t, c)
+	a.running["Scout"], a.running["Ann"] = nil, nil
+	if err := (&Turn{agent: a}).Run(context.Background(), []message{{kind: "user", text: "hi"}}); err != nil {
+		t.Fatal(err)
+	}
+	last := c.msgs[len(c.msgs)-1]
+	if !strings.Contains(last.Text, `[opt-chat] Subagents at work now: [Ann], [Scout].\n\nhi`) {
+		t.Fatalf("reply: %q", last.Text)
+	}
+	if user := c.msgs[0]; user.Text != "hi" {
+		t.Fatalf("logged: %q", user.Text)
+	}
+}

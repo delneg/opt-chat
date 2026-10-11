@@ -298,6 +298,8 @@ task. Its steps go to `agents/<Name>.log`, which `zoom("Name")` opens whole
 comes back as a `work` message, `[Name] report`, ending with the model it
 ran on and `Full chat: zoom("Name")`. If a turn is running, the report is injected into
 it; otherwise it starts a new turn. The chat never waits for a subagent.
+While any are at work, a turn's input starts by naming them, as UniiChat's
+does, so Opt never starts the same task twice (the line is not logged).
 `tell(name, message)` reaches a running subagent between its tool calls.
 Subagents can't start or tell subagents. Quitting stops them, and each one's
 report then says it was stopped.

@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -787,6 +788,11 @@ func (t *Turn) Run(ctx context.Context, msgs []message) error {
 		lt.Phase, lt.Partial, lt.From, lt.Backlog, lt.Written, lt.Tool = "reading", partial, from, 0, 0, ""
 	})
 	var input []block
+	a.mu.Lock()
+	if names := slices.Sorted(maps.Keys(a.running)); len(names) > 0 { // so Opt knows, with no zoom, what is underway
+		input = append(input, textBlock("[opt-chat] Subagents at work now: ["+strings.Join(names, "], [")+"].\n\n"))
+	}
+	a.mu.Unlock()
 	for _, m := range msgs {
 		if !m.logged {
 			c.Log(m.kind, m.full(), m.images...)

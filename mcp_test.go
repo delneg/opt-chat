@@ -59,7 +59,7 @@ func TestMCP(t *testing.T) {
 	if code, _ := call(`{"jsonrpc":"2.0","method":"notifications/initialized"}`); code != http.StatusAccepted {
 		t.Fatalf("notification: %d", code)
 	}
-	if _, out := call(`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`); len(out["result"].(map[string]any)["tools"].([]any)) != 4 {
+	if _, out := call(`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`); len(out["result"].(map[string]any)["tools"].([]any)) != 5 {
 		t.Fatalf("tools/list: %v", out)
 	}
 	for args, want := range map[string]string{
@@ -73,6 +73,9 @@ func TestMCP(t *testing.T) {
 		if _, out := call(`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":` + args + `}`); text(out) != want {
 			t.Fatalf("%s: %q, want %q", args, text(out), want)
 		}
+	}
+	if _, out := call(`{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"search","arguments":{"text":"SEE"}}}`); !strings.HasPrefix(text(out), "1 message holds \"SEE\"") {
+		t.Fatalf("search: %v", out)
 	}
 	if _, out := call(`{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"date","arguments":{"id":0}}}`); !strings.Contains(text(out), "20") {
 		t.Fatalf("date: %v", out)

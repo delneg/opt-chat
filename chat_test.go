@@ -540,3 +540,34 @@ func TestOwnTagsInText(t *testing.T) {
 		t.Fatalf("compaction input: %q", task[0].Text)
 	}
 }
+
+// search finds messages by their words, newest first, a page at a time,
+// naming the view's line that holds each, and skips the chat's own lookups.
+func TestSearch(t *testing.T) {
+	c, _ := fakeChat(t, t.TempDir(), 100)
+	for i := range 30 {
+		c.Log("user", fmt.Sprintf("message %d about the Gizmo", i))
+	}
+	c.logRef("tool", `search {"text":"gizmo"}`, "t1")
+	c.logRef("echo", "30 messages hold \"gizmo\"", "t1")
+	c.Log("note", "nothing here")
+	waitIdle(t, c)
+	got := c.Search("GIZMO", 0)
+	lines := strings.Split(got, "\n")
+	if !strings.HasPrefix(lines[0], `30 messages hold "GIZMO"; the 20 newest before 33:`) || len(lines) != 22 ||
+		!strings.HasPrefix(lines[1], "29+1|user: message 29 about the Gizmo (") || !strings.Contains(lines[1], "; in line ") ||
+		lines[21] != `More: search("GIZMO", 10).` {
+		t.Fatalf("search:\n%s", got)
+	}
+	if got := c.Search("gizmo", 10); !strings.HasPrefix(got, `10 messages hold "gizmo"; the 10 newest before 10:`) || strings.Contains(got, "More:") {
+		t.Fatalf("page 2:\n%s", got)
+	}
+	if got := c.Search("wombat", 0); got != `No message before 33 holds "wombat".` {
+		t.Fatal(got)
+	}
+	long := strings.Repeat("a", 500) + " needle " + strings.Repeat("b", 500)
+	c.Log("note", long)
+	if got := c.Search("needle", 0); !strings.Contains(got, "|note: …"+strings.Repeat("a", 99)+" needle "+strings.Repeat("b", 149)+"…") {
+		t.Fatalf("snippet:\n%s", got)
+	}
+}

@@ -11,7 +11,7 @@ import (
 	"strconv"
 )
 
-// serveMCP serves zoom, date, spawn and tell to Claude Code over MCP (streamable HTTP,
+// serveMCP serves zoom, date, search, spawn and tell to Claude Code over MCP (streamable HTTP,
 // plain JSON replies) on a local port, behind a random secret in the path.
 // It returns the --mcp-config that points at it, and one for subagents.
 func serveMCP(a *Agent) (string, string, error) {
@@ -68,6 +68,9 @@ var (
 			`zoom("Name") gives a subagent's whole chat.`,
 			schema([]string{"id"}, map[string]any{"id": map[string]any{"type": []string{"integer", "string"}}, "n": num})),
 		tool("date", "The date and time of message id.", schema([]string{"id"}, map[string]any{"id": num})),
+		tool("search", "Find the messages of the whole chat that hold text (a word, a name, a number, an error; any case), newest first, 20 at a time: "+
+			"each with a snippet, its date, and the view's line that holds it, to zoom into. before: go on from this message id.",
+			schema([]string{"text"}, map[string]any{"text": str, "before": num})),
 		tool("spawn", `Start a subagent on a task, in the background, and return at once. Its report comes back as a message starting "[Name]". Never wait for it. `+
 			"effort: how long it thinks first; more is smarter and slower. Leave it out for the default. "+
 			"model: the Claude it runs on: opus (the default), fable, sonnet, haiku, or a full model name; leave it out unless the user asks for one. "+
@@ -124,6 +127,8 @@ type toolArgs struct {
 	Effort  string         `json:"effort"`
 	Model   string         `json:"model"`
 	Window  int            `json:"autocompact"`
+	Text    string         `json:"text"`
+	Before  int            `json:"before"`
 }
 
 // callTool runs one tool and returns its text and the images that go with it.
@@ -150,6 +155,8 @@ func callTool(a *Agent, fromAgent bool, tool string, x toolArgs) (string, []stri
 		return "id must be a message id.", nil
 	case tool == "date":
 		return a.chat.Date(i), nil
+	case tool == "search":
+		return a.chat.Search(x.Text, x.Before), nil
 	case (tool == "spawn" || tool == "tell") && fromAgent:
 		return "Only Opt starts and tells subagents.", nil
 	case tool == "spawn":

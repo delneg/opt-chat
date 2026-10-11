@@ -283,7 +283,7 @@ func (a *Agent) start(ctx context.Context, model, effort string, r role, window 
 		}
 	}()
 	a.mu.Lock()
-	mcp, perm, allowed := a.mcpConfig, a.perm, append([]string{"mcp__opt__zoom", "mcp__opt__date", "mcp__opt__spawn", "mcp__opt__tell"}, a.allowed...)
+	mcp, perm, allowed := a.mcpConfig, a.perm, append([]string{"mcp__opt__zoom", "mcp__opt__date", "mcp__opt__search", "mcp__opt__spawn", "mcp__opt__tell"}, a.allowed...)
 	dirs, own := slices.Clone(a.dirs), a.ownConfig && r != roleCompact
 	settings := a.ownSettings(window)
 	a.mu.Unlock()

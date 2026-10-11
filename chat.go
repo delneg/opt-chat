@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -722,6 +723,93 @@ func (c *Chat) Zoom(id, n int) (string, []string) {
 	}
 	a, b := key{bits.TrailingZeros(uint(n)), id / n}.kids()
 	return c.callLine(a) + "\n" + c.callLine(b), nil // a message not summarized yet: its head
+}
+
+const searchPage = 20
+
+// Search finds the messages that hold text, in any case, newest first, a
+// page at a time, from before message before (0: the end): each with a
+// snippet, its date, and the view's line that holds it, to zoom into. The
+// chat's own zoom, search and date calls and their results are left out:
+// they only repeat what they found.
+func (c *Chat) Search(text string, before int) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return "No text given."
+	}
+	c.mu.Lock()
+	msgs := c.msgs // logged messages never change: read outside c.mu
+	c.mu.Unlock()
+	if before <= 0 || before > len(msgs) {
+		before = len(msgs)
+	}
+	re := regexp.MustCompile("(?i)" + regexp.QuoteMeta(text))
+	lookups := map[string]bool{}
+	for _, m := range msgs {
+		if w, _, _ := strings.Cut(m.Text, " "); m.Kind == "tool" && m.Ref != "" && (w == "zoom" || w == "search" || w == "date") {
+			lookups[m.Ref] = true
+		}
+	}
+	var hits []int
+	total := 0
+	for i := before - 1; i >= 0; i-- {
+		if m := msgs[i]; !lookups[m.Ref] && re.MatchString(m.Text) {
+			if total++; len(hits) < searchPage {
+				hits = append(hits, i)
+			}
+		}
+	}
+	if total == 0 {
+		return fmt.Sprintf("No message before %d holds %q.", before, text)
+	}
+	var b strings.Builder
+	holds := "messages hold"
+	if total == 1 {
+		holds = "message holds"
+	}
+	fmt.Fprintf(&b, "%d %s %q; the %d newest before %d:\n", total, holds, text, len(hits), before)
+	c.mu.Lock()
+	for _, i := range hits {
+		m := msgs[i]
+		at := re.FindStringIndex(m.Text)
+		from, to := max(0, at[0]-100), min(len(m.Text), at[1]+150)
+		for from > 0 && !utf8.RuneStart(m.Text[from]) {
+			from--
+		}
+		for to < len(m.Text) && !utf8.RuneStart(m.Text[to]) {
+			to++
+		}
+		snip := flat(m.Text[from:to])
+		if from > 0 {
+			snip = "…" + snip
+		}
+		if to < len(m.Text) {
+			snip += "…"
+		}
+		fmt.Fprintf(&b, "%d+1|%s: %s (%s; in line %s)\n", i, m.Kind, snip, m.Date.Local().Format("2006-01-02"), c.viewLine(i).name())
+	}
+	c.mu.Unlock()
+	if total > len(hits) {
+		fmt.Fprintf(&b, "More: search(%q, %d).", text, hits[len(hits)-1])
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// viewLine is the view's line holding message i. Caller holds c.mu.
+func (c *Chat) viewLine(i int) key {
+	j, _ := slices.BinarySearchFunc(c.view.keys, i, func(k key, i int) int {
+		switch {
+		case k.end() <= i:
+			return -1
+		case k.start() > i:
+			return 1
+		}
+		return 0
+	})
+	if j < len(c.view.keys) {
+		return c.view.keys[j]
+	}
+	return key{0, i}
 }
 
 func (c *Chat) Date(id int) string {

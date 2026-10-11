@@ -1026,6 +1026,7 @@ function toolArgs(name, x, raw) {
     case 'WebFetch': return oneLine(x.url, 140);
     case 'zoom': return typeof x.id === 'string' ? `"${x.id}"` : `${x.id}${x.n ? '+' + x.n : ''}`;
     case 'date': return String(x.id);
+    case 'search': return `"${oneLine(x.text || '', 100)}"${x.before ? ` before ${x.before}` : ''}`;
     case 'spawn': case 'tell': return `[${x.name}] ${oneLine(x.task || x.message, 100)}`;
     default: return oneLine(JSON.stringify(x), 140);
   }

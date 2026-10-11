@@ -69,8 +69,9 @@ var (
 			schema([]string{"id"}, map[string]any{"id": map[string]any{"type": []string{"integer", "string"}}, "n": num})),
 		tool("date", "The date and time of message id.", schema([]string{"id"}, map[string]any{"id": num})),
 		tool("spawn", `Start a subagent on a task, in the background, and return at once. Its report comes back as a message starting "[Name]". Never wait for it. `+
-			"effort: how long it thinks first; more is smarter and slower. Leave it out for the default.",
-			schema([]string{"name", "task"}, map[string]any{"name": str, "task": str, "effort": map[string]any{"type": "string", "enum": efforts}})),
+			"effort: how long it thinks first; more is smarter and slower. Leave it out for the default. "+
+			"model: the Claude it runs on: opus (the default), fable, sonnet, haiku, or a full model name; leave it out unless the user asks for one.",
+			schema([]string{"name", "task"}, map[string]any{"name": str, "task": str, "effort": map[string]any{"type": "string", "enum": efforts}, "model": str})),
 		tool("tell", "Send a running subagent a message; it reaches the subagent between its tool calls.",
 			schema([]string{"name", "message"}, map[string]any{"name": str, "message": str})),
 	}
@@ -119,6 +120,7 @@ type toolArgs struct {
 	Task    string         `json:"task"`
 	Message string         `json:"message"`
 	Effort  string         `json:"effort"`
+	Model   string         `json:"model"`
 }
 
 // callTool runs one tool and returns its text and the images that go with it.
@@ -148,7 +150,7 @@ func callTool(a *Agent, fromAgent bool, tool string, x toolArgs) (string, []stri
 	case (tool == "spawn" || tool == "tell") && fromAgent:
 		return "Only Opt starts and tells subagents.", nil
 	case tool == "spawn":
-		return a.Spawn(x.Name, x.Task, x.Effort), nil
+		return a.Spawn(x.Name, x.Task, x.Effort, x.Model), nil
 	case tool == "tell":
 		return a.Tell(x.Name, x.Message), nil
 	}

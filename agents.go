@@ -31,16 +31,23 @@ func validEffort(e string) bool { return slices.Contains(efforts, e) }
 
 func joinEfforts() string { return strings.Join(efforts, ", ") }
 
-// Spawn starts an agent and returns at once. An empty effort is -agent-effort.
-func (a *Agent) Spawn(name, task, effort string) string {
+// Spawn starts an agent and returns at once. An empty effort is
+// -agent-effort; an empty model, -agent-model.
+func (a *Agent) Spawn(name, task, effort, model string) string {
 	if strings.TrimSpace(task) == "" {
 		return "No task given."
 	}
 	if effort != "" && !slices.Contains(efforts, effort) {
 		return "effort must be one of " + strings.Join(efforts, ", ") + ", or left out."
 	}
+	if model != "" && !modelName.MatchString(model) {
+		return "model is one word: opus, fable, sonnet, haiku, or a full model name; or left out."
+	}
 	if effort == "" {
 		effort = a.aeffort
+	}
+	if model == "" {
+		model = a.amodel
 	}
 	name = agentName(name)
 	if name == "" {
@@ -63,9 +70,9 @@ func (a *Agent) Spawn(name, task, effort string) string {
 	a.mu.Unlock()
 	go func() {
 		defer a.calls.Done() // after its report is in the chat
-		a.runAgent(name, task, effort)
+		a.runAgent(name, task, effort, model)
 	}()
-	return fmt.Sprintf("Started [%s] in the background. Its report will come as a message starting \"[%s]\".", name, name)
+	return fmt.Sprintf("Started [%s] in the background, on %s. Its report will come as a message starting \"[%s]\".", name, model, name)
 }
 
 // Tell hands a running agent a message, between its tool calls.
@@ -93,7 +100,7 @@ func (a *Agent) agentWrite(name, kind, text string) {
 	}
 }
 
-func (a *Agent) runAgent(name, task, effort string) {
+func (a *Agent) runAgent(name, task, effort, model string) {
 	report := func(text string) {
 		a.mu.Lock()
 		delete(a.running, name)
@@ -109,7 +116,7 @@ func (a *Agent) runAgent(name, task, effort string) {
 		return
 	}
 	a.agentWrite(name, "task", task)
-	a.chat.hub.notice("info", "[%s] started", name)
+	a.chat.hub.notice("info", "[%s] started on %s", name, strings.TrimSpace(model+" "+effort))
 	c := a.chat
 	failed := func(err error) string {
 		if a.life.Err() != nil {
@@ -124,7 +131,7 @@ func (a *Agent) runAgent(name, task, effort string) {
 	c.mu.Lock()
 	lines := c.callView()
 	c.mu.Unlock()
-	p, err := a.start(context.Background(), a.amodel, effort, roleAgent)
+	p, err := a.start(context.Background(), model, effort, roleAgent)
 	if err != nil {
 		report(failed(err))
 		return

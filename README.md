@@ -256,8 +256,10 @@ per turn with threads, 500 without.
 
 ## Subagents
 
-`spawn(name, task, effort)` starts a subagent in the background and returns
-at once; `effort` is optional (`-agent-effort` when left out). A subagent is
+`spawn(name, task, effort, model)` starts a subagent in the background and
+returns at once; `effort` and `model` are optional (`-agent-effort` and
+`-agent-model`, Opus, when left out; ask Opt for "a Fable subagent" and it
+passes `fable`). A subagent is
 a fresh call with the same prompt and tools, which gets the view, then its
 task. Its steps go to `agents/<Name>.log`, which `zoom("Name")` opens whole
 (Claude Code saves a long one to a file the model reads). Its final reply

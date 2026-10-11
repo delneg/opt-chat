@@ -24,7 +24,7 @@ func TestPermission(t *testing.T) {
 	h.input(message{kind: "user", text: "ask-permission"})
 	waitFor(t, "the question", func() bool { return len(asksOf(c)) == 1 })
 	q := asksOf(c)[0]
-	if q.Tool != "Bash" || string(q.Input) != `{"command":"rm x"}` || q.Desc != "Remove x" || q.Always != "Bash(rm *)" || q.Who != "" {
+	if q.Tool != "Bash" || string(q.Input) != `{"command":"rm x"}` || q.Desc != "Remove x" || q.Always != "Bash(rm *); files in /far" || q.Who != "" {
 		t.Fatalf("the question: %+v", q)
 	}
 	if args := calls()[0]; flagOf(args, "--permission-prompt-tool") != "stdio" || flagOf(args, "--permission-mode") != "auto" {
@@ -53,7 +53,8 @@ func TestPermission(t *testing.T) {
 	h.input(message{kind: "user", text: "ask-permission again"})
 	waitFor(t, "the question", func() bool { return len(asksOf(c)) == 1 })
 	args := calls()[1]
-	if flagOf(args, "--permission-mode") != "acceptEdits" || !strings.HasSuffix(flagOf(args, "--allowedTools"), ",Bash(rm *)") {
+	if flagOf(args, "--permission-mode") != "acceptEdits" || !strings.HasSuffix(flagOf(args, "--allowedTools"), ",Bash(rm *)") ||
+		flagOf(args, "--add-dir") != "/far" {
 		t.Fatalf("next turn's args: %q", args)
 	}
 	a.answer(asksOf(c)[0].ID, false, false)
@@ -74,10 +75,16 @@ func TestPermission(t *testing.T) {
 	h.stop()
 	waitFor(t, "the question to go", func() bool { return len(asksOf(c)) == 0 })
 	waitFor(t, "the turn to end", h.idle)
+
+	// Taken back by Claude Code: the question goes.
+	h.input(message{kind: "user", text: "ask-then-cancel"})
+	waitFor(t, "the question", func() bool { return len(asksOf(c)) == 1 })
+	waitFor(t, "the question to go", func() bool { return len(asksOf(c)) == 0 })
+	waitFor(t, "the turn to end", h.idle)
 }
 
 func TestModes(t *testing.T) {
-	for _, step := range [][2]string{{"manual", "acceptEdits"}, {"acceptEdits", "auto"}, {"auto", "manual"}, {"bypassPermissions", "manual"}} {
+	for _, step := range [][2]string{{"manual", "acceptEdits"}, {"acceptEdits", "auto"}, {"auto", "manual"}, {"bypassPermissions", "manual"}, {"default", "acceptEdits"}} {
 		if got := nextMode(step[0]); got != step[1] {
 			t.Fatalf("after %s: %s", step[0], got)
 		}

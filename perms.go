@@ -25,6 +25,9 @@ func validMode(m string) bool {
 
 // nextMode is the one after m, as Shift+Tab goes.
 func nextMode(m string) string {
+	if m == "default" { // Claude Code's name for manual
+		m = "manual"
+	}
 	i := slices.Index(modes, m)
 	return modes[(i+1)%len(modes)] // from a mode not in the cycle, its first
 }
@@ -34,6 +37,8 @@ func (a *Agent) setMode(m string) error {
 	if !validMode(m) {
 		return fmt.Errorf("%q is no permission mode: %s", m, strings.Join(modes, ", "))
 	}
+	a.modeMu.Lock() // the calls get their switches in order: see start
+	defer a.modeMu.Unlock()
 	a.mu.Lock()
 	a.perm = m
 	live := make([]*proc, 0, len(a.live))
@@ -110,6 +115,21 @@ func always(ss []suggestion) string {
 
 // request handles a control request Claude Code sends a turn or subagent.
 func (a *Agent) request(p *proc, e event) {
+	if e.Type == "control_cancel_request" { // Claude Code asks no more
+		a.mu.Lock()
+		id := 0
+		for _, q := range a.asks {
+			if q.p == p && q.reqID == e.RequestID {
+				id = q.ID
+			}
+		}
+		a.mu.Unlock()
+		if q := a.takeAsk(id); q != nil {
+			close(q.answered)
+			a.publishAsks()
+		}
+		return
+	}
 	var r struct {
 		Subtype     string         `json:"subtype"`
 		ToolName    string         `json:"tool_name"`
@@ -214,6 +234,14 @@ func (a *Agent) answer(id int, allow, forever bool) bool {
 				for _, rule := range s.rules() {
 					if !slices.Contains(a.allowed, rule) {
 						a.allowed = append(a.allowed, rule)
+					}
+				}
+				a.mu.Unlock()
+			case s.Type == "addDirectories":
+				a.mu.Lock()
+				for _, d := range s.Directories {
+					if !slices.Contains(a.dirs, d) {
+						a.dirs = append(a.dirs, d)
 					}
 				}
 				a.mu.Unlock()

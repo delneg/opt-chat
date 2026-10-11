@@ -97,7 +97,7 @@ func main() {
 	}
 	h := &harness{}
 	a := &Agent{chat: c, system: system, model: *model, effort: *effort,
-		amodel: *amodel, aeffort: *aeffort, cmodel: *cmodel, ceffort: *ceffort, perm: *perm, cwd: *cwd, tools: *tools, ownConfig: *ownConfig, mcpOff: saved.MCPOff,
+		amodel: *amodel, aeffort: *aeffort, cmodel: *cmodel, ceffort: *ceffort, perm: *perm, cwd: *cwd, tools: *tools, ownConfig: *ownConfig, mcpOff: saved.MCPOff, skillsSet: saved.Skills,
 		running: map[string]*proc{}, writing: map[string]chan struct{}{}, report: func(text string) { h.input(message{kind: "work", text: text}) }}
 	a.life, a.stop = context.WithCancel(context.Background())
 	h.agent = a
@@ -162,12 +162,17 @@ func main() {
 				switch strings.ToLower(strings.TrimSpace(text)) {
 				case "y", "yes", "1":
 					a.answer(q.ID, true, false)
+					continue
 				case "a", "always", "2":
 					a.answer(q.ID, true, q.Always != "")
-				default:
+					continue
+				case "", "n", "no", "3":
 					a.answer(q.ID, false, false)
+					continue
 				}
-			} else if out, ok := command(a, text); ok {
+				a.answer(q.ID, false, false) // anything else: no, and the line is what to do instead
+			}
+			if out, ok := command(a, text); ok {
 				dim(out)
 			} else if strings.TrimSpace(text) != "" {
 				h.input(typed(c, text))
@@ -610,7 +615,7 @@ func replPrinter() func(any) {
 				if q.Always != "" {
 					s += " · a: yes, and don't ask again for " + q.Always
 				}
-				warn("%s · anything else: no", s)
+				warn("%s · n: no · anything else: no, and it goes to Opt", s)
 			}
 		case noticeUpdate:
 			if u.Level == "warn" {

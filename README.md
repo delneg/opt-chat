@@ -66,7 +66,8 @@ The page works like Claude Code:
   `@src/ap`, relative to `-cwd`), and for a name alone also the files below
   `-cwd` that have it (a quarter of a second's search). ↑/↓ choose, Tab or
   Enter takes one: a folder opens on its own entries, a file goes in as
-  `@~/path`, which attaches it as a typed path does. Esc closes the menu.
+  `@~/path` (a space in it escaped, `My\ File.png`), which attaches it as a
+  typed path does. Esc closes the menu.
 - A long message of yours shows folded, as a big paste does in Claude Code.
 - Scroll up for the whole chat, back to its first message, loaded as you go.
   A reload, a second tab or another window shows the turn underway,
@@ -83,11 +84,14 @@ The page works like Claude Code:
   reads go ahead unasked), accept edits (file edits too), auto (whatever
   Claude Code's classifier deems safe). The switch reaches the turn and
   subagents underway. A call Claude Code asks about shows its command or
-  change and waits: 1 or Enter says yes, 2 yes and don't ask again (for
-  this run; nothing is written to your Claude Code settings), 3 or Esc no,
-  which stops the turn so you can say what to do instead. A subagent's
+  change and waits, with the keys, unless you are typing (then Tab or a
+  click goes to it, so a key meant for your message never answers it):
+  1 or Enter says yes, 2 yes and don't ask again (for this run, its later
+  calls too; nothing is written to your Claude Code settings), 3 or Esc
+  no, which stops the turn so you can say what to do instead. A subagent's
   questions show its name, and a no lets it go on. In the terminal (-repl),
-  the next line answers: y, a, or anything else for no.
+  the next line answers: y, a, n, or anything else for no with that line
+  sent to Opt as what to do instead.
 - The bar at the bottom shows the memory: messages, the view's size, what is
   left to summarize, and the last turn's tokens. `?` on an empty input lists
   the shortcuts. While a reply lands in a tab in the background, its title
@@ -251,9 +255,10 @@ runs them bare, as compactions always run.
   that needs it (the sign-in is Claude Code's own, for every session), `r`
   reconnects one.
 - `/skills` lists the skills, each with what its listing costs every turn:
-  Enter or Space turns one on or off, saved where Claude Code's own
-  `/skills` saves it (`claude edit-skill-overrides`, in the local settings
-  of `-cwd`). A plugin's skills go with the plugin.
+  Enter or Space turns one on or off for Opt, from its next call (kept in
+  `<dir>/settings.json` and given to each call as settings; your Claude
+  Code keeps its own). A skill your organization or a plugin manages stays
+  as it set it.
 - In the terminal, `/mcp` and `/skills` list them; `/mcp off NAME`,
   `/skills on NAME` and so on switch one.
 
@@ -268,7 +273,7 @@ hundreds of tools never sit in every prompt) and `CLAUDE_CODE_TETHER_LIVE=0`.
 With Claude Code's server-side threads, each request after the first sent
 only what was new, and the server wrote the whole block to the cache again
 on every turn. Measured on a 27,000-message chat: about 22k tokens written
-per turn with threads, 500 without.
+per turn with threads, a few hundred without.
 
 ## Subagents
 

@@ -32,7 +32,7 @@ func TestOwnConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	args := calls()[0]
-	if flagOf(args, "--setting-sources") != "user,project,local" || flagOf(args, "--settings") != noHooks ||
+	if flagOf(args, "--setting-sources") != "user,project,local" || flagOf(args, "--settings") != `{"disableAllHooks":true}` ||
 		flagOf(args, "--tools") != "Read,Skill,ToolSearch" || slices.Contains(args, "--strict-mcp-config") || slices.Contains(args, "--disable-slash-commands") {
 		t.Fatalf("turn args: %q", args)
 	}
@@ -96,14 +96,20 @@ func TestWebConfig(t *testing.T) {
 	if s := u["skills"].([]any)[0].(map[string]any); s["state"] != "off" || u["error"] != nil {
 		t.Fatalf("after off: %v", u)
 	}
-	var edit struct {
-		Name    string            `json:"name"`
-		State   string            `json:"state"`
-		Handles map[string]string `json:"handles"`
+	// Opt's own: kept in settings.json, and in the next call's settings;
+	// the user's Claude Code keeps its own.
+	if s := loadSettings(a.chat.dir); s.Skills["one"] != "off" {
+		t.Fatalf("settings: %+v", s)
 	}
-	if edits := fakeFiles(a, ".skills"); len(edits) != 1 || json.Unmarshal([]byte(edits[0]), &edit) != nil ||
-		edit.Name != "one" || edit.State != "off" || edit.Handles["unqualified_name"] != "one" {
-		t.Fatalf("edits: %q", edits)
+	a.mu.Lock()
+	set := a.ownSettings()
+	a.mu.Unlock()
+	if set != `{"disableAllHooks":true,"skillOverrides":{"one":"off"}}` {
+		t.Fatalf("a call's settings: %s", set)
+	}
+	ws.send(map[string]any{"t": "skills", "action": "set", "name": "plug:two", "state": "off"})
+	if u := ws.next("locked", typ("skills")); !strings.Contains(u["error"].(string), "set by plugin") {
+		t.Fatalf("a locked skill: %v", u)
 	}
 	ws.send(map[string]any{"t": "skills", "action": "set", "name": "nope", "state": "off"})
 	if u := ws.next("no such skill", typ("skills")); !strings.Contains(u["error"].(string), "no skill") {

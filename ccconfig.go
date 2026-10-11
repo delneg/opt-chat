@@ -1,13 +1,10 @@
 package main
 
 import (
-	"bytes"
 	"context"
-	"encoding/json/jsontext"
 	"encoding/json/v2"
-	"errors"
 	"fmt"
-	"os/exec"
+	"maps"
 	"slices"
 	"strings"
 	"sync"
@@ -16,10 +13,12 @@ import (
 
 // The user's own Claude Code setup in Opt's calls (-claude-config): their
 // skills, plugins and MCP servers, as Claude Code itself lists them in
-// /skills and /mcp, through a control call (see control). A skill turned
-// on or off is saved in Claude Code's settings, as its /skills does; an MCP
-// server turned off is opt-chat's own choice, kept in settings.json and
-// applied to each call, since Claude Code keeps no such setting for -p.
+// /skills and /mcp, through a control call (see control). A skill or MCP
+// server turned on or off here is opt-chat's own choice, kept in its
+// settings.json, never in Claude Code's: the user's Claude Code stays as it
+// is. Skills' states go to each call as settings (skillOverrides); servers
+// are turned off in each call as it starts, since no setting does that for
+// all of them (claude.ai's included).
 
 // mcpServer is one MCP server as /mcp shows it.
 type mcpServer struct {
@@ -60,6 +59,13 @@ func (a *Agent) mcpServers(ctx context.Context) ([]mcpServer, error) {
 // setMCP turns a server on or off for Opt: kept for later runs, and at
 // once in the calls underway.
 func (a *Agent) setMCP(ctx context.Context, name string, on bool) error {
+	all, err := a.mcpServers(ctx)
+	if err != nil {
+		return err
+	}
+	if !slices.ContainsFunc(all, func(s mcpServer) bool { return s.Name == name }) {
+		return fmt.Errorf("no MCP server %q", name)
+	}
 	a.mu.Lock()
 	a.mcpOff = slices.DeleteFunc(a.mcpOff, func(s string) bool { return s == name })
 	if !on {
@@ -124,13 +130,15 @@ func (a *Agent) mcpSettle(p *proc) {
 		}
 	}
 	a.mu.Lock()
-	off, up := slices.Clone(a.mcpOff), a.mcpUp
+	off, up, seen := slices.Clone(a.mcpOff), a.mcpUp, a.mcpSeen
 	a.mu.Unlock()
-	var connected []string
+	var connected, listed []string // as last asked; nil: never answered
 	defer func() {
-		a.mu.Lock()
-		a.mcpUp = connected
-		a.mu.Unlock()
+		if listed != nil {
+			a.mu.Lock()
+			a.mcpUp, a.mcpSeen = connected, listed
+			a.mu.Unlock()
+		}
 	}()
 	for {
 		v, err := p.callNow(map[string]any{"subtype": "mcp_status"})
@@ -140,10 +148,13 @@ func (a *Agent) mcpSettle(p *proc) {
 		var r struct {
 			Servers []mcpServer `json:"mcpServers"`
 		}
-		json.Unmarshal(v, &r)
+		if json.Unmarshal(v, &r) != nil {
+			return
+		}
 		settled := true
-		connected = nil
+		connected, listed = []string{}, []string{}
 		for _, s := range r.Servers {
+			listed = append(listed, s.Name)
 			if s.Status == "connected" {
 				connected = append(connected, s.Name)
 			}
@@ -154,6 +165,11 @@ func (a *Agent) mcpSettle(p *proc) {
 					settled = false
 				}
 			case s.Status == "pending" && (up == nil || slices.Contains(up, s.Name)):
+				settled = false
+			}
+		}
+		for _, name := range off { // listed last time, not yet: it would come on after the view went
+			if slices.Contains(seen, name) && !slices.Contains(listed, name) {
 				settled = false
 			}
 		}
@@ -205,16 +221,17 @@ func (a *Agent) mcpReconnect(ctx context.Context, name string) error {
 
 // skill is one of the user's skills, as /skills shows it.
 type skill struct {
-	Name        string         `json:"name"`
-	DisplayName string         `json:"display_name"`
-	Description string         `json:"description"`
-	Source      string         `json:"source"`
-	Tokens      int            `json:"tokens"`
-	State       string         `json:"state"` // on, name-only, user-invocable-only, off
-	LockedBy    string         `json:"locked_by,omitzero"`
-	Handles     jsontext.Value `json:"handles,omitzero"`
+	Name        string `json:"name"`
+	DisplayName string `json:"display_name"`
+	Description string `json:"description"`
+	Source      string `json:"source"`
+	Tokens      int    `json:"tokens"`
+	State       string `json:"state"` // on, name-only, user-invocable-only, off
+	LockedBy    string `json:"locked_by,omitzero"`
 }
 
+// skills lists the user's skills, in the states set here: the control call
+// started with the states of its start.
 func (a *Agent) skills(ctx context.Context) ([]skill, error) {
 	v, err := a.control(ctx, map[string]any{"subtype": "get_skills_dialog"})
 	if err != nil {
@@ -229,13 +246,20 @@ func (a *Agent) skills(ctx context.Context) ([]skill, error) {
 	if r.Skills == nil {
 		r.Skills = []skill{}
 	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for i, s := range r.Skills {
+		if st, ok := a.skillsSet[s.Name]; ok && (s.LockedBy == "" || s.LockedBy == "flag") {
+			r.Skills[i].State, r.Skills[i].LockedBy = st, "" // "flag": locked by our own settings
+		}
+	}
 	return r.Skills, nil
 }
 
 var skillStates = []string{"on", "name-only", "user-invocable-only", "off"}
 
-// setSkill saves a skill's state in Claude Code's settings, where its own
-// /skills does: the local settings of the folder Opt works in.
+// setSkill sets a skill's state for Opt, from its next call on; the user's
+// Claude Code keeps its own.
 func (a *Agent) setSkill(ctx context.Context, name, state string) error {
 	if !slices.Contains(skillStates, state) {
 		return fmt.Errorf("a skill is %s", strings.Join(skillStates, ", "))
@@ -245,30 +269,20 @@ func (a *Agent) setSkill(ctx context.Context, name, state string) error {
 		return err
 	}
 	i := slices.IndexFunc(all, func(s skill) bool { return s.Name == name })
-	if i < 0 {
-		return fmt.Errorf("no skill %q", name)
-	}
-	edit := map[string]any{"name": name, "state": state}
-	if len(all[i].Handles) > 0 {
-		edit["handles"] = all[i].Handles
-	}
-	in, _ := json.Marshal(edit)
-	cmd := exec.CommandContext(ctx, "claude", "edit-skill-overrides", "--json")
-	cmd.Dir, cmd.Env, cmd.Stdin = a.cwd, childEnv(), bytes.NewReader(in)
-	out, err := cmd.Output()
-	var r struct {
-		OK    bool   `json:"ok"`
-		Error string `json:"error"`
-	}
-	json.Unmarshal(out, &r)
 	switch {
-	case r.Error != "":
-		return errors.New(r.Error)
-	case err != nil || !r.OK:
-		return fmt.Errorf("claude edit-skill-overrides: %v %s", err, strings.TrimSpace(string(out)))
+	case i < 0:
+		return fmt.Errorf("no skill %q", name)
+	case all[i].LockedBy != "":
+		return fmt.Errorf("%s is set by %s", name, all[i].LockedBy)
 	}
-	_, err = a.control(ctx, map[string]any{"subtype": "reload_skills"})
-	return err
+	a.mu.Lock()
+	if a.skillsSet == nil {
+		a.skillsSet = map[string]string{}
+	}
+	a.skillsSet[name] = state
+	set := maps.Clone(a.skillsSet)
+	a.mu.Unlock()
+	return a.updateSettings(func(s *settings) { s.Skills = set })
 }
 
 // configCommand runs /mcp and /skills in the terminal: a list, or "on

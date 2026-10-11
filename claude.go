@@ -33,9 +33,11 @@ type Agent struct {
 	cmodel, ceffort string // compactions
 	perm, cwd       string
 	tools           string
-	ownConfig       bool     // turns and subagents get the user's Claude Code skills, plugins and MCP servers
-	mcpOff          []string // of those servers, the ones the user turned off here
-	mcpUp           []string // and the ones connected when the last call sent its view: see mcpSettle
+	ownConfig       bool              // turns and subagents get the user's Claude Code skills, plugins and MCP servers
+	mcpOff          []string          // of those servers, the ones the user turned off here
+	skillsSet       map[string]string // the user's skills' states set here: on, off, ...
+	mcpUp           []string          // the servers connected when the last call sent its view: see mcpSettle
+	mcpSeen         []string          // and those listed then
 
 	report func(text string) // hands an agent's report to the chat
 
@@ -54,10 +56,12 @@ type Agent struct {
 	askSeq      int
 	ctlSeq      int
 	allowed     []string // rules the user allowed for good this run, as "Bash(npm test:*)"
+	dirs        []string // and folders
 
-	ctlMu sync.Mutex
-	ctl   *control   // nil until asked, and once stopped
-	setMu sync.Mutex // settings.json's writes
+	ctlMu  sync.Mutex
+	ctl    *control   // nil until asked, and once stopped
+	setMu  sync.Mutex // settings.json's writes
+	modeMu sync.Mutex // mode switches' writes to the calls
 }
 
 // writeOnce lets one call at a time write a prefix to the cache: a call
@@ -224,8 +228,15 @@ const (
 // noTools blocks every tool call of a compaction. Its tools stay listed, the
 // same as a turn's, so that on one model both read one cache entry (gist §4);
 // with the user's own setup, a turn's add Skill and ToolSearch.
-// noHooks keeps the user's hooks out of a call that loads their settings.
-const noHooks = `{"disableAllHooks":true}`
+// ownSettings are a call's settings over the user's own: never their hooks;
+// their skills' states as set here. Under a.mu.
+func (a *Agent) ownSettings() string {
+	b, _ := json.Marshal(struct {
+		DisableAllHooks bool              `json:"disableAllHooks"`
+		SkillOverrides  map[string]string `json:"skillOverrides,omitzero"`
+	}{true, a.skillsSet}, json.Deterministic(true))
+	return string(b)
+}
 
 // withTools is the tools list with names added, each once.
 func withTools(list string, names ...string) string {
@@ -254,6 +265,8 @@ func (a *Agent) start(ctx context.Context, model, effort string, r role) (p *pro
 	}()
 	a.mu.Lock()
 	mcp, perm, allowed := a.mcpConfig, a.perm, append([]string{"mcp__opt__zoom", "mcp__opt__date", "mcp__opt__spawn", "mcp__opt__tell"}, a.allowed...)
+	dirs, own := slices.Clone(a.dirs), a.ownConfig && r != roleCompact
+	settings := a.ownSettings()
 	a.mu.Unlock()
 	switch r {
 	case roleAgent:
@@ -265,7 +278,6 @@ func (a *Agent) start(ctx context.Context, model, effort string, r role) (p *pro
 		perm = "default"
 	}
 	// Every role gets the same system prompt.
-	own := a.ownConfig && r != roleCompact
 	tools := a.tools
 	if own {
 		tools = withTools(tools, "Skill", "ToolSearch") // ToolSearch: MCP servers' tools load as needed, not in every prompt
@@ -277,7 +289,7 @@ func (a *Agent) start(ctx context.Context, model, effort string, r role) (p *pro
 		// The user's skills, plugins, MCP servers and settings, as Claude Code
 		// run in cwd has them; never their hooks, CLAUDE.md or memory (env),
 		// which would make Opt someone else.
-		args = append(args, "--setting-sources", "user,project,local", "--settings", noHooks)
+		args = append(args, "--setting-sources", "user,project,local", "--settings", settings)
 	} else {
 		// Nothing of the user's Claude Code setup leaks in: no hooks, plugins, CLAUDE.md or MCP servers.
 		args = append(args, "--setting-sources", "", "--strict-mcp-config", "--disable-slash-commands")
@@ -287,6 +299,9 @@ func (a *Agent) start(ctx context.Context, model, effort string, r role) (p *pro
 	}
 	if r != roleCompact { // the calls that ask: Claude Code puts its questions to us
 		args = append(args, "--permission-prompt-tool", "stdio")
+		for _, d := range dirs { // allowed for good this run
+			args = append(args, "--add-dir", d)
+		}
 	}
 	switch r {
 	case roleCompact:
@@ -328,12 +343,20 @@ func (a *Agent) start(ctx context.Context, model, effort string, r role) (p *pro
 	children.Store(pid, true)
 	if r == roleTurn || r == roleAgent {
 		p.onRequest = func(e event) { a.request(p, e) }
+		a.modeMu.Lock()
 		a.mu.Lock()
 		if a.live == nil {
 			a.live = map[*proc]struct{}{}
 		}
 		a.live[p] = struct{}{}
+		now := a.perm
+		a.ctlSeq++
+		id := fmt.Sprint("opt-mode-", a.ctlSeq)
 		a.mu.Unlock()
+		if now != perm { // switched as it started
+			p.control(id, map[string]any{"subtype": "set_permission_mode", "mode": now})
+		}
+		a.modeMu.Unlock()
 	}
 	if own && r == roleControl { // a turn's or subagent's waits for its servers: see mcpSettle
 		go a.mcpApply(p)
@@ -430,10 +453,11 @@ func (p *proc) next() (event, bool) {
 		if e.Type == "control_response" { // to its request; returned too, for callNow
 			p.answered(e.Response)
 		}
-		if e.Type == "control_request" {
-			if p.onRequest != nil {
+		if e.Type == "control_request" || e.Type == "control_cancel_request" {
+			switch {
+			case p.onRequest != nil:
 				p.onRequest(e)
-			} else {
+			case e.Type == "control_request":
 				p.reply(e.RequestID, nil, "not taken here")
 			}
 			continue
@@ -625,7 +649,7 @@ func (c *Chat) interleave(text string, names []string) []block {
 	var rest []string
 	from := map[string]int{} // a file attached twice: its second mark
 	for _, name := range names {
-		key := `path="` + attr(filepath.Join(c.dir, name)) + `"`
+		key := "/" + attr(filepath.ToSlash(name)) + `"` // the path's end: the chat's folder may have moved since
 		i := strings.Index(text[from[key]:], key)
 		if i < 0 {
 			rest = append(rest, name)

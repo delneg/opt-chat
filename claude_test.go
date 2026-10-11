@@ -2,12 +2,10 @@ package main
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"fmt"
-	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -32,12 +30,6 @@ const pngHead = "\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
 
 func fakeClaude() {
 	base := os.Getenv("OPT_FAKE_ARGS")
-	if len(os.Args) > 1 && os.Args[1] == "edit-skill-overrides" { // as Claude Code: saves the state
-		in, _ := io.ReadAll(os.Stdin)
-		appendRaw(base+".skills", append(bytes.TrimSpace(in), '\n'))
-		fmt.Println(`{"ok":true}`)
-		return
-	}
 	b, _ := json.Marshal(os.Args[1:])
 	appendRaw(base, append(b, '\n'))
 	var env []string
@@ -131,19 +123,8 @@ func fakeClaude() {
 		case "mcp_authenticate":
 			ok(map[string]any{"authUrl": "https://auth.example/" + name, "requiresUserAction": true})
 		case "get_skills_dialog":
-			state := "on" // the last edit's
-			b, _ := os.ReadFile(base + ".skills")
-			for l := range strings.Lines(string(b)) {
-				var e struct {
-					Name  string `json:"name"`
-					State string `json:"state"`
-				}
-				if json.Unmarshal([]byte(l), &e) == nil && e.Name == "one" {
-					state = e.State
-				}
-			}
 			ok(map[string]any{"skills": []map[string]any{
-				{"name": "one", "display_name": "one", "description": "the first", "source": "user", "tokens": 10, "state": state, "handles": map[string]any{"unqualified_name": "one"}},
+				{"name": "one", "display_name": "one", "description": "the first", "source": "user", "tokens": 10, "state": "on"},
 				{"name": "plug:two", "display_name": "plug:two", "description": "the second", "source": "plugin", "tokens": 20, "state": "on", "locked_by": "plugin"},
 			}})
 		case "list_models":
@@ -190,6 +171,13 @@ func fakeClaude() {
 			result(strings.Repeat("x", 600))
 		case strings.Contains(in, "Compaction:"):
 			result(fmt.Sprintf("line with %d images", images))
+		case strings.Contains(in, "ask-then-cancel"):
+			// Claude Code asks, then takes the question back.
+			emit(map[string]any{"type": "control_request", "request_id": "perm-9", "request": map[string]any{
+				"subtype": "can_use_tool", "tool_name": "Bash", "input": map[string]any{"command": "ls"}}})
+			time.Sleep(time.Second)
+			emit(map[string]any{"type": "control_cancel_request", "request_id": "perm-9"})
+			result("taken back")
 		case strings.Contains(in, "ask-permission"):
 			// As Claude Code in manual mode: it asks, and waits for the
 			// answer, taking mode switches meanwhile.
@@ -197,7 +185,8 @@ func fakeClaude() {
 			emit(map[string]any{"type": "control_request", "request_id": "perm-1", "request": map[string]any{
 				"subtype": "can_use_tool", "tool_name": "Bash", "display_name": "Bash", "input": map[string]any{"command": "rm x"},
 				"description": "Remove x", "tool_use_id": "a1", "permission_suggestions": []map[string]any{
-					{"type": "addRules", "rules": []map[string]any{{"toolName": "Bash", "ruleContent": "rm *"}}, "behavior": "allow", "destination": "localSettings"}}}})
+					{"type": "addRules", "rules": []map[string]any{{"toolName": "Bash", "ruleContent": "rm *"}}, "behavior": "allow", "destination": "localSettings"},
+					{"type": "addDirectories", "directories": []string{"/far"}, "destination": "session"}}}})
 			var modes []string
 			for l := range lines {
 				var r struct {

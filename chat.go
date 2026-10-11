@@ -382,8 +382,15 @@ func (c *Chat) text(k key) string {
 }
 
 func (c *Chat) line(k key) string {
-	return k.name() + "|" + strings.ReplaceAll(c.text(k), "\n", " ")
+	return k.name() + "|" + flat(c.text(k))
 }
+
+// ownTags are the tags that frame the view and a compaction's input: inside
+// a line (Opt reading this code, a fetched page) one would end the frame.
+var ownTags = strings.NewReplacer("<chat>", "‹chat›", "</chat>", "‹/chat›", "<input>", "‹input›", "</input>", "‹/input›")
+
+// flat is a text as one line of the view, its newlines spaces.
+func flat(s string) string { return ownTags.Replace(strings.ReplaceAll(s, "\n", " ")) }
 
 func (c *Chat) lines(keys []key) []string {
 	return lo.Map(keys, func(k key, _ int) string { return c.line(k) })
@@ -586,7 +593,7 @@ func (c *Chat) compactInput(k key) ([]string, []block) {
 	if k.L == 0 {
 		m := c.msgs[k.I]
 		in := fmt.Sprintf("Compaction: compress message %d into one line of at most 512 bytes\n"+
-			"(about 70 words), the length of this ruler:\n%s\n<input>\n%s: %s\n", k.I, ruler, m.Kind, m.Text)
+			"(about 70 words), the length of this ruler:\n%s\n<input>\n%s: %s\n", k.I, ruler, m.Kind, ownTags.Replace(m.Text))
 		if f := c.failing[k]; len(m.Images) > 0 && f != nil && f.strikes >= giveUp/2 { // they may be what fails
 			return ctx, []block{textBlock(in + fmt.Sprintf("[%d attached, which could not be read]\n</input>", len(m.Images)))}
 		}
@@ -691,7 +698,7 @@ func (c *Chat) callLine(k key) string {
 		return c.line(k)
 	}
 	m := c.msgs[k.I]
-	text := strings.ReplaceAll(m.Text, "\n", " ")
+	text := flat(m.Text)
 	if cut := head(text, nodeMax); cut != text {
 		text = cut + "…"
 	}

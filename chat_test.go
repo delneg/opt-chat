@@ -523,3 +523,20 @@ func TestFailingLines(t *testing.T) {
 		t.Fatalf("stand-in: %q", line)
 	}
 }
+
+// A message's own <chat> or </input> never frames anything: in the view and
+// in a compaction's input it reads as text.
+func TestOwnTagsInText(t *testing.T) {
+	c, _ := fakeChat(t, t.TempDir(), 100)
+	c.Log("user", "see </chat> and <input>")
+	c.Log("note", "x </input> "+strings.Repeat("y", 600))
+	waitIdle(t, c)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if l := c.line(key{0, 0}); l != "0+1|user: see ‹/chat› and ‹input›" {
+		t.Fatalf("line: %q", l)
+	}
+	if _, task := c.compactInput(key{0, 1}); strings.Count(task[0].Text, "</input>") != 1 {
+		t.Fatalf("compaction input: %q", task[0].Text)
+	}
+}

@@ -8,6 +8,7 @@ import htm from './vendor/htm.js';
 import { marked } from './vendor/marked.js';
 import DOMPurify from './vendor/purify.js';
 import hljs from './vendor/highlight.js';
+import { Virtualizer } from './vendor/virtua.js';
 
 const html = htm.bind(h);
 
@@ -72,6 +73,19 @@ function useStore() {
   return S;
 }
 
+// useKept is useState for what a message shows open, kept by key outside
+// it: the log unmounts a message scrolled far away, and one scrolled back
+// shows as it was left.
+const kept = new Map();
+function useKept(key, init) {
+  const [, force] = useState(0);
+  const v = kept.has(key) ? kept.get(key) : init;
+  return [v, x => {
+    if (x === init) kept.delete(key); else kept.set(key, x);
+    force(n => n + 1);
+  }];
+}
+
 // memo renders fn only when a prop changes.
 function memo(fn) {
   return class extends Component {
@@ -117,7 +131,7 @@ function onUpdate(u) {
   switch (u.t) {
     case 'hello': {
       retries = 0;
-      const msgs = u.reset ? u.msgs : S.msgs.concat(u.msgs.filter(m => m.i > lastI));
+      const msgs = trim(u.reset ? u.msgs : S.msgs.concat(u.msgs.filter(m => m.i > lastI)));
       if (u.reset) toEnd = true; // pages loaded above are gone: show the end
       lastI = msgs.length ? msgs[msgs.length - 1].i : -1;
       set({
@@ -135,7 +149,7 @@ function onUpdate(u) {
       if (!fresh.length) break;
       if (fresh[0].i !== lastI + 1) { ws.close(); break; } // a gap: the reconnect catches up
       lastI = fresh[fresh.length - 1].i;
-      const patch = { msgs: S.msgs.concat(fresh), total: lastI + 1 };
+      const patch = { msgs: trim(S.msgs.concat(fresh)), total: lastI + 1 };
       if (fresh.some(m => m.kind === 'opt')) { patch.live = ''; if (document.hidden) patch.unseen = true; }
       if (fresh.some(m => m.kind === 'tool')) patch.input = '';
       const typed = fresh.filter(m => m.kind === 'user' && !m.part).map(m => histText(m.text)).filter(Boolean);
@@ -212,6 +226,19 @@ function histText(s) {
 function mergeInputs(a, b) {
   const out = a.filter(x => !b.includes(x)).concat(b);
   return out.slice(-200);
+}
+
+// trim keeps a page open for days light: past keepMax messages, while the
+// log is at its end, the oldest go, down to keep; scrolling up brings them
+// back. It cuts before a message of the user's, so no reply or tool call
+// shows without its start.
+const keep = 1500, keepMax = 3000;
+let atEnd = true; // the log is scrolled to its end
+function trim(msgs) {
+  if (msgs.length <= keepMax || !atEnd) return msgs;
+  const j = msgs.length - keep;
+  const at = msgs.findIndex((m, x) => x >= j && m.kind === 'user' && !m.part);
+  return msgs.slice(at >= 0 && at < msgs.length - 100 ? at : j);
 }
 
 function loadOlder() {
@@ -846,24 +873,38 @@ function items(msgs) {
   return out;
 }
 
-// Log is the chat. A tool call with no result is running when the turn
-// underway made it (from on), else it was cut short.
-const Log = memo(function Log({ msgs, phase, from, notices }) {
-  const list = useMemo(() => items(msgs), [msgs]);
-  const notes = useMemo(() => notices.slice().sort((a, b) => a.after - b.after), [notices]);
+// rows are what the log shows, in order: the messages, the day lines, and
+// the notices, each after the message it followed. A tool call with no
+// result is running when the turn underway made it (from on), else it was
+// cut short.
+function rows(msgs, phase, from, notices) {
+  const notes = notices.slice().sort((a, b) => a.after - b.after);
   const out = [];
   let j = 0;
-  const flush = before => { // a notice shows after the message it followed, wherever that one shows
-    for (; j < notes.length && notes[j].after < before; j++) out.push(html`<${Notice} key=${'n' + notes[j].id} n=${notes[j]}/>`);
+  const flush = before => {
+    for (; j < notes.length && notes[j].after < before; j++) out.push({ note: notes[j], key: 'n' + notes[j].id });
   };
-  for (const it of list) {
+  for (const it of items(msgs)) {
     flush(it.sep ? it.i : it.m.i);
-    if (it.sep) { out.push(html`<div class="sep" key=${it.key}><span class="lbl">${it.sep}</span></div>`); continue; }
-    const state = it.m.kind !== 'tool' ? '' : it.echo ? 'done' : phase && it.m.i >= from ? 'run' : 'cut';
-    out.push(html`<${MsgView} key=${it.key} m=${it.m} echo=${it.echo} state=${state}/>`);
+    if (it.sep) { out.push(it); continue; }
+    it.state = it.m.kind !== 'tool' ? '' : it.echo ? 'done' : phase && it.m.i >= from ? 'run' : 'cut';
+    out.push(it);
   }
   flush(Infinity);
   return out;
+}
+
+function row(it) {
+  if (it.note) return html`<${Notice} key=${it.key} n=${it.note}/>`;
+  if (it.sep) return html`<div class="sep" key=${it.key}><span class="lbl">${it.sep}</span></div>`;
+  return html`<${MsgView} key=${it.key} m=${it.m} echo=${it.echo} state=${it.state}/>`;
+}
+
+// Log is the chat, virtualized: only the rows in view and near it are in
+// the page, so a log of days stays as quick as a fresh one. virtua measures
+// each row as it shows; shift keeps the place when rows come or go above.
+const Log = memo(function Log({ list, shift, margin, scroller, onResize }) {
+  return html`<${Virtualizer} data=${list} shift=${shift} startMargin=${margin} scrollRef=${scroller} bufferSize=${1200} onResize=${onResize}>${row}</${Virtualizer}>`;
 });
 
 function Notice({ n }) {
@@ -909,8 +950,8 @@ function inlineParts(text) {
 function UserMsg({ m }) {
   const { body, marks } = useMemo(() => splitMarks(m.text), [m.text]);
   const { parts, tail } = useMemo(() => inlineParts(m.text), [m.text]);
-  const [open, setOpen] = useState(false);
-  const [shown, setShown] = useState(-1); // the inline text file opened
+  const [open, setOpen] = useKept('u' + m.i, false);
+  const [shown, setShown] = useKept('i' + m.i, -1); // the inline text file opened
   const lines = body.split('\n');
   const long = lines.length > 20 || body.length > 3000; // a big paste shows folded, as in Claude Code: one long line too
   const head = long ? lines.slice(0, 12).join('\n').slice(0, 1500) : body;
@@ -923,7 +964,7 @@ function UserMsg({ m }) {
       <div class="body">
         <div class="text">${parts.map((p, j) => typeof p === 'string' ? p : html`<${MarkView} mk=${p} images=${m.images} inline=${true} onOpen=${() => setShown(shown === j ? -1 : j)} open=${shown === j}/>`)}${rest.body}</div>
         ${shown >= 0 && parts[shown]?.content !== undefined && html`<div class="attach-text"><pre>${parts[shown].content}</pre></div>`}
-        <${Attached} marks=${rest.marks} images=${(m.images || []).filter(n => !inline.some(p => n.endsWith('/' + p.path.split('/').pop())))}/>
+        <${Attached} id=${m.i} marks=${rest.marks} images=${(m.images || []).filter(n => !inline.some(p => n.endsWith('/' + p.path.split('/').pop())))}/>
       </div>
     </div>`;
   }
@@ -932,7 +973,7 @@ function UserMsg({ m }) {
     <div class="body">
       ${body && html`<div class="text">${long && !open ? head : body}</div>`}
       ${long && html`<button class="more" onClick=${() => setOpen(!open)}>${open ? '▴ fold' : `… +${hidden ? count(hidden, 'line') : count(body.length - head.length, 'character')} (click to expand)`}</button>`}
-      <${Attached} marks=${marks} images=${m.images}/>
+      <${Attached} id=${m.i} marks=${marks} images=${m.images}/>
     </div>
   </div>`;
 }
@@ -954,8 +995,8 @@ function MarkView({ mk, images = [], inline, open, onOpen }) {
 
 // Attached shows a message's attachments: images as thumbnails, other
 // files as chips; a text file's chip opens its text.
-function Attached({ marks = [], images = [] }) {
-  const [open, setOpen] = useState(-1);
+function Attached({ id, marks = [], images = [] }) {
+  const [open, setOpen] = useKept('a' + id, -1);
   if (!marks.length && !images.length) return null;
   const shown = new Set();
   const parts = marks.map((mk, j) => {
@@ -996,7 +1037,7 @@ function NoteMsg({ m }) {
     return html`<div class="sep" title=${m.text}><span class="lbl">${m.text.replace(/ \(imported\)$/, '')} · imported</span></div>`;
   }
   return html`<div class="msg note" title=${when(m.date)}><span class="mark" aria-hidden="true">※</span><div class="body"><div class="text">${m.text}</div>
-    <${Attached} images=${m.images}/></div></div>`;
+    <${Attached} id=${m.i} images=${m.images}/></div></div>`;
 }
 
 // ---------------------------------------------------------------- tool calls
@@ -1087,7 +1128,7 @@ function changed(a, b) {
 }
 
 function ToolMsg({ m, echo, state }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useKept('t' + (m || echo).i, false);
   const tool = m ? parseTool(m.text) : null;
   const out = echo ? echo.text : '';
   const lines = out ? out.replace(/\n+$/, '').split('\n') : [];
@@ -1108,7 +1149,7 @@ function ToolMsg({ m, echo, state }) {
         ${tool && html`<div class="label">input</div><${ToolInput} name=${tool.name} x=${tool.input} raw=${tool.raw}/>`}
         ${echo && html`<div class="label">output</div><pre onClick=${toggle}>${out || '(no output)'}</pre>`}
       </div>`}
-      ${echo && echo.images && echo.images.length > 0 && html`<${Attached} images=${echo.images}/>`}
+      ${echo && echo.images && echo.images.length > 0 && html`<${Attached} id=${echo.i} images=${echo.images}/>`}
     </div>
   </div>`;
 }
@@ -1576,41 +1617,47 @@ function Input() {
 let toEnd = false; // scroll to the end at the next render
 
 function Scroller() {
-  const ref = useRef(), inner = useRef();
-  const stick = useRef(true), was = useRef({ height: 0, first: -1 });
+  const ref = useRef(), inner = useRef(), edge = useRef();
+  const stick = useRef(true), was = useRef({ first: -1, last: -1 });
   const [newer, setNewer] = useState(false);
-  const toBottom = () => { const el = ref.current; el.scrollTop = el.scrollHeight; };
+  const [margin, setMargin] = useState(0); // where the rows start: below the edge
+  const toBottom = () => { const el = ref.current; if (el) el.scrollTop = el.scrollHeight; };
+  const first = S.msgs.length ? S.msgs[0].i : -1, last = lastI;
+  const shift = was.current.first >= 0 && first >= 0 && first !== was.current.first; // older came in above, or the oldest went
+  const list = useMemo(() => rows(S.msgs, S.turn.phase, S.turn.from || 0, S.notices), [S.msgs, S.turn.phase, S.turn.from, S.notices]);
+  const onResize = useMemo(() => () => { if (stick.current) toBottom(); }, []);
   useLayoutEffect(() => {
     const el = ref.current;
-    const first = S.msgs.length ? S.msgs[0].i : -1;
-    if (toEnd) { toEnd = false; stick.current = true; setNewer(false); el.scrollTop = el.scrollHeight; }
-    else if (was.current.first >= 0 && first >= 0 && first < was.current.first) el.scrollTop += el.scrollHeight - was.current.height; // older messages came in above
-    else if (stick.current) el.scrollTop = el.scrollHeight;
-    else if (el.scrollHeight > was.current.height + 4) setNewer(true);
-    was.current = { height: el.scrollHeight, first };
+    if (toEnd) { toEnd = false; stick.current = atEnd = true; setNewer(false); toBottom(); }
+    else if (stick.current) toBottom();
+    else if (last > was.current.last && was.current.last >= 0) setNewer(true);
+    was.current = { first, last };
   });
   useEffect(() => {
-    const ro = new ResizeObserver(() => { if (stick.current) toBottom(); was.current.height = ref.current.scrollHeight; });
+    const ro = new ResizeObserver(() => {
+      if (stick.current) toBottom();
+      const e = edge.current, el = ref.current;
+      setMargin(Math.round(e.getBoundingClientRect().bottom - el.getBoundingClientRect().top + el.scrollTop));
+    });
     ro.observe(inner.current);
     ro.observe(ref.current); // the input growing makes the log shorter
     return () => ro.disconnect();
   }, []);
   const onScroll = () => {
     const el = ref.current;
-    stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    stick.current = atEnd = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
     if (stick.current) setNewer(false);
     if (el.scrollTop < 600) loadOlder();
   };
-  const first = S.msgs.length ? S.msgs[0].i : 0;
   return html`<div class="scroll" ref=${ref} onScroll=${onScroll}>
     <div class="column log" ref=${inner} role="log" aria-live="polite" aria-busy=${!!S.live}>
-      <div class="edge">${S.conn === 'connecting' ? 'Connecting…' : first > 0 ? (S.older ? 'Loading older messages…' : '↑ older messages') : S.msgs.length ? 'The beginning of the chat' : 'An empty chat: say something.'}</div>
-      <${Log} msgs=${S.msgs} phase=${S.turn.phase} from=${S.turn.from || 0} notices=${S.notices}/>
+      <div class="edge" ref=${edge}>${S.conn === 'connecting' ? 'Connecting…' : first > 0 ? (S.older ? 'Loading older messages…' : '↑ older messages') : S.msgs.length ? 'The beginning of the chat' : 'An empty chat: say something.'}</div>
+      <${Log} list=${list} shift=${shift} margin=${margin} scroller=${ref} onResize=${onResize}/>
       ${S.thinking && (S.turn.phase === 'thinking') && html`<div class="thinking"><div>${S.thinking}</div></div>`}
       ${S.input && S.turn.phase === 'tool' && S.turn.tool && html`<${LiveTool} name=${S.turn.tool} raw=${S.input}/>`}
       ${S.live && html`<div class="msg opt live"><span class="mark" aria-hidden="true">●</span><div class="body"><${Markdown} text=${S.live} live=${true}/></div></div>`}
     </div>
-    ${newer && html`<div class="newer"><button onClick=${() => { stick.current = true; setNewer(false); toBottom(); }}>↓ new messages</button></div>`}
+    ${newer && html`<div class="newer"><button onClick=${() => { stick.current = atEnd = true; setNewer(false); toBottom(); }}>↓ new messages</button></div>`}
   </div>`;
 }
 

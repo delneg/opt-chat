@@ -87,7 +87,8 @@ a { color: var(--blue); }
 .md > :first-child { margin-top: 0; }
 .md > :last-child { margin-bottom: 0; }
 .md p, .md ul, .md ol, .md pre, .md table, .md blockquote { margin: .55em 0; }
-.md ul, .md ol { padding-left: 3ch; }
+.md ul { padding-left: 3ch; }
+.md ol { padding-left: 4ch; } /* "10." fits: the box clips what is past it */
 .md li > p { margin: .2em 0; }
 .md h1, .md h2, .md h3, .md h4 { font-size: 1em; margin: .9em 0 .4em; }
 .md h1, .md h2 { text-decoration: underline; text-underline-offset: .25em; }

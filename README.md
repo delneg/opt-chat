@@ -39,6 +39,12 @@ The page works like Claude Code:
   removal` for files); click it, or Enter on it, for the whole input and
   output. A spinner tells what Opt is doing, for how long and how many
   tokens it has written so far; click its `esc to interrupt` to stop.
+- The page stays quick however long it is open: the log is virtualized
+  ([virtua](https://github.com/inokawa/virtua) on Preact), so only the
+  messages in view and near it are in the page, and while you are at the
+  end it keeps at most 3,000 messages, down to 1,500 at a time; scrolling
+  up brings older ones back. The browser's own find (⌘F) sees only what is
+  in the page; Opt's `search` covers the whole chat.
 - The input stays put at the bottom: Enter sends, Shift+Enter starts a new
   line, Up and Down go through your earlier messages. Output never touches
   what you type.

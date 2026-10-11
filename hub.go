@@ -102,6 +102,7 @@ type liveTurn struct {
 	From     int    `json:"from"`             // the turn's first message: a tool call after it, unanswered, is running
 	Text     string `json:"text,omitzero"`    // in a hello only: the reply being written
 	Thinking string `json:"thinking,omitzero"`
+	Input    string `json:"input,omitzero"` // the tool call's input as it is written: JSON, partial
 }
 
 type queueItem struct {
@@ -257,9 +258,12 @@ func (h *hub) delta(k, s string) {
 		return
 	}
 	h.change(func() {
-		if k == "text" {
+		switch k {
+		case "text":
 			h.turn.Text += s
-		} else {
+		case "input":
+			h.turn.Input += s
+		default:
 			h.turn.Thinking += s
 		}
 	}, deltaUpdate{T: "delta", K: k, S: s})
@@ -276,8 +280,8 @@ func (h *hub) setTurn(f func(*liveTurn)) {
 	f(&h.turn)
 	t := h.turn
 	h.mu.Unlock()
-	t.Text, t.Thinking = "", ""
-	before.Text, before.Thinking = "", ""
+	t.Text, t.Thinking, t.Input = "", "", ""
+	before.Text, before.Thinking, before.Input = "", "", ""
 	if t != before {
 		h.send(turnUpdate{T: "turn", Turn: t})
 	}
@@ -287,9 +291,12 @@ func (h *hub) setTurn(f func(*liveTurn)) {
 // of it starts.
 func (h *hub) restart(k string) {
 	h.change(func() {
-		if k == "text" {
+		switch k {
+		case "text":
 			h.turn.Text = ""
-		} else {
+		case "input":
+			h.turn.Input = ""
+		default:
 			h.turn.Thinking = ""
 		}
 	}, deltaUpdate{T: "delta", K: k, R: true})
@@ -303,6 +310,17 @@ func (h *hub) clearText() {
 	}
 	h.mu.Lock()
 	h.turn.Text = ""
+	h.mu.Unlock()
+}
+
+// clearInput drops the tool call's input being written as the call goes
+// into the log, which the pages take as the end of it.
+func (h *hub) clearInput() {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	h.turn.Input = ""
 	h.mu.Unlock()
 }
 

@@ -21,6 +21,7 @@ const S = {
   turn: { phase: '' },
   turnChars: 0, // characters streamed since the last turn update: tokens are about a fourth
   live: '', // the reply being written
+  input: '', // the tool call being written: its input, partial JSON
   thinking: '',
   queue: [],
   status: null,
@@ -113,7 +114,7 @@ function onUpdate(u) {
       if (u.reset) toEnd = true; // pages loaded above are gone: show the end
       lastI = msgs.length ? msgs[msgs.length - 1].i : -1;
       set({
-        conn: 'open', msgs, total: u.total, turn: u.turn, turnChars: 0, live: u.turn.text || '', thinking: u.turn.thinking || '',
+        conn: 'open', msgs, total: u.total, turn: u.turn, turnChars: 0, live: u.turn.text || '', thinking: u.turn.thinking || '', input: u.turn.input || '',
         queue: u.queue, asks: u.asks || [], status: u.status, last: u.last, inputs: mergeInputs(S.inputs, u.inputs), older: false,
       });
       for (const s of sending.values()) send(s.payload); // the connection may have dropped it: the key makes it once
@@ -126,6 +127,7 @@ function onUpdate(u) {
       lastI = fresh[fresh.length - 1].i;
       const patch = { msgs: S.msgs.concat(fresh), total: lastI + 1 };
       if (fresh.some(m => m.kind === 'opt')) { patch.live = ''; if (document.hidden) patch.unseen = true; }
+      if (fresh.some(m => m.kind === 'tool')) patch.input = '';
       const typed = fresh.filter(m => m.kind === 'user' && !m.part).map(m => splitMarks(m.text).body).filter(Boolean);
       if (typed.length) patch.inputs = mergeInputs(S.inputs, typed);
       set(patch);
@@ -133,10 +135,11 @@ function onUpdate(u) {
     }
     case 'delta':
       if (u.k === 'text') set({ live: (u.r ? '' : S.live) + u.s, turnChars: S.turnChars + u.s.length });
+      else if (u.k === 'input') set({ input: (u.r ? '' : S.input) + (u.s || ''), turnChars: S.turnChars + (u.s || '').length });
       else set({ thinking: (u.r ? '' : S.thinking) + u.s, turnChars: S.turnChars + u.s.length });
       break;
     case 'turn':
-      set(u.turn.phase ? { turn: u.turn, turnChars: 0 } : { turn: u.turn, turnChars: 0, live: '', thinking: '' });
+      set(u.turn.phase ? { turn: u.turn, turnChars: 0 } : { turn: u.turn, turnChars: 0, live: '', thinking: '', input: '' });
       break;
     case 'queue': set({ queue: u.queue }); break;
     case 'asks': set({ asks: u.asks, askSel: u.asks[0]?.id === S.asks[0]?.id ? S.askSel : 0 }); break;
@@ -723,6 +726,25 @@ function toolArgs(name, x, raw) {
   }
 }
 
+// partial reads a tool call's input as far as it is written: the JSON,
+// closed where it stops.
+function partial(raw) {
+  for (const end of ['', '"}', '}', '"]}', ']}', '""}', ':""}']) {
+    try { const x = JSON.parse(raw + end); if (x && typeof x === 'object') return x; } catch {}
+  }
+  return null;
+}
+
+// LiveTool is the tool call being written: what it will run, as it comes.
+function LiveTool({ name, raw }) {
+  const x = partial(raw);
+  const long = name === 'Bash' && typeof x?.command === 'string' && x.command.includes('\n');
+  return html`<div class="msg tool run live"><span class="mark">●</span><div class="body">
+    <div class="head"><span class="name">${name}</span><span class="args">(${toolArgs(name, x, raw)})</span></div>
+    ${long && html`<div class="full"><pre>${x.command}</pre></div>`}
+  </div></div>`;
+}
+
 function ToolInput({ name, x, raw }) {
   if (!x) return html`<pre>${raw}</pre>`;
   if (name === 'Bash') return html`<pre>${x.command}</pre>`;
@@ -976,7 +998,7 @@ function Spinner({ turn, chars, queued }) {
     case 'settling': verb = turn.backlog ? `Waiting for ${turn.backlog} message summar${turn.backlog === 1 ? 'y' : 'ies'}` : 'Getting ready'; break;
     case 'reading': verb = 'Reading memory'; break;
     case 'writing': verb = 'Writing'; break;
-    case 'tool': verb = turn.tool ? `Running ${turn.tool}` : 'Calling a tool'; break;
+    case 'tool': verb = !turn.tool ? 'Calling a tool' : S.input ? `Writing the ${turn.tool} call` : `Running ${turn.tool}`; break;
   }
   const meta = [elapsed(Date.now() - (turn.since || Date.now()))];
   const tokens = (turn.tokens || 0) + Math.round(chars / 4);
@@ -1141,6 +1163,7 @@ function Scroller() {
       <div class="edge">${S.conn === 'connecting' ? 'Connecting…' : first > 0 ? (S.older ? 'Loading older messages…' : '↑ older messages') : S.msgs.length ? 'The beginning of the chat' : 'An empty chat: say something.'}</div>
       <${Log} msgs=${S.msgs} phase=${S.turn.phase} from=${S.turn.from || 0} notices=${S.notices}/>
       ${S.thinking && (S.turn.phase === 'thinking') && html`<div class="thinking"><div>${S.thinking}</div></div>`}
+      ${S.input && S.turn.phase === 'tool' && S.turn.tool && html`<${LiveTool} name=${S.turn.tool} raw=${S.input}/>`}
       ${S.live && html`<div class="msg opt live"><span class="mark">●</span><div class="body"><${Markdown} text=${S.live} live=${true}/></div></div>`}
     </div>
     ${newer && html`<div class="newer"><button onClick=${() => { stick.current = true; setNewer(false); toBottom(); }}>↓ new messages</button></div>`}

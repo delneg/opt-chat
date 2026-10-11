@@ -620,3 +620,19 @@ func TestParts(t *testing.T) {
 		t.Fatalf("recentInputs: %q", in)
 	}
 }
+
+// The tool call being written shows as it comes, until it is logged.
+func TestToolInputStreams(t *testing.T) {
+	c, _ := fakeChat(t, t.TempDir(), 100)
+	record(c)
+	h := newHarness(t, c)
+	h.input(message{kind: "user", text: "stream-tool"})
+	waitFor(t, "the input as written", func() bool {
+		lt, _ := hubState(c)
+		return lt.Input == `{"command": "echo hi"}` && lt.Tool == "Bash" && lt.Phase == "tool"
+	})
+	waitFor(t, "the turn to end", h.idle)
+	if lt, _ := hubState(c); lt.Input != "" || !hasLogged(c, `tool: Bash {"command":"echo hi"}`) {
+		t.Fatalf("after: %+v, %q", lt, logged(c))
+	}
+}

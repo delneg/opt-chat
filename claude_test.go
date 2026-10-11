@@ -190,6 +190,15 @@ func fakeClaude() {
 			say(textBlock("Hello world"))
 			stream(map[string]any{"type": "message_delta", "usage": map[string]any{"output_tokens": 42}})
 			emit(map[string]any{"type": "result", "result": "Hello world"})
+		case strings.Contains(in, "stream-tool"):
+			stream(map[string]any{"type": "message_start", "message": map[string]any{"usage": map[string]any{"output_tokens": 1}}})
+			stream(map[string]any{"type": "content_block_start", "content_block": map[string]any{"type": "tool_use", "name": "Bash"}})
+			stream(map[string]any{"type": "content_block_delta", "delta": map[string]any{"type": "input_json_delta", "partial_json": `{"command": "echo `}})
+			stream(map[string]any{"type": "content_block_delta", "delta": map[string]any{"type": "input_json_delta", "partial_json": `hi"}`}})
+			time.Sleep(500 * time.Millisecond)
+			say(block{Type: "tool_use", ID: "s1", Name: "Bash", Input: []byte(`{"command":"echo hi"}`)})
+			emit(map[string]any{"type": "user", "message": map[string]any{"content": []block{{Type: "tool_result", ToolID: "s1", Content: []byte(`"hi"`)}}}})
+			result("done")
 		case strings.Contains(in, "stream-then-stop"):
 			stream(map[string]any{"type": "message_start", "message": map[string]any{"usage": map[string]any{"output_tokens": 1}}})
 			stream(map[string]any{"type": "content_block_start", "content_block": map[string]any{"type": "text"}})

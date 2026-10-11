@@ -160,6 +160,7 @@ type streamEvent struct {
 		Type     string `json:"type"`
 		Text     string `json:"text"`
 		Thinking string `json:"thinking"`
+		JSON     string `json:"partial_json"` // a tool call's input, as written
 	} `json:"delta"`
 	Message struct {
 		Usage usage `json:"usage"`
@@ -672,7 +673,8 @@ func (t *Turn) Run(ctx context.Context, msgs []message) error {
 					written.Reset()
 					h.restart("text")
 					phase("writing", "")
-				case "tool_use":
+				case "tool_use": // its input streams, so the pages show what it will run as it is written
+					h.restart("input")
 					phase("tool", strings.TrimPrefix(s.ContentBlock.Name, "mcp__opt__"))
 				case "thinking":
 					h.restart("thinking")
@@ -685,6 +687,8 @@ func (t *Turn) Run(ctx context.Context, msgs []message) error {
 					h.delta("text", s.Delta.Text)
 				case "thinking_delta":
 					h.delta("thinking", s.Delta.Thinking)
+				case "input_json_delta":
+					h.delta("input", s.Delta.JSON)
 				}
 			}
 		case "system":
@@ -706,6 +710,7 @@ func (t *Turn) Run(ctx context.Context, msgs []message) error {
 						c.Log("opt", b.Text)
 					}
 				case "tool_use":
+					h.clearInput()
 					c.logRef("tool", toolCall(b), b.ID)
 					t.countTools(1)
 					phase("tool", strings.TrimPrefix(b.Name, "mcp__opt__"))

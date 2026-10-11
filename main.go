@@ -585,10 +585,10 @@ const windowMin, windowMax = 100_000, 1_000_000 // Claude Code's --autocompact
 // autocompact shows or sets the window at which subagents' contexts compact,
 // for good (settings.json). The chat's own calls never compact: see start.
 func autocompact(a *Agent, arg string) (string, bool, error) {
-	if arg != "" {
+	if arg = strings.ToLower(strings.TrimSpace(arg)); arg != "" {
 		n := 0
 		if arg != "off" {
-			num, mult := strings.ToLower(arg), 1
+			num, mult := arg, 1
 			if s, ok := strings.CutSuffix(num, "k"); ok {
 				num, mult = s, 1_000
 			} else if s, ok := strings.CutSuffix(num, "m"); ok {

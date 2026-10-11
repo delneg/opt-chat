@@ -217,7 +217,6 @@ func (a *Agent) runAgent(name, task, effort, model string, window int) {
 	p.send(second...)
 	a.running[name] = p
 	a.mu.Unlock()
-	replied := false
 	for {
 		e, ok := p.next()
 		if !ok {
@@ -231,7 +230,6 @@ func (a *Agent) runAgent(name, task, effort, model string, window int) {
 		if e.IsError {
 			final = "failed: " + final
 		}
-		replied = true
 		a.mu.Lock() // at rest: a tell sets it to work again, its context whole
 		if a.resting == nil {
 			a.resting = map[string]rest{}
@@ -258,11 +256,9 @@ func (a *Agent) runAgent(name, task, effort, model string, window int) {
 	if r := a.resting[name]; r.p == p {
 		delete(a.resting, name)
 	}
-	if a.running[name] == p {
-		delete(a.running, name)
-	}
+	working := a.running[name] == p // its task, or a tell's, left without a reply
 	a.mu.Unlock()
-	if err := p.wait(); !replied {
+	if err := p.wait(); working {
 		report(failed(fmt.Errorf("no reply: %v", err)))
 	}
 }

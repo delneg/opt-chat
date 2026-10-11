@@ -73,6 +73,15 @@ The page works like Claude Code:
   for this run only, Esc cancels. `/model opus` and `/effort high` switch
   them until you quit. `/agents` lists the subagents at work, `/help` the commands; Tab
   completes them. A line starting with any other `/word` is not sent.
+- Shift+Tab cycles the permission mode, as in Claude Code: manual (only
+  reads go ahead unasked), accept edits (file edits too), auto (whatever
+  Claude Code's classifier deems safe). The switch reaches the turn and
+  subagents underway. A call Claude Code asks about shows its command or
+  change and waits: 1 or Enter says yes, 2 yes and don't ask again (for
+  this run; nothing is written to your Claude Code settings), 3 or Esc no,
+  which stops the turn so you can say what to do instead. A subagent's
+  questions show its name, and a no lets it go on. In the terminal (-repl),
+  the next line answers: y, a, or anything else for no.
 - The bar at the bottom shows the memory: messages, the view's size, what is
   left to summarize, and the last turn's tokens. `?` on an empty input lists
   the shortcuts. While a reply lands in a tab in the background, its title
@@ -91,7 +100,7 @@ a change.
 | `-agent-effort` | `high` | effort for subagents |
 | `-compact-model` | `haiku` | model for compactions |
 | `-compact-effort` | `high` | effort for compactions (the recipe's: `xhigh`) |
-| `-permission-mode` | `auto` | Claude Code permission mode for turns and subagents |
+| `-permission-mode` | `auto` | permission mode to start in: `manual`, `acceptEdits` or `auto` |
 | `-tools` | `Bash,Read,Edit,Write,WebSearch,WebFetch` | Claude Code tools |
 | `-import` | | import past chats first (below) |
 | `-import-since` | | import only messages from this day on, `YYYY-MM-DD` |

@@ -15,6 +15,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -44,6 +45,11 @@ type Agent struct {
 	running     map[string]*proc         // agents by name; nil while starting or finished
 	writing     map[string]chan struct{} // first messages being written to the cache
 	modelList   []modelInfo              // Claude Code's, once asked
+	live        map[*proc]struct{}       // turns and subagents underway: a mode switch reaches them
+	asks        []*ask                   // tool calls waiting for the user's yes or no
+	askSeq      int
+	ctlSeq      int
+	allowed     []string // rules the user allowed for good this run, as "Bash(npm test:*)"
 
 	ctlMu sync.Mutex
 	ctl   *control // nil until asked, and once stopped
@@ -187,6 +193,10 @@ type proc struct {
 	ended  sync.Once
 	err    error
 	done   func()
+
+	declined  atomic.Bool // the user said no to a tool call, which stops the call
+	who       string      // a subagent's name; empty for the turn
+	onRequest func(event) // takes Claude Code's control requests; nil: refused
 }
 
 type role int
@@ -214,7 +224,9 @@ func (a *Agent) start(ctx context.Context, model, effort string, r role) (p *pro
 			done()
 		}
 	}()
-	mcp, perm := a.mcpConfig, a.perm
+	a.mu.Lock()
+	mcp, perm, allowed := a.mcpConfig, a.perm, append([]string{"mcp__opt__zoom", "mcp__opt__date", "mcp__opt__spawn", "mcp__opt__tell"}, a.allowed...)
+	a.mu.Unlock()
 	switch r {
 	case roleAgent:
 		mcp = a.agentMCP
@@ -227,11 +239,14 @@ func (a *Agent) start(ctx context.Context, model, effort string, r role) (p *pro
 	// Every role gets the same system prompt and tools.
 	args := []string{"-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
 		"--model", model, "--system-prompt", a.system, "--tools", a.tools, "--mcp-config", mcp,
-		"--permission-mode", perm, "--allowedTools", "mcp__opt__zoom,mcp__opt__date,mcp__opt__spawn,mcp__opt__tell",
+		"--permission-mode", perm, "--allowedTools", strings.Join(allowed, ","),
 		// Nothing of the user's Claude Code setup leaks in: no hooks, plugins, CLAUDE.md or MCP servers.
 		"--setting-sources", "", "--strict-mcp-config", "--disable-slash-commands", "--no-session-persistence"}
 	if effort != "" {
 		args = append(args, "--effort", effort)
+	}
+	if r != roleCompact { // the calls that ask: Claude Code puts its questions to us
+		args = append(args, "--permission-prompt-tool", "stdio")
 	}
 	switch r {
 	case roleCompact:
@@ -265,7 +280,22 @@ func (a *Agent) start(ctx context.Context, model, effort string, r role) (p *pro
 	}
 	pid := cmd.Process.Pid
 	children.Store(pid, true)
-	p.done = func() { children.Delete(pid); done() }
+	if r == roleTurn || r == roleAgent {
+		p.onRequest = func(e event) { a.request(p, e) }
+		a.mu.Lock()
+		if a.live == nil {
+			a.live = map[*proc]struct{}{}
+		}
+		a.live[p] = struct{}{}
+		a.mu.Unlock()
+	}
+	p.done = func() {
+		children.Delete(pid)
+		a.mu.Lock()
+		delete(a.live, p)
+		a.mu.Unlock()
+		done()
+	}
 	return p, nil
 }
 
@@ -341,9 +371,18 @@ func (p *proc) close() {
 func (p *proc) next() (event, bool) {
 	for p.out.Scan() {
 		var e event
-		if json.Unmarshal(p.out.Bytes(), &e) == nil {
-			return e, true
+		if json.Unmarshal(p.out.Bytes(), &e) != nil {
+			continue
 		}
+		if e.Type == "control_request" {
+			if p.onRequest != nil {
+				p.onRequest(e)
+			} else {
+				p.reply(e.RequestID, nil, "not taken here")
+			}
+			continue
+		}
+		return e, true
 	}
 	return event{}, false
 }
@@ -720,7 +759,7 @@ func (t *Turn) Run(ctx context.Context, msgs []message) error {
 			continue
 		}
 		u.add(e.Usage)
-		if e.IsError && ctx.Err() == nil {
+		if e.IsError && ctx.Err() == nil && !p.declined.Load() {
 			h.notice("warn", "turn: %s", e.failure())
 		}
 		// Claude Code delivers a message sent mid-run into this same result,
@@ -729,6 +768,9 @@ func (t *Turn) Run(ctx context.Context, msgs []message) error {
 	}
 	t.detach()
 	err = p.wait()
+	if p.declined.Load() { // the user said no, which ends the turn: no failure
+		err = nil
+	}
 	if s := written.String(); s != "" { // stopped mid-reply: what it said stays in the chat
 		h.clearText()
 		c.Log("opt", s+" [interrupted]")

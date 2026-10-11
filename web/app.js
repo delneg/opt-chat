@@ -35,6 +35,8 @@ const S = {
   dragging: false,
   help: false,
   unseen: false, // Opt replied while the tab was in the background
+  asks: [], // tool calls waiting for the user's yes or no
+  askSel: 0,
   picker: null, // the model picker, open: { sel, effort }
   models: null, // Claude Code's, once asked
   modelsError: '',
@@ -112,7 +114,7 @@ function onUpdate(u) {
       lastI = msgs.length ? msgs[msgs.length - 1].i : -1;
       set({
         conn: 'open', msgs, total: u.total, turn: u.turn, turnChars: 0, live: u.turn.text || '', thinking: u.turn.thinking || '',
-        queue: u.queue, status: u.status, last: u.last, inputs: mergeInputs(S.inputs, u.inputs), older: false,
+        queue: u.queue, asks: u.asks || [], status: u.status, last: u.last, inputs: mergeInputs(S.inputs, u.inputs), older: false,
       });
       for (const s of sending.values()) send(s.payload); // the connection may have dropped it: the key makes it once
       break;
@@ -137,6 +139,7 @@ function onUpdate(u) {
       set(u.turn.phase ? { turn: u.turn, turnChars: 0 } : { turn: u.turn, turnChars: 0, live: '', thinking: '' });
       break;
     case 'queue': set({ queue: u.queue }); break;
+    case 'asks': set({ asks: u.asks, askSel: u.asks[0]?.id === S.asks[0]?.id ? S.askSel : 0 }); break;
     case 'thought': set({ thinking: '' }); break;
     case 'status': set({ status: u.status }); break;
     case 'end': set({ last: u.end }); break;
@@ -525,6 +528,11 @@ function tilde(p) {
   return home && p?.startsWith(home + '/') ? '~' + p.slice(home.length) : p;
 }
 
+function homeTilde(s) {
+  const home = S.status?.dir?.match(/^\/(Users|home)\/[^/]+/)?.[0];
+  return home ? s.split(home + '/').join('~/') : s;
+}
+
 function when(d) {
   const t = new Date(d);
   return isNaN(t) ? '' : t.toLocaleString(undefined, { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -755,7 +763,8 @@ function ToolMsg({ m, echo, state }) {
   const tool = m ? parseTool(m.text) : null;
   const out = echo ? echo.text : '';
   const lines = out ? out.replace(/\n+$/, '').split('\n') : [];
-  const failed = /^(<tool_use_error>|Error\b|error:)/i.test(out.trim());
+  const refused = out.startsWith('The user doesn\'t want to proceed with this tool use.') || out === 'The user said no to this call.';
+  const failed = refused || /^(<tool_use_error>|Error\b|error:)/i.test(out.trim());
   const cls = 'msg tool ' + (state === 'run' ? 'run' : state === 'cut' || failed ? 'cut' : '');
   const toggle = () => { if (!getSelection().toString()) setOpen(!open); }; // not when selecting its text
   const sum = echo && !failed && tool ? brief(tool.name, tool.input, lines, echo) : '';
@@ -764,7 +773,8 @@ function ToolMsg({ m, echo, state }) {
     <div class="body">
       ${tool && html`<div class="head" role="button" tabindex="0" aria-expanded=${open} onClick=${toggle}><span class="name">${tool.name}</span><span class="args">(${toolArgs(tool.name, tool.input, tool.raw)})</span></div>`}
       ${echo && !open && sum && html`<div class="result" role="button" tabindex=${tool ? -1 : 0} onClick=${toggle}><span>  ⎿</span><span class="lines">${sum} <span class="more">(click to expand)</span></span></div>`}
-      ${echo && !open && !sum && html`<div class="result" role="button" tabindex=${tool ? -1 : 0} onClick=${toggle}><span>  ⎿</span><span class="lines">${lines.slice(0, 3).map(l => oneLine(l, 160)).join('\n') || '(no output)'}${lines.length > 3 && html`<span class="more">${'\n'}… +${lines.length - 3} lines (click to expand)</span>`}</span></div>`}
+      ${echo && !open && refused && html`<div class="result" role="button" tabindex=${tool ? -1 : 0} onClick=${toggle}><span>  ⎿</span><span class="cut-note">No (you said no)</span></div>`}
+      ${echo && !open && !sum && !refused && html`<div class="result" role="button" tabindex=${tool ? -1 : 0} onClick=${toggle}><span>  ⎿</span><span class="lines">${lines.slice(0, 3).map(l => oneLine(l, 160)).join('\n') || '(no output)'}${lines.length > 3 && html`<span class="more">${'\n'}… +${lines.length - 3} lines (click to expand)</span>`}</span></div>`}
       ${state === 'cut' && !echo && html`<div class="result"><span>  ⎿</span><span class="cut-note">Interrupted</span></div>`}
       ${open && html`<div class="full">
         ${tool && html`<div class="label">input</div><${ToolInput} name=${tool.name} x=${tool.input} raw=${tool.raw}/>`}
@@ -878,6 +888,77 @@ function Picker() {
   </div>`;
 }
 
+// ---------------------------------------------------------------- permissions
+
+// The modes Shift+Tab cycles, as Claude Code's, and how the bar names them.
+const MODES = ['manual', 'acceptEdits', 'auto'];
+const modeNames = { manual: '⏵ manual', default: '⏵ manual', acceptEdits: '⏵⏵ accept edits on', auto: '⏵⏵ auto mode on', bypassPermissions: '⏵⏵ bypass permissions on', dontAsk: '⏵⏵ don\'t ask on' };
+
+function cycleMode() {
+  const m = S.status?.mode;
+  send({ t: 'mode', mode: MODES[(MODES.indexOf(m) + 1) % MODES.length] });
+}
+
+function askChoices(q) {
+  return [['Yes', true, false], q.always && [`Yes, and don't ask again for ${homeTilde(q.always)}`, true, true], ['No, and tell Opt what to do differently (esc)', false, false]].filter(Boolean);
+}
+
+function answer(q, [, allow, always]) {
+  send({ t: 'answer', id: q.id, allow, always });
+  set({ asks: S.asks.filter(x => x.id !== q.id), askSel: 0 }); // at once: the server confirms
+  inputEl?.focus();
+}
+
+// askKey takes the keys for the question shown, unless the user is typing
+// a message: true when it took e.
+function askKey(e) {
+  const q = S.asks[0];
+  if (!q || S.picker || e.metaKey || e.ctrlKey || e.altKey) return false;
+  if (inputEl && inputEl.value && e.target === inputEl) return false;
+  if (e.target.tagName === 'TEXTAREA' && e.target !== inputEl) return false;
+  const choices = askChoices(q);
+  let sel = Math.min(S.askSel, choices.length - 1);
+  switch (e.key) {
+    case 'ArrowUp': sel = (sel + choices.length - 1) % choices.length; break;
+    case 'ArrowDown': sel = (sel + 1) % choices.length; break;
+    case 'Enter': answer(q, choices[sel]); break;
+    case 'Escape': answer(q, choices[choices.length - 1]); break;
+    default:
+      if (/^[1-9]$/.test(e.key) && +e.key <= choices.length) { answer(q, choices[+e.key - 1]); break; }
+      return false;
+  }
+  e.preventDefault();
+  e.stopPropagation();
+  if (S.asks[0] === q) set({ askSel: sel });
+  return true;
+}
+
+function askTitle(tool, x) {
+  switch (tool) {
+    case 'Bash': return 'Bash command';
+    case 'Edit': case 'MultiEdit': return 'Edit file';
+    case 'Write': return 'Create file';
+    case 'WebFetch': return 'Fetch';
+    case 'WebSearch': return 'Web search';
+    default: return tool;
+  }
+}
+
+function Ask({ q }) {
+  const x = q.input && typeof q.input === 'object' ? q.input : null;
+  const choices = askChoices(q), sel = Math.min(S.askSel, choices.length - 1);
+  return html`<div class="ask" role="dialog" aria-label="Permission">
+    <div class="title">${askTitle(q.tool, x)}${q.who ? html` <span class="dim">· [${q.who}] asks</span>` : ''}${S.asks.length > 1 ? html` <span class="dim">· ${S.asks.length - 1} more waiting</span>` : ''}</div>
+    <div class="what">
+      ${q.tool === 'Bash' && x ? html`<pre>${x.command}</pre>` : html`<div class="args">${q.tool}(${toolArgs(q.tool, x, JSON.stringify(q.input))})</div><${ToolInput} name=${q.tool} x=${x} raw=${JSON.stringify(q.input)}/>`}
+      ${q.desc && html`<div class="dim">${q.desc}</div>`}
+    </div>
+    <div>Do you want to proceed?</div>
+    <div class="choices">${choices.map((c, j) => html`<div class=${'row' + (j === sel ? ' sel' : '')} role="button" tabindex="-1" onClick=${() => answer(q, c)}>
+      <span class="ptr">${j === sel ? '❯' : ''}</span><span>${j + 1}. ${c[0]}</span></div>`)}</div>
+  </div>`;
+}
+
 // ---------------------------------------------------------------- the page
 
 const glyphs = ['·', '✢', '✳', '✶', '✻', '✽', '✻', '✶', '✳', '✢'];
@@ -890,7 +971,8 @@ function Spinner({ turn, chars, queued }) {
   }, []);
   const g = glyphs[Math.floor(Date.now() / 120) % glyphs.length];
   let verb = 'Thinking';
-  switch (turn.phase) {
+  switch (S.asks.length ? 'asks' : turn.phase) {
+    case 'asks': verb = 'Waiting for your permission'; break;
     case 'settling': verb = turn.backlog ? `Waiting for ${turn.backlog} message summar${turn.backlog === 1 ? 'y' : 'ies'}` : 'Getting ready'; break;
     case 'reading': verb = 'Reading memory'; break;
     case 'writing': verb = 'Writing'; break;
@@ -975,7 +1057,9 @@ function Footer() {
   }
   if (l) right.push(`last turn ↓${k(l.turn.output_tokens)}, ${k(l.turn.cache_read_input_tokens + l.view.cache_read_input_tokens)} cached`);
   const conn = { open: ['ok', '● connected'], connecting: ['', '○ connecting'], closed: ['bad', '● reconnecting'], denied: ['bad', '● no key'] }[S.conn];
+  const mode = s?.mode;
   return html`<div class="footer"><div class="segs">
+    ${mode && html`<span class=${'seg mode ' + mode}><button title="permission mode: Shift+Tab cycles manual, accept edits, auto" onClick=${cycleMode}>${modeNames[mode] || mode} <span class="hint">(shift+tab to cycle)</span></button></span>`}
     <span class="seg"><button onClick=${() => set({ help: !S.help })}>? for shortcuts</button></span>
     <span class=${'seg conn ' + conn[0]}>${conn[1]}</span>
     ${right.map(x => html`<span class="seg">${x}</span>`)}
@@ -991,6 +1075,7 @@ function Help() {
     ['↑ / ↓', 'your earlier messages; ↑ on an empty input edits the last queued'],
     ['drop · paste · 📎', 'attach files; a path you type (/… or ~/…) attaches its file'],
     ['Alt+P · /model', 'choose the model, ←/→ its effort'],
+    ['Shift+Tab', 'permission mode: manual, accept edits, auto'],
     ['/agents /help', 'subagents at work; the commands'],
   ];
   return html`<div class="help">${rows.map(([a, b]) => html`<kbd>${a}</kbd><span>${b}</span>`)}</div>`;
@@ -1074,6 +1159,7 @@ function App() {
     <div class="dock"><div class="column">
       ${S.turn.phase && html`<${Spinner} turn=${S.turn} chars=${S.turnChars} queued=${S.queue.length > 0}/>`}
       <${Queue} queue=${S.queue}/>
+      ${S.asks.length > 0 && !S.picker && html`<${Ask} q=${S.asks[0]}/>`}
       ${S.picker && html`<${Picker}/>`}
       <${Input}/>
       ${S.help && html`<${Help}/>`}
@@ -1103,8 +1189,14 @@ addEventListener('keydown', e => {
     if (S.picker) closePicker(); else openPicker();
     return;
   }
-  pickerKey(e);
-}, true); // before the input: while the picker is open, the keys are its
+  if (e.key === 'Tab' && e.shiftKey && !S.picker && !e.metaKey && !e.ctrlKey && !e.altKey) {
+    e.preventDefault();
+    e.stopPropagation();
+    cycleMode();
+    return;
+  }
+  pickerKey(e) || askKey(e);
+}, true); // before the input: while the picker or a question is up, the keys are theirs
 addEventListener('keydown', e => {
   if ((e.key === 'Enter' || e.key === ' ') && e.target.getAttribute?.('role') === 'button' && e.target.tagName !== 'BUTTON') {
     e.preventDefault(); // a card, a thumbnail or a copy, from the keyboard

@@ -18,6 +18,7 @@ type hub struct {
 	clients map[*client]bool
 	turn    liveTurn
 	queue   []queueItem
+	asks    []ask // tool calls waiting for the user's permission
 	status  status
 	last    *turnEnd
 	print   func(any) // the terminal's share of each update; nil: none
@@ -54,6 +55,10 @@ type (
 		T     string      `json:"t"` // queue
 		Queue []queueItem `json:"queue"`
 	}
+	asksUpdate struct {
+		T    string `json:"t"` // asks
+		Asks []ask  `json:"asks"`
+	}
 	statusUpdate struct {
 		T      string `json:"t"` // status
 		Status status `json:"status"`
@@ -78,6 +83,7 @@ type (
 		Reset  bool        `json:"reset"` // msgs are the last page, not the ones after the page's last
 		Turn   liveTurn    `json:"turn"`
 		Queue  []queueItem `json:"queue"`
+		Asks   []ask       `json:"asks"`
 		Status status      `json:"status"`
 		Last   *turnEnd    `json:"last"`
 		Inputs []string    `json:"inputs"` // the user's last messages, for Up
@@ -115,6 +121,7 @@ type status struct {
 	Written   int      `json:"written"` // lines built in this run
 	Model     string   `json:"model"`
 	Effort    string   `json:"effort"`
+	Mode      string   `json:"mode"` // the permission mode
 	Agents    []string `json:"agents"`
 	Dir       string   `json:"dir"`
 	Cwd       string   `json:"cwd"` // where Opt's tools run
@@ -211,9 +218,12 @@ func (h *hub) join(c *Chat, after, page int) *client {
 		from = c.whole(max(0, len(c.msgs)-page))
 	}
 	hello := helloUpdate{T: "hello", Msgs: c.msgs[from:], Total: len(c.msgs), Reset: reset, Turn: h.turn,
-		Queue: h.queue, Status: h.status, Last: h.last, Inputs: c.recentInputs(100)}
+		Queue: h.queue, Asks: h.asks, Status: h.status, Last: h.last, Inputs: c.recentInputs(100)}
 	if hello.Queue == nil {
 		hello.Queue = []queueItem{}
+	}
+	if hello.Asks == nil {
+		hello.Asks = []ask{}
 	}
 	b, err := json.Marshal(hello)
 	cl := &client{out: make(chan []byte, outbox)}
@@ -309,6 +319,13 @@ func (h *hub) setQueue(q []queueItem) {
 	h.send(queueUpdate{T: "queue", Queue: q})
 }
 
+func (h *hub) setAsks(asks []ask) {
+	if h == nil {
+		return
+	}
+	h.change(func() { h.asks = asks }, asksUpdate{T: "asks", Asks: asks})
+}
+
 func (h *hub) setStatus(s status) {
 	if h == nil {
 		return
@@ -398,7 +415,7 @@ func watchStatus(c *Chat, a *Agent, h *hub, stop <-chan struct{}) {
 
 func currentStatus(c *Chat, a *Agent) status {
 	a.mu.Lock()
-	s := status{Model: a.model, Effort: a.effort, Agents: sortedKeys(a.running), Cwd: a.cwd}
+	s := status{Model: a.model, Effort: a.effort, Mode: a.perm, Agents: sortedKeys(a.running), Cwd: a.cwd}
 	a.mu.Unlock()
 	c.mu.Lock()
 	defer c.mu.Unlock()

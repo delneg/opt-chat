@@ -234,7 +234,7 @@ func TestWebChat(t *testing.T) {
 		t.Fatalf("history: %v", u)
 	}
 	ws.send(map[string]any{"t": "send", "text": "/effort high", "seq": 2})
-	if u := ws.next("command", typ("notice")); u["s"] != "Turns: big, effort high." {
+	if u := ws.next("command", typ("notice")); u["s"] != "Turns: big, effort high, mode auto." {
 		t.Fatalf("a command: %v", u)
 	}
 	ws.send(map[string]any{"t": "send", "text": "x", "files": []attachment{{Name: "files/../web.json"}}, "seq": 3})
@@ -421,10 +421,12 @@ func TestWebModel(t *testing.T) {
 	if u := ws.next("chosen", typ("notice")); u["s"] != "Turns: default, effort low, from now on." {
 		t.Fatalf("a choice: %v", u)
 	}
-	ws.next("the bar", func(u map[string]any) bool {
-		s, _ := u["status"].(map[string]any)
-		return u["t"] == "status" && s["model"] == "default" && s["effort"] == "low"
-	})
+	wt.c.hub.mu.Lock() // the bar's update went out before the notice
+	st := wt.c.hub.status
+	wt.c.hub.mu.Unlock()
+	if st.Model != "default" || st.Effort != "low" {
+		t.Fatalf("the bar: %+v", st)
+	}
 	if s := loadSettings(wt.c.dir); s.Model != "default" {
 		t.Fatalf("saved %+v", s)
 	}

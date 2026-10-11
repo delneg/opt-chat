@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"fmt"
 	"os"
@@ -129,6 +130,34 @@ func fakeClaude() {
 			result(strings.Repeat("x", 600))
 		case strings.Contains(in, "Compaction:"):
 			result(fmt.Sprintf("line with %d images", images))
+		case strings.Contains(in, "ask-permission"):
+			// As Claude Code in manual mode: it asks, and waits for the
+			// answer, taking mode switches meanwhile.
+			say(block{Type: "tool_use", ID: "a1", Name: "Bash", Input: []byte(`{"command":"rm x"}`)})
+			emit(map[string]any{"type": "control_request", "request_id": "perm-1", "request": map[string]any{
+				"subtype": "can_use_tool", "tool_name": "Bash", "display_name": "Bash", "input": map[string]any{"command": "rm x"},
+				"description": "Remove x", "tool_use_id": "a1", "permission_suggestions": []map[string]any{
+					{"type": "addRules", "rules": []map[string]any{{"toolName": "Bash", "ruleContent": "rm *"}}, "behavior": "allow", "destination": "localSettings"}}}})
+			var modes []string
+			for l := range lines {
+				var r struct {
+					Type     string         `json:"type"`
+					Request  map[string]any `json:"request"`
+					Response struct {
+						RequestID string         `json:"request_id"`
+						Response  jsontext.Value `json:"response"`
+					} `json:"response"`
+				}
+				json.Unmarshal([]byte(l), &r)
+				if r.Type == "control_request" && r.Request["subtype"] == "set_permission_mode" {
+					modes = append(modes, r.Request["mode"].(string))
+				}
+				if r.Type == "control_response" && r.Response.RequestID == "perm-1" {
+					result(fmt.Sprintf("modes %v; %s", modes, r.Response.Response))
+					break
+				}
+				control(l)
+			}
 		case strings.Contains(in, "wait-for-message"):
 			say(textBlock("waiting"), block{Type: "tool_use", ID: "w1", Name: "Bash", Input: []byte(`{"command":"wait"}`)})
 			// as Claude Code ends the message while the tool runs

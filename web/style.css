@@ -177,6 +177,19 @@ a { color: var(--blue); }
 .cmds { padding: .2em 0; }
 .cmds .cmd { color: var(--dim); padding: 0 3ch; }
 .cmds .cmd.sel { color: var(--fg); background: var(--chip); }
+/* a tool call waiting for permission, as Claude Code asks */
+.ask { border: 1px solid var(--blue); border-radius: 6px; padding: .5em 1.5ch .6em; margin: .3em 0 .5em; display: flex; flex-direction: column; gap: .4em; }
+.ask .title { color: var(--blue); font-weight: 600; }
+.ask .dim { color: var(--dim); font-weight: normal; }
+.ask .args { color: var(--dim); }
+.ask pre { background: var(--code-bg); border: 1px solid var(--border); border-radius: 4px; padding: .5em .8em; margin: .2em 0; max-height: 30vh; overflow: auto; white-space: pre-wrap; word-break: break-word; }
+.ask .choices .row { display: grid; grid-template-columns: 2ch 1fr; cursor: pointer; }
+.ask .choices .row.sel { color: var(--blue); }
+.footer .mode button { color: var(--dim); }
+.footer .mode.acceptEdits button { color: #7a4fb5; }
+.footer .mode.auto button, .footer .mode.bypassPermissions button { color: var(--yellow); }
+.footer .mode .hint { color: var(--faint); }
+
 /* the model picker, as Claude Code's /model */
 .picker { padding: .5em 1ch .6em; display: flex; flex-direction: column; gap: .5em; }
 .picker .title { color: var(--blue); font-weight: 600; }

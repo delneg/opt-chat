@@ -36,7 +36,7 @@ func main() {
 	aeffort := flag.String("agent-effort", "high", "effort for subagents")
 	cmodel := flag.String("compact-model", "haiku", "model for compactions")
 	ceffort := flag.String("compact-effort", "high", "effort for compactions (the recipe's: xhigh)")
-	perm := flag.String("permission-mode", "auto", "Claude Code permission mode")
+	perm := flag.String("permission-mode", "auto", "Claude Code permission mode to start in: manual, acceptEdits or auto (Shift+Tab cycles them)")
 	tools := flag.String("tools", "Bash,Read,Edit,Write,WebSearch,WebFetch", "Claude Code tools")
 	importPath := flag.String("import", "", "import past chats, then chat: a ~/.claude or ~/.codex directory, a session's .jsonl, a Claude or ChatGPT export (.zip), or a text file whose lines become notes")
 	importSince := flag.String("import-since", "", "import only messages from this day on (YYYY-MM-DD)")
@@ -55,6 +55,9 @@ func main() {
 	}
 	if !given["effort"] && validEffort(saved.Effort) {
 		*effort = saved.Effort
+	}
+	if !validMode(*perm) {
+		fatal("-permission-mode must be one of %s", strings.Join(modes, ", "))
 	}
 	for name, e := range map[string]string{"effort": *effort, "agent-effort": *aeffort, "compact-effort": *ceffort} {
 		if !validEffort(e) {
@@ -154,7 +157,16 @@ func main() {
 				quit()
 				return
 			}
-			if out, ok := command(a, text); ok {
+			if q := a.firstAsk(); q != nil { // the line answers the question
+				switch strings.ToLower(strings.TrimSpace(text)) {
+				case "y", "yes", "1":
+					a.answer(q.ID, true, false)
+				case "a", "always", "2":
+					a.answer(q.ID, true, q.Always != "")
+				default:
+					a.answer(q.ID, false, false)
+				}
+			} else if out, ok := command(a, text); ok {
 				dim(out)
 			} else if strings.TrimSpace(text) != "" {
 				h.input(typed(c, text))
@@ -480,9 +492,15 @@ func command(a *Agent, line string) (string, bool) {
 	if m == nil {
 		return "", false
 	}
+	word, arg := strings.ToLower(m[1]), m[2]
+	if word == "mode" && arg != "" {
+		if err := a.setMode(arg); err != nil {
+			return err.Error() + ".", true
+		}
+	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	switch word, arg := strings.ToLower(m[1]), m[2]; {
+	switch {
 	case word == "model" && modelName.MatchString(arg):
 		a.model = arg
 	case word == "model" && arg != "":
@@ -491,7 +509,7 @@ func command(a *Agent, line string) (string, bool) {
 		a.effort = arg
 	case word == "effort" && arg != "":
 		return "effort must be one of " + joinEfforts() + ".", true
-	case word == "model" || word == "effort":
+	case word == "model" || word == "effort" || word == "mode":
 	case word == "agents":
 		names := slices.Sorted(maps.Keys(a.running))
 		if len(names) == 0 {
@@ -501,12 +519,13 @@ func command(a *Agent, line string) (string, bool) {
 	case word == "help":
 		return "/model [name]       show or set the model for turns, as -model (until quit)\n" +
 			"/effort [level]     show or set their effort: " + joinEfforts() + "\n" +
+			"/mode [mode]        show or set the permission mode: " + strings.Join(modes, ", ") + "\n" +
 			"/agents             list the subagents at work\n" +
 			"Ctrl-C stops the turn; Ctrl-C when idle, or Ctrl-D, quits.", true
 	default:
 		return "/" + m[1] + " is no command; nothing was sent. /help lists the commands.", true
 	}
-	return fmt.Sprintf("Turns: %s, effort %s.", a.model, a.effort), true
+	return fmt.Sprintf("Turns: %s, effort %s, mode %s.", a.model, a.effort, a.perm), true
 }
 
 func logAll(c *Chat, msgs []message) {
@@ -570,6 +589,23 @@ func replPrinter() func(any) {
 			}
 		case thoughtUpdate:
 			dim(u.S)
+		case asksUpdate:
+			if len(u.Asks) > 0 {
+				q := u.Asks[0]
+				who := "Opt"
+				if q.Who != "" {
+					who = "[" + q.Who + "]"
+				}
+				s := fmt.Sprintf("%s asks to run %s %s", who, q.Tool, oneLine(string(q.Input), 300))
+				if q.Desc != "" {
+					s += " (" + q.Desc + ")"
+				}
+				s += "\n  y: yes"
+				if q.Always != "" {
+					s += " · a: yes, and don't ask again for " + q.Always
+				}
+				warn("%s · anything else: no", s)
+			}
 		case noticeUpdate:
 			if u.Level == "warn" {
 				warn("%s", u.S)

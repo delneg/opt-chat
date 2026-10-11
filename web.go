@@ -272,6 +272,9 @@ type request struct {
 	Model  string       `json:"model"`  // model: the turns' model
 	Effort string       `json:"effort"` // model: their effort
 	Save   bool         `json:"save"`   // model: for later runs too
+	Mode   string       `json:"mode"`   // mode: the permission mode
+	Allow  bool         `json:"allow"`  // answer: yes
+	Always bool         `json:"always"` // answer: yes, and don't ask again
 }
 
 type (
@@ -450,6 +453,13 @@ func (w *webServer) serve(req request) any {
 			how = "from now on"
 		}
 		return noticeUpdate{T: "notice", Level: "info", S: fmt.Sprintf("Turns: %s, effort %s, %s.", req.Model, req.Effort, how)}
+	case "mode":
+		if err := h.agent.setMode(req.Mode); err != nil {
+			return noticeUpdate{T: "notice", Level: "warn", S: err.Error()}
+		}
+		c.hub.setStatus(currentStatus(c, h.agent))
+	case "answer":
+		h.agent.answer(req.ID, req.Allow, req.Always) // gone: answered elsewhere, or stopped
 	case "now":
 		h.sendNow()
 	case "stop":

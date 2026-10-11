@@ -129,6 +129,7 @@ func (a *Agent) runAgent(name, task, effort string) {
 		report(failed(err))
 		return
 	}
+	p.who = name // before its first message: its questions say who asks
 	acking := true
 	each := func(e event) {
 		if e.Parent != nil {

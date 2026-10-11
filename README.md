@@ -10,7 +10,7 @@ any line, down to the message itself, when it needs more detail.
 
 Claude Code is the tool loop. Every turn, subagent and compaction is a
 `claude -p` call on your Claude subscription. opt-chat owns the memory (the
-log, the tree, the view, and the `zoom`/`date`/`spawn`/`tell` tools, served
+log, the tree, the view, and the `zoom`/`date`/`search`/`spawn`/`tell` tools, served
 to those calls over MCP) and the chat's page, which you use in your browser,
 much as you use Claude Code in a terminal.
 
@@ -113,8 +113,8 @@ a change.
 | `-effort` | `high` | effort for turns: `low`, `medium`, `high`, `xhigh` or `max` |
 | `-agent-model` | `opus` | model for subagents |
 | `-agent-effort` | `high` | effort for subagents |
-| `-compact-model` | `haiku` | model for compactions |
-| `-compact-effort` | `high` | effort for compactions (the recipe's: `xhigh`) |
+| `-compact-model` | `sonnet` | model for compactions (the recipe's: `haiku`) |
+| `-compact-effort` | `medium` | effort for compactions |
 | `-permission-mode` | `auto` | permission mode to start in: `manual`, `acceptEdits` or `auto` |
 | `-tools` | `Bash,Read,Edit,Write,WebSearch,WebFetch` | Claude Code tools (with your setup, also `Skill` and `ToolSearch`) |
 | `-claude-config` | on | your Claude Code skills, plugins, MCP servers and settings in turns and subagents (below) |
@@ -183,13 +183,15 @@ merges of older lines go first, so the count of messages stays put for
 hours, and then falls. Quit whenever you like: the next run goes on where
 this one stopped.
 
-The time goes to the compaction model's thinking. Building one day of chats
-at each effort, Haiku 5.5 thought about 10,400 tokens a line at the recipe's
-`xhigh` (41 s a call), 2,600 at `high` (12 s) and 1,100 at `medium` (7 s).
-Lines at `high` read as well as at `xhigh`; at `medium` and below the model
-more often tried a tool or wrote about itself in a line. So compactions run
-at `high`: about 3x faster than at `xhigh`, on a quarter of the usage
-(`-compact-effort xhigh` for the recipe's).
+The time goes to the compaction model's thinking. Compactions run on Sonnet
+at `medium`, not the recipe's Haiku: in pi-optchat's blind tests (graded by
+Opus), Sonnet 5.5 at `medium` wrote better lines than Haiku 5.5 even at
+`xhigh` (78 against 69 of 100), with far fewer lines that invented a fact
+(4 against 21 of 60). It costs more of your plan's usage per line;
+`-compact-model haiku -compact-effort high` is the cheap way. Building one
+day of chats, Haiku 5.5 thought about 10,400 tokens a line at `xhigh` (41 s
+a call), 2,600 at `high` (12 s) and 1,100 at `medium` (7 s); at `medium` it
+more often tried a tool or wrote about itself in a line.
 
 ## Files
 
@@ -337,7 +339,7 @@ use three more:
    auto mode, on a model without it, adds a random "Exited Auto Mode: ask
    clarifying questions" mid-call. On one model, turns and compactions read
    each other's tools and system prompt from the cache (measured on Fable).
-   The cache is per model, so with the recipe's Haiku they can't.
+   The cache is per model, so with another model for compactions they can't.
 3. **A failed compaction** is tried again at your next message, as the recipe
    says, and on a timer, 10 s at first, doubled at each failure up to 10
    minutes, so a usage limit or an outage is not hammered. Meanwhile the
@@ -397,6 +399,18 @@ Everything else follows the recipe: the log and its kinds, the free nodes,
 20,001 steps), the 128 KB → 64 KB sawtooth, the 16–32 KB compaction view,
 the compaction tasks with ruler, cut and five tries, 8 parallel compactions,
 and ready-node queues (one pass at start finds the work the last run left).
+
+## Search
+
+`search(text, before)` finds the messages of the whole chat that hold a
+word or phrase, in any case, newest first, 20 at a time: each with a
+snippet, its date, and the view's line that holds it, which Opt then zooms
+into. The recipe has zoom alone, and a detail its lines dropped (a number,
+an error, a name) takes a dozen zooms to find or is never found.
+pi-optchat measured search with zoom against zoom alone: more questions
+answered right (26 of 38 against 24) in fewer zooms (2.4 an answer against
+6.0). Its own zoom, search and date calls and their results are left out of
+the hits.
 
 ## From UniiChat itself
 

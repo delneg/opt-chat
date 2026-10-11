@@ -407,7 +407,7 @@ func (w *webServer) ws(rw http.ResponseWriter, r *http.Request) {
 			write(noticeUpdate{T: "notice", Level: "warn", S: "bad request: " + err.Error()})
 			continue
 		}
-		if slow(req) { // asks Claude Code: the page's sends go on meanwhile
+		if slow(w.h.agent, req) { // asks Claude Code: the page's sends go on meanwhile
 			go func() {
 				if reply := w.serveSlow(ctx, req); reply != nil {
 					write(reply)
@@ -431,8 +431,8 @@ func (w *webServer) serve(req request) any {
 		if req.Key != "" && !w.firstSend(req.Key) {
 			return sentReply{T: "sent", Seq: req.Seq} // got it before the connection dropped
 		}
-		if out, ok := command(h.agent, req.Text); ok {
-			return noticeUpdate{T: "notice", Level: "info", S: out}
+		if reply, ok := w.command(h.agent, req); ok {
+			return reply
 		}
 		failed := func(err error) any { // not sent: sent again, it is tried again
 			w.forget(req.Key)
@@ -521,15 +521,28 @@ func (w *webServer) serve(req request) any {
 	return nil
 }
 
+// command runs a send that is a command, its answer going to every page;
+// false: a message. One that failed comes back to the page's input.
+func (w *webServer) command(a *Agent, req request) (any, bool) {
+	out, ok, err := command(a, req.Text)
+	switch {
+	case err != nil:
+		w.forget(req.Key)
+		return failedReply{T: "failed", Seq: req.Seq, S: err.Error() + "."}, true
+	case ok:
+		w.c.hub.send(noticeUpdate{T: "notice", Level: "info", S: out})
+		return sentReply{T: "sent", Seq: req.Seq}, true
+	}
+	return nil, false
+}
+
 // slow are the requests that ask Claude Code, which can take seconds.
-func slow(req request) bool {
+func slow(a *Agent, req request) bool {
 	switch req.T {
 	case "models", "mcp", "skills", "plugins", "files":
 		return true
 	case "send":
-		w, _, _ := strings.Cut(strings.TrimSpace(req.Text), " ")
-		w = strings.ToLower(w)
-		return w == "/mcp" || w == "/skills" || w == "/plugins"
+		return asks(a, req.Text)
 	}
 	return false
 }
@@ -549,10 +562,11 @@ func (w *webServer) serveSlow(ctx context.Context, req request) any {
 			items = []fileSuggestion{}
 		}
 		return filesReply{T: "files", Seq: req.Seq, Items: items}
-	case "send": // /mcp, /skills or /plugins
-		out, _ := command(a, req.Text)
-		w.c.hub.send(noticeUpdate{T: "notice", Level: "info", S: out}) // all pages: as a command's answer
-		return sentReply{T: "sent", Seq: req.Seq}
+	case "send": // /mcp, /skills or /plugins, or a /word that may be a skill's
+		if reply, ok := w.command(a, req); ok {
+			return reply
+		}
+		return w.serve(req) // a skill's, listed now: a message
 	case "mcp":
 		if !a.ownConfig {
 			return mcpReply{T: "mcp", Servers: []mcpServer{}, Error: "Opt runs without your Claude Code setup (-claude-config=false)."}

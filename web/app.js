@@ -40,7 +40,9 @@ const S = {
   askSel: 0,
   panel: null, // /mcp, /skills or /plugins, open: { kind, sel, busy, error, signIn, name }
   mcp: null, // the user's MCP servers, once asked
-  skills: null, // and skills
+  skills: null, // and skills, asked as the page opens: the / menu offers them
+  cmdSel: 0, // the / menu's chosen line
+  cmdShut: null, // the input the / menu was shut on (Esc)
   plugins: null, // and plugins
   mention: null, // the @ menu, open: { start, query, items, sel }
   picker: null, // the model picker, open: { sel, effort }
@@ -125,6 +127,7 @@ function onUpdate(u) {
       for (const s of sending.values()) send(s.payload); // the connection may have dropped it: the key makes it once
       if (S.panel) { set({ panel: { ...S.panel, busy: true, acting: false } }); send({ t: S.panel.kind }); } // a reply lost with the connection
       if (S.picker && (!S.models || S.modelsError)) send({ t: 'models' });
+      if (S.panel?.kind !== 'skills') send({ t: 'skills' }); // for the / menu
       break;
     }
     case 'msgs': {
@@ -177,6 +180,7 @@ function onUpdate(u) {
         if (u.action || u.error) p.error = u.error || ''; // a poll keeps an action's error
       }
       set({ [u.t]: u.t === 'mcp' ? u.servers : u[u.t], panel: p });
+      if (u.t === 'plugins' && u.action) send({ t: 'skills' }); // theirs came or went
       break;
     }
     case 'restore': if (u.note) notice('info', u.note); restore(u.text, u.files); break;
@@ -339,6 +343,7 @@ function Mention() {
 const commands = [
   ['/model', 'choose the model and effort for turns (Alt+P)'],
   ['/effort', 'show or set their effort'],
+  ['/mode', 'show or set the permission mode (Shift+Tab)'],
   ['/mcp', 'your Claude Code MCP servers: status, on or off, sign in'],
   ['/skills', 'your Claude Code skills: on or off'],
   ['/plugins', 'your Claude Code plugins, their skills and MCP servers at once: on or off'],
@@ -346,9 +351,39 @@ const commands = [
   ['/help', 'list the commands'],
 ];
 
+// The / menu: the commands and the user's skills (Claude Code runs a
+// skill's /name sent to Opt) that the input starts, a plugin's skills by
+// their own name too; none once it names one alone, or was shut.
 function suggestions(text) {
-  if (!/^\/\w*$/.test(text)) return [];
-  return commands.filter(([c]) => c.startsWith(text) && c !== text);
+  if (!/^\/[\w:.-]*$/.test(text) || text === S.cmdShut) return [];
+  const t = text.toLowerCase();
+  const skills = (S.skills || []).filter(s => s.state !== 'off' && !commands.some(([c]) => c === '/' + s.name))
+    .map(s => ['/' + s.name, s.description]).sort(([a], [b]) => a.localeCompare(b));
+  const all = commands.concat(skills).filter(([c]) => c.toLowerCase().startsWith(t) || c.toLowerCase().includes(':' + t.slice(1)));
+  const exact = all.findIndex(([c]) => c === text);
+  if (exact >= 0) all.unshift(...all.splice(exact, 1)); // what it names, first: Enter runs it
+  return all.length === 1 && exact >= 0 ? [] : all;
+}
+
+function isCommand(text) { // one of Opt's own, not a skill's
+  const w = text.match(/^\/(\S*)/)?.[1].toLowerCase();
+  return w !== undefined && commands.some(([c]) => c === '/' + w);
+}
+
+function takeCmd(c, run) {
+  setInput(run ? c : c + ' ');
+  set({ cmdSel: 0 });
+  if (run) submit(false);
+}
+
+function Cmds({ sugg }) {
+  const sel = Math.min(S.cmdSel, sugg.length - 1);
+  const from = Math.max(0, Math.min(sel - 4, sugg.length - 8)); // 8 at most, the chosen one in them
+  return html`<div class="cmds">${sugg.slice(from, from + 8).map(([c, d], k) => {
+    const j = from + k;
+    return html`<div class=${'cmd' + (j === sel ? ' sel' : '')} onMouseDown=${e => { e.preventDefault(); takeCmd(c, false); }}>
+      <span class="name">${c}</span>${d ? '  ' + d : ''}</div>`;
+  })}${sugg.length > 8 ? html`<div class="cmd more">${sel + 1} of ${sugg.length} · ↑↓ · Tab completes · Enter runs</div>` : ''}</div>`;
 }
 
 let submitting = false; // waiting for uploads: a second Enter sends nothing more
@@ -384,7 +419,7 @@ async function submit(now) {
   const payload = { t: 'send', text, files, paths, skip: [...S.skipped], chosen: [...S.chosen], now, seq, key: pageKey + ':' + seq };
   if (!send(payload)) return;
   sending.set(seq, { payload, text, files: S.atts });
-  if (histText(text) && !text.startsWith('/')) set({ inputs: mergeInputs(S.inputs, [histText(text)]) });
+  if (histText(text) && !isCommand(text)) set({ inputs: mergeInputs(S.inputs, [histText(text)]) });
   if (inputEl.value === text) setInput('');
   histPos = -1;
   set({ atts: [], paths: [], skipped: new Set(), chosen: new Set() });
@@ -410,10 +445,17 @@ function onKey(e) {
   if (e.key === 'Enter' && e.timeStamp - composedAt < 100) { e.preventDefault(); return; }
   if (e.key === '?' && !el.value) { e.preventDefault(); set({ help: !S.help }); return; }
   const sugg = suggestions(el.value);
-  if (e.key === 'Tab' && sugg.length) {
-    e.preventDefault();
-    setInput(sugg[0][0] + ' ');
-    return;
+  if (sugg.length && !e.shiftKey && !e.altKey && !e.metaKey && !e.ctrlKey) {
+    const sel = Math.min(S.cmdSel, sugg.length - 1);
+    switch (e.key) {
+      case 'ArrowDown': case 'ArrowUp':
+        e.preventDefault();
+        set({ cmdSel: (sel + (e.key === 'ArrowDown' ? 1 : sugg.length - 1)) % sugg.length });
+        return;
+      case 'Tab': e.preventDefault(); takeCmd(sugg[sel][0], false); return;
+      case 'Enter': e.preventDefault(); takeCmd(sugg[sel][0], true); return;
+      case 'Escape': e.preventDefault(); set({ cmdShut: el.value }); return; // the menu, not the turn
+    }
   }
   if (e.key === 'Enter' && !e.shiftKey && !e.altKey) {
     e.preventDefault();
@@ -1459,12 +1501,12 @@ function Input() {
   const sugg = inputEl ? suggestions(inputEl.value) : [];
   return html`
     <${Mention}/>
-    ${sugg.length > 0 && html`<div class="cmds">${sugg.map(([c, d], j) => html`<div class=${'cmd' + (j ? '' : ' sel')}>${c}  ${d}${j ? '' : '  (tab)'}</div>`)}</div>`}
+    ${sugg.length > 0 && html`<${Cmds} sugg=${sugg}/>`}
     <div class="box">
       <${Chips}/>
       <span class="gt">></span>
       <textarea ref=${ref} rows="1" spellcheck="false" aria-label="Message Opt" placeholder=${S.turn.phase ? 'Queue a message for Opt…' : 'Message Opt'}
-        onInput=${() => { histPos = -1; autosize(); placesGone(); lookForPaths(); lookForMention(); tick(n => n + 1); }}
+        onInput=${() => { histPos = -1; if (S.cmdSel || S.cmdShut !== null) set({ cmdSel: 0, cmdShut: null }); autosize(); placesGone(); lookForPaths(); lookForMention(); tick(n => n + 1); }}
         onKeyUp=${e => { if (e.key.startsWith('Arrow') || e.key === 'Home' || e.key === 'End') lookForMention(); }}
         onClick=${lookForMention}
         onBlur=${() => S.mention && set({ mention: null })}

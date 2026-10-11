@@ -37,6 +37,7 @@ type Agent struct {
 	mcpOff          []string          // of those servers, the ones the user turned off here
 	skillsSet       map[string]string // the user's skills' states set here: on, off, ...
 	pluginsSet      map[string]bool   // and plugins turned on or off here, by name@marketplace
+	skillsListed    []skill           // the skills Claude Code listed last, in its own states
 	mcpUp           []string          // the servers connected when the last call sent its view: see mcpSettle
 	mcpSeen         []string          // and those listed then
 

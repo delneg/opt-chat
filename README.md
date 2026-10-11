@@ -78,8 +78,13 @@ The page works like Claude Code:
   pick, ←/→ for the effort. Enter keeps the choice for later runs too (in
   `<dir>/settings.json`; a `-model` or `-effort` flag wins over it), `s`
   for this run only, Esc cancels. `/model opus` and `/effort high` switch
-  them until you quit. `/agents` lists the subagents at work, `/help` the commands; Tab
-  completes them. A line starting with any other `/word` is not sent.
+  them until you quit. `/agents` lists the subagents at work, `/help` the commands.
+- `/name` runs one of your skills, as in Claude Code: the line goes to Opt
+  and Claude Code runs the skill, with what follows the name as its
+  arguments. Typing `/` lists the commands and your skills (a plugin's by
+  their own name too): ↑/↓ choose, Tab completes, Enter runs the chosen
+  one, Esc shuts the list. A line starting with any other `/word`, or with
+  a skill turned off in `/skills`, is not sent: it comes back to the input.
 - Shift+Tab cycles the permission mode, as in Claude Code: manual (only
   reads go ahead unasked), accept edits (file edits too), auto (whatever
   Claude Code's classifier deems safe). The switch reaches the turn and

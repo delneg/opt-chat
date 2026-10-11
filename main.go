@@ -172,7 +172,9 @@ func main() {
 				}
 				a.answer(q.ID, false, false) // anything else: no, and the line is what to do instead
 			}
-			if out, ok := command(a, text); ok {
+			if out, ok, err := command(a, text); err != nil {
+				dim(err.Error() + ".")
+			} else if ok {
 				dim(out)
 			} else if strings.TrimSpace(text) != "" {
 				h.input(typed(c, text))
@@ -486,25 +488,36 @@ func (h *harness) loop() {
 }
 
 var (
-	commandWord = regexp.MustCompile(`(?s)^\s*/([A-Za-z]+)(?:\s+(.*?))?\s*$`) // "/word args", never a path like /Users/me/shot.png
+	commandWord = regexp.MustCompile(`(?s)^\s*/([A-Za-z][\w:.-]*)(?:\s+(.*?))?\s*$`) // "/word args", never a path like /Users/me/shot.png
 	modelName   = regexp.MustCompile(`^[\w.:\[\]-]+$`)
+	commands    = []string{"model", "effort", "mode", "mcp", "skills", "plugins", "agents", "help"}
 )
 
 // command runs a line that starts with /word, and says what it did; false
-// for a message. A /word that is no command is not sent either, as in
-// UniiChat: a typo never reaches the chat for good.
-func command(a *Agent, line string) (string, bool) {
+// for a message, which a /word naming one of the user's skills is: Claude
+// Code runs the skill. Any other /word is not sent either, as in UniiChat: a
+// typo never reaches the chat for good. An error: nothing was done.
+func command(a *Agent, line string) (string, bool, error) {
 	m := commandWord.FindStringSubmatch(line)
 	if m == nil {
-		return "", false
+		return "", false, nil
 	}
 	word, arg := strings.ToLower(m[1]), m[2]
+	if !slices.Contains(commands, word) {
+		switch st, _ := a.skillState(m[1], false); st {
+		case "":
+			return "", true, fmt.Errorf("/%s is no command; nothing was sent. /help lists the commands", m[1])
+		case "off":
+			return "", true, fmt.Errorf("/%s is a skill turned off for Opt; nothing was sent. /skills turns it on", m[1])
+		}
+		return "", false, nil
+	}
 	if word == "mcp" || word == "skills" || word == "plugins" { // asks Claude Code: outside a.mu
-		return configCommand(a, word, arg), true
+		return configCommand(a, word, arg), true, nil
 	}
 	if word == "mode" && arg != "" {
 		if err := a.setMode(arg); err != nil {
-			return err.Error() + ".", true
+			return "", true, err
 		}
 	}
 	a.mu.Lock()
@@ -513,18 +526,18 @@ func command(a *Agent, line string) (string, bool) {
 	case word == "model" && modelName.MatchString(arg):
 		a.model = arg
 	case word == "model" && arg != "":
-		return "A model is one word, as for -model: fable, opus, sonnet, or a full name.", true
+		return "", true, errors.New("a model is one word, as for -model: fable, opus, sonnet, or a full name")
 	case word == "effort" && validEffort(arg):
 		a.effort = arg
 	case word == "effort" && arg != "":
-		return "effort must be one of " + joinEfforts() + ".", true
+		return "", true, errors.New("effort must be one of " + joinEfforts())
 	case word == "model" || word == "effort" || word == "mode":
 	case word == "agents":
 		names := slices.Sorted(maps.Keys(a.running))
 		if len(names) == 0 {
-			return "No subagent is at work.", true
+			return "No subagent is at work.", true, nil
 		}
-		return "At work: [" + strings.Join(names, "], [") + "]. Each one's steps: " + filepath.Join(a.chat.dir, "agents", "<Name>.log"), true
+		return "At work: [" + strings.Join(names, "], [") + "]. Each one's steps: " + filepath.Join(a.chat.dir, "agents", "<Name>.log"), true, nil
 	case word == "help":
 		return "/model [name]       show or set the model for turns, as -model (until quit)\n" +
 			"/effort [level]     show or set their effort: " + joinEfforts() + "\n" +
@@ -533,11 +546,26 @@ func command(a *Agent, line string) (string, bool) {
 			"/skills [on|off name] your Claude Code skills: list them, or turn one on or off for Opt\n" +
 			"/plugins [on|off id] your Claude Code plugins (skills and MCP servers together), as name@marketplace\n" +
 			"/agents             list the subagents at work\n" +
-			"Ctrl-C stops the turn; Ctrl-C when idle, or Ctrl-D, quits.", true
-	default:
-		return "/" + m[1] + " is no command; nothing was sent. /help lists the commands.", true
+			"/<skill> [args]     run one of your skills, as in Claude Code\n" +
+			"Ctrl-C stops the turn; Ctrl-C when idle, or Ctrl-D, quits.", true, nil
 	}
-	return fmt.Sprintf("Turns: %s, effort %s, mode %s.", a.model, a.effort, a.perm), true
+	return fmt.Sprintf("Turns: %s, effort %s, mode %s.", a.model, a.effort, a.perm), true, nil
+}
+
+// asks says whether command would ask Claude Code, which can take seconds:
+// for its config, or for a skill not listed lately.
+func asks(a *Agent, line string) bool {
+	m := commandWord.FindStringSubmatch(line)
+	if m == nil {
+		return false
+	}
+	switch word := strings.ToLower(m[1]); word {
+	case "mcp", "skills", "plugins":
+		return true
+	default:
+		_, known := a.skillState(m[1], true)
+		return !slices.Contains(commands, word) && !known
+	}
 }
 
 func logAll(c *Chat, msgs []message) {

@@ -52,31 +52,62 @@ func TestCommand(t *testing.T) {
 	for _, step := range []struct{ in, out string }{
 		{"/model", "Turns: fable, effort high, mode auto."},
 		{" /model opus ", "Turns: opus, effort high, mode auto."},
-		{"/model opus please", "A model is one word, as for -model: fable, opus, sonnet, or a full name."},
+		{"/model opus please", "a model is one word, as for -model: fable, opus, sonnet, or a full name"},
 		{"/effort low", "Turns: opus, effort low, mode auto."},
-		{"/effort lots", "effort must be one of low, medium, high, xhigh, max."},
-		{"/effort default", "effort must be one of low, medium, high, xhigh, max."},
+		{"/effort lots", "effort must be one of low, medium, high, xhigh, max"},
+		{"/effort default", "effort must be one of low, medium, high, xhigh, max"},
 		{"/EFFORT max", "Turns: opus, effort max, mode auto."},
 		{"/mode manual", "Turns: opus, effort max, mode manual."},
-		{"/mode sideways", "\"sideways\" is no permission mode: manual, acceptEdits, auto."},
+		{"/mode sideways", "\"sideways\" is no permission mode: manual, acceptEdits, auto"},
 		{"/agents", "No subagent is at work."},
-		{"/fix this\nand that", "/fix is no command; nothing was sent. /help lists the commands."},
+		{"/fix this\nand that", "/fix is no command; nothing was sent. /help lists the commands"},
+		{"/review-simple", "/review-simple is no command; nothing was sent. /help lists the commands"},
 	} {
-		if out, ok := command(a, step.in); !ok || out != step.out {
+		out, ok, err := command(a, step.in)
+		if err != nil {
+			out = err.Error()
+		}
+		if !ok || out != step.out {
 			t.Fatalf("%q: %q, %v; want %q", step.in, out, ok, step.out)
 		}
 	}
 	a.running["Scout"], a.running["Ann"] = nil, nil
-	if out, _ := command(a, "/agents"); !strings.HasPrefix(out, "At work: [Ann], [Scout]. ") {
+	if out, _, _ := command(a, "/agents"); !strings.HasPrefix(out, "At work: [Ann], [Scout]. ") {
 		t.Fatal(out)
 	}
-	if out, _ := command(a, "/help"); !strings.Contains(out, "/effort [level]") {
+	if out, _, _ := command(a, "/help"); !strings.Contains(out, "/effort [level]") {
 		t.Fatal(out)
 	}
 	for _, msg := range []string{"/Users/me/shot.png what is it?", "hi /model", "/ x", "/12"} {
-		if out, ok := command(a, msg); ok {
-			t.Fatalf("%q taken as a command: %q", msg, out)
+		if out, ok, err := command(a, msg); ok || err != nil {
+			t.Fatalf("%q taken as a command: %q, %v", msg, out, err)
 		}
+	}
+}
+
+// A /name of one of the user's skills goes to Opt, for Claude Code to run
+// the skill; one turned off for Opt is held back, as a typo is.
+func TestSkillCommand(t *testing.T) {
+	c, _ := fakeChat(t, t.TempDir(), 100)
+	a, _ := fakeAgent(t, c)
+	a.ownConfig = true
+	if !asks(a, "/one") || !asks(a, "/mcp") || asks(a, "/model x") || asks(a, "hi") {
+		t.Fatal("asks: not as listed")
+	}
+	for _, msg := range []string{"/one", "/one look at main.go", "/plug:two"} {
+		if out, ok, err := command(a, msg); ok || err != nil {
+			t.Fatalf("%q taken as a command: %q, %v", msg, out, err)
+		}
+	}
+	if asks(a, "/one x") || !asks(a, "/three") { // listed now: answered at once; another is asked
+		t.Fatal("asks: the listing not kept")
+	}
+	a.skillsSet = map[string]string{"one": "off"}
+	if _, ok, err := command(a, "/one x"); !ok || err == nil || err.Error() != "/one is a skill turned off for Opt; nothing was sent. /skills turns it on" {
+		t.Fatal(ok, err)
+	}
+	if _, ok, err := command(a, "/One"); !ok || err == nil {
+		t.Fatal("a skill's name taken in another case:", ok, err)
 	}
 }
 

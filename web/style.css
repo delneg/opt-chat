@@ -179,7 +179,9 @@ a { color: var(--blue); }
 .help { color: var(--dim); font-size: .9em; padding: .4em 1ch; display: grid; grid-template-columns: max-content 1fr; gap: .1em 3ch; }
 .help kbd { color: var(--fg); font-family: inherit; }
 .cmds { padding: .2em 0; }
-.cmds .cmd { color: var(--dim); padding: 0 3ch; }
+.cmds .cmd { color: var(--dim); padding: 0 3ch; white-space: pre; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
+.cmds .cmd .name { color: var(--fg); }
+.cmds .cmd.more { color: var(--faint); cursor: default; }
 .cmds .cmd.sel { color: var(--fg); background: var(--chip); }
 .cmds.mention .cmd { cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .cmds.mention .cmd.dir { color: var(--blue); }

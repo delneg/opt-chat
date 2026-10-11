@@ -244,17 +244,48 @@ func (a *Agent) skills(ctx context.Context) ([]skill, error) {
 	if err := json.Unmarshal(v, &r); err != nil {
 		return nil, err
 	}
-	if r.Skills == nil {
-		r.Skills = []skill{}
-	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	for i, s := range r.Skills {
+	a.skillsListed = r.Skills
+	return a.skillsHere(), nil
+}
+
+// skillsHere are the skills listed last, in the states set here. Under a.mu.
+func (a *Agent) skillsHere() []skill {
+	ss := append([]skill{}, a.skillsListed...)
+	for i, s := range ss {
 		if st, ok := a.skillsSet[s.Name]; ok && (s.LockedBy == "" || s.LockedBy == "flag") {
-			r.Skills[i].State, r.Skills[i].LockedBy = st, "" // "flag": locked by our own settings
+			ss[i].State, ss[i].LockedBy = st, "" // "flag": locked by our own settings
 		}
 	}
-	return r.Skills, nil
+	return ss
+}
+
+// skillState is the state for Opt of the user's skill so named, "" for no
+// skill (or none to be had: without the user's setup, Claude Code takes no
+// /name). One not listed last is asked of Claude Code, unless fast.
+func (a *Agent) skillState(name string, fast bool) (string, bool) {
+	if !a.ownConfig {
+		return "", true
+	}
+	find := func(ss []skill) (string, bool) {
+		i := slices.IndexFunc(ss, func(s skill) bool { return s.Name == name })
+		if i < 0 {
+			return "", false
+		}
+		return ss[i].State, true
+	}
+	a.mu.Lock()
+	st, ok := find(a.skillsHere())
+	a.mu.Unlock()
+	if ok || fast {
+		return st, ok
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	ss, _ := a.skills(ctx)
+	st, _ = find(ss)
+	return st, true
 }
 
 var skillStates = []string{"on", "name-only", "user-invocable-only", "off"}

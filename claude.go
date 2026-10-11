@@ -786,7 +786,7 @@ func (t *Turn) Run(ctx context.Context, msgs []message) error {
 	partial, from := len(c.ready0), len(c.msgs)
 	c.mu.Unlock()
 	h.setTurn(func(lt *liveTurn) {
-		lt.Phase, lt.Partial, lt.From, lt.Backlog, lt.Written, lt.Tool = "reading", partial, from, 0, 0, ""
+		lt.Phase, lt.Partial, lt.From, lt.Backlog, lt.Written, lt.Tool, lt.Context = "reading", partial, from, 0, 0, "", 0
 	})
 	var input []block
 	a.mu.Lock()
@@ -814,6 +814,7 @@ func (t *Turn) Run(ctx context.Context, msgs []message) error {
 	acking := true
 	var written strings.Builder   // the reply being written, until it is logged
 	done, out, thought := 0, 0, 0 // output tokens: of the replies before, this one's, its thinking's estimate
+	context := 0                  // the biggest request's input tokens
 	phase := func(p, tool string) {
 		h.setTurn(func(lt *liveTurn) { lt.Phase, lt.Tool, lt.Tokens = p, tool, done+max(out, thought) })
 	}
@@ -832,6 +833,9 @@ func (t *Turn) Run(ctx context.Context, msgs []message) error {
 			switch s.Type {
 			case "message_start":
 				done, out, thought = done+out, s.Message.Usage.Output, 0
+				in := s.Message.Usage.Input + s.Message.Usage.Read + s.Message.Usage.Write
+				context = max(context, in)
+				h.setTurn(func(lt *liveTurn) { lt.Context = in })
 				phase("thinking", "")
 			case "message_delta": // the message's end, as the tool it called starts: the phase stays
 				out = s.Usage.Output
@@ -951,7 +955,7 @@ func (t *Turn) Run(ctx context.Context, msgs []message) error {
 		c.Log("opt", s+" [interrupted]")
 	}
 	n, cu := a.takeCompactions()
-	h.ended(turnEnd{View: vu, Turn: u, Compactions: n, CUsage: cu})
+	h.ended(turnEnd{View: vu, Turn: u, Context: context, Compactions: n, CUsage: cu})
 	return err
 }
 

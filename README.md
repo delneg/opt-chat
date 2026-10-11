@@ -98,7 +98,9 @@ The page works like Claude Code:
   the next line answers: y, a, n, or anything else for no with that line
   sent to Opt as what to do instead.
 - The bar at the bottom shows the memory: messages, the view's size, what is
-  left to summarize, and the last turn's tokens. `?` on an empty input lists
+  left to summarize, and the last turn's context (the tokens its biggest
+  request read: the view, the prompt and tools, your message, its steps) and
+  output; the spinner shows the context as the turn goes. `?` on an empty input lists
   the shortcuts. While a reply lands in a tab in the background, its title
   says so.
 

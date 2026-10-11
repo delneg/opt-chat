@@ -95,6 +95,7 @@ type liveTurn struct {
 	Phase    string `json:"phase"`            // "" idle, settling, reading, thinking, writing, tool
 	Since    int64  `json:"since,omitzero"`   // when it started, Unix ms
 	Tokens   int    `json:"tokens,omitzero"`  // output tokens so far
+	Context  int    `json:"context,omitzero"` // tokens the model reads in its latest request: the view, the prompt and the turn so far
 	Tool     string `json:"tool,omitzero"`    // phase tool: the one running
 	Backlog  int    `json:"backlog,omitzero"` // settling: messages left to summarize
 	Written  int    `json:"written,omitzero"` // settling: lines written since it began
@@ -131,13 +132,14 @@ type status struct {
 type turnEnd struct {
 	View        usage `json:"view"`
 	Turn        usage `json:"turn"`
+	Context     int   `json:"context"` // tokens of the turn's biggest request
 	Compactions int   `json:"compactions"`
 	CUsage      usage `json:"cusage"`
 	At          int64 `json:"at"`
 }
 
 func (u turnEnd) String() string {
-	return fmt.Sprintf("[view: %s | turn: %s | %d compactions: %s]", u.View, u.Turn, u.Compactions, u.CUsage)
+	return fmt.Sprintf("[context %.1fk | view: %s | turn: %s | %d compactions: %s]", float64(u.Context)/1000, u.View, u.Turn, u.Compactions, u.CUsage)
 }
 
 // send hands v to every page and to the terminal. The caller may hold

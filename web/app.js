@@ -1428,6 +1428,7 @@ function Spinner({ turn, chars, queued }) {
   const meta = [elapsed(Date.now() - (turn.since || Date.now()))];
   const tokens = (turn.tokens || 0) + Math.round(chars / 4);
   if (tokens) meta.push(`↓ ${k(tokens)} tokens`);
+  if (turn.context) meta.push(html`<span title="tokens the model reads in its latest request: the view, the prompt, your message and the turn so far">${k(turn.context)} context</span>`);
   if (turn.phase === 'settling' && turn.written) meta.push(`${count(turn.written, 'line')} written`);
   meta.push(html`<button title="stop the turn" onClick=${() => send({ t: 'stop' })}>esc to interrupt</button>`);
   if (queued || turn.phase === 'settling') meta.push(html`<button title="stop the turn and send the queue now" onClick=${() => send({ t: 'now' })}>⌘⏎ send now</button>`);
@@ -1511,7 +1512,7 @@ function Footer() {
     if (s.failing) right.push(html`<span class="conn bad">${s.failing} failing, retrying</span>`);
     if (s.agents?.length) right.push(`agents: ${s.agents.map(a => '[' + a + ']').join(' ')}`);
   }
-  if (l) right.push(`last turn ↓${k(l.turn.output_tokens)}, ${k(l.turn.cache_read_input_tokens + l.view.cache_read_input_tokens)} cached`);
+  if (l) right.push(html`<span title="the turn's biggest request: the view, the prompt, your message and its steps; and what it wrote">last turn ${l.context ? k(l.context) + ' context, ' : ''}↓${k(l.turn.output_tokens)}</span>`);
   const conn = { open: ['ok', '● connected'], connecting: ['', '○ connecting'], closed: ['bad', '● reconnecting'], denied: ['bad', '● no key'] }[S.conn];
   const mode = s?.mode;
   return html`<div class="footer"><div class="segs">

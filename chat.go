@@ -812,6 +812,13 @@ func (c *Chat) viewLine(i int) key {
 	return key{0, i}
 }
 
+// viewNow is the view as a call would see it now.
+func (c *Chat) viewNow() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.callView()
+}
+
 func (c *Chat) Date(id int) string {
 	c.mu.Lock()
 	defer c.mu.Unlock()

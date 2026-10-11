@@ -553,7 +553,7 @@ func command(a *Agent, line string) (string, bool, error) {
 		return "/model [name]       show or set the model for turns, as -model (until quit)\n" +
 			"/effort [level]     show or set their effort: " + joinEfforts() + "\n" +
 			"/mode [mode]        show or set the permission mode: " + strings.Join(modes, ", ") + "\n" +
-			"/autocompact [tokens|off] show or set when subagents' contexts compact, as 250k (never the chat's)\n" +
+			"/autocompact [tokens|off] compact a subagent at rest, after a report, past this context, as 250k (never the chat's)\n" +
 			"/mcp [on|off name]  your Claude Code MCP servers: list them, or turn one on or off for Opt\n" +
 			"/skills [on|off name] your Claude Code skills: list them, or turn one on or off for Opt\n" +
 			"/plugins [on|off id] your Claude Code plugins (skills and MCP servers together), as name@marketplace\n" +
@@ -580,10 +580,11 @@ func asks(a *Agent, line string) bool {
 	}
 }
 
-const windowMin, windowMax = 100_000, 1_000_000 // Claude Code's --autocompact
+const windowMin, windowMax = 100_000, 1_000_000 // a subagent's compaction window
 
-// autocompact shows or sets the window at which subagents' contexts compact,
-// for good (settings.json). The chat's own calls never compact: see start.
+// autocompact shows or sets the context past which a subagent is compacted
+// at rest, for good (settings.json). The chat's own calls never compact:
+// see start.
 func autocompact(a *Agent, arg string) (string, bool, error) {
 	if arg = strings.ToLower(strings.TrimSpace(arg)); arg != "" {
 		n := 0
@@ -610,9 +611,9 @@ func autocompact(a *Agent, arg string) (string, bool, error) {
 	n := a.agentWindow
 	a.mu.Unlock()
 	if n == 0 {
-		return "Subagents' contexts never compact (/autocompact 250k: at 250k tokens). The chat's own never do.", true, nil
+		return "Subagents' contexts never compact (/autocompact 250k: when one has reported past 250k tokens). The chat's own never do.", true, nil
 	}
-	return fmt.Sprintf("Subagents' contexts compact at %dk tokens, and each then gets the view and its task again. The chat's own never do.", n/1000), true, nil
+	return fmt.Sprintf("A subagent that has reported past %dk tokens of context is compacted then, at rest, never mid-step; its next message brings the view and its task again. The chat's own never compact.", n/1000), true, nil
 }
 
 func logAll(c *Chat, msgs []message) {

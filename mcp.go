@@ -74,7 +74,7 @@ var (
 		tool("spawn", `Start a subagent on a task, in the background, and return at once. Its report comes back as a message starting "[Name]". Never wait for it. `+
 			"effort: how long it thinks first; more is smarter and slower. Leave it out for the default. "+
 			"model: the Claude it runs on: opus (the default), fable, sonnet, haiku, or a full model name; leave it out unless the user asks for one. "+
-			"autocompact: for a long task, the context size in tokens at which Claude Code compacts the subagent's context, which then gets the view and its task again; leave it out for the user's setting (/autocompact).",
+			"autocompact: for a long task, a context size in tokens: once the subagent has reported past it, opt-chat compacts it at rest, never mid-step, and its next message (a tell) brings the view and its task again; leave it out for the user's setting (/autocompact).",
 			schema([]string{"name", "task"}, map[string]any{"name": str, "task": str, "effort": map[string]any{"type": "string", "enum": efforts}, "model": str,
 				"autocompact": map[string]any{"type": "integer", "minimum": windowMin, "maximum": windowMax}})),
 		tool("tell", "Send a subagent a message. A running one gets it between its tool calls; one that reported in the last 30 minutes goes on with it, "+

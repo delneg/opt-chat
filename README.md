@@ -300,7 +300,7 @@ a fresh call with the same prompt and tools, which gets the view, then its
 task. Its steps go to `agents/<Name>.log`, which `zoom("Name")` opens whole
 (Claude Code saves a long one to a file the model reads). Its final reply
 comes back as a `work` message, `[Name] report`, ending with the model it
-ran on and `Full chat: zoom("Name")`. If a turn is running, the report is injected into
+ran on, its context's size and `Full chat: zoom("Name")`. If a turn is running, the report is injected into
 it; otherwise it starts a new turn. The chat never waits for a subagent.
 While any are at work, a turn's input starts by naming them, as UniiChat's
 does, so Opt never starts the same task twice (the line is not logged).
@@ -312,13 +312,17 @@ subagent can read its steps with `zoom("Name")`.
 Subagents can't start or tell subagents. Quitting stops them, and each one's
 report then says it was stopped.
 
-A long task can outgrow a subagent's context. `/autocompact 250k` (saved in
-`<dir>/settings.json`; `/autocompact off` undoes it) lets Claude Code compact
-a subagent's context at 250k tokens, and `spawn`'s `autocompact` sets it for
-one subagent. After a compaction the subagent gets the view and its task
-again, as they are then, and goes on. It is off unless set, whatever your
-Claude Code's own setting. The chat's own calls never compact, whatever is
-set: the view is its memory, and it never outgrows its size.
+A subagent worked through many steps (each a `tell` after a report) can
+outgrow its context. `/autocompact 250k` (saved in `<dir>/settings.json`;
+`/autocompact off` undoes it) compacts a subagent whose context has passed
+250k tokens, and only at rest: right after a report, never in the middle of
+a step. `spawn`'s `autocompact` sets it for one subagent. Its next message
+then brings the view and its task again, as they are then; a `tell` that
+comes while it compacts waits for it. Each report says how big the
+subagent's context is. It is off unless set, and Claude Code's own
+auto-compaction, which strikes mid-step, is off in every call, whatever
+your Claude Code's setting. The chat's own calls never compact: the view is
+its memory, and it never outgrows its size.
 
 ## Where it departs from the recipe, and why
 

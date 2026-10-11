@@ -57,7 +57,7 @@ func (a *Agent) controller() (*control, error) {
 	a.mu.Lock()
 	model := a.model
 	a.mu.Unlock()
-	p, err := a.start(a.life, model, "", roleControl, 0)
+	p, err := a.start(a.life, model, "", roleControl)
 	if err != nil {
 		return nil, err
 	}

@@ -102,7 +102,7 @@ func TestWebConfig(t *testing.T) {
 		t.Fatalf("settings: %+v", s)
 	}
 	a.mu.Lock()
-	set := a.ownSettings(0)
+	set := a.ownSettings()
 	a.mu.Unlock()
 	if set != `{"disableAllHooks":true,"autoCompactEnabled":false,"skillOverrides":{"one":"off"}}` {
 		t.Fatalf("a call's settings: %s", set)
@@ -126,7 +126,7 @@ func TestWebConfig(t *testing.T) {
 		t.Fatalf("after off: %v", u)
 	}
 	a.mu.Lock()
-	set = a.ownSettings(0)
+	set = a.ownSettings()
 	a.mu.Unlock()
 	if s := loadSettings(a.chat.dir); s.Plugins["plug@market"] != false || len(s.Plugins) != 1 ||
 		set != `{"disableAllHooks":true,"autoCompactEnabled":false,"skillOverrides":{"one":"off"},"enabledPlugins":{"plug@market":false}}` {

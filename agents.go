@@ -25,10 +25,24 @@ var agentRest = 30 * time.Minute
 // hundred MB. One more ends the call of the one at rest longest.
 const restMax = 4
 
-// rest is a subagent that has reported, its call open until then.
+// rest is a subagent that has reported, its call open until then. One
+// whose context passed its window is compacted at rest, never mid-step;
+// its next message then brings the view and its task again.
 type rest struct {
-	p     *proc
-	until time.Time
+	p          *proc
+	until      time.Time
+	task       string
+	compacting bool     // its /compact is underway: tells wait in pending
+	compacted  bool     // since its last message
+	pending    []string // tells that came while compacting
+}
+
+// k is a count of tokens, as 250k.
+func k(n int) string {
+	if n < 1000 {
+		return fmt.Sprint(n)
+	}
+	return fmt.Sprintf("%dk", (n+500)/1000)
 }
 
 var badName = regexp.MustCompile(`[^A-Za-z0-9_-]+`)
@@ -94,9 +108,11 @@ func (a *Agent) Spawn(name, task, effort, model string, window int) string {
 	return fmt.Sprintf("Started [%s] in the background, on %s. Its report will come as a message starting \"[%s]\".", name, model, name)
 }
 
-// Tell hands a running agent a message, between its tool calls.
+// Tell hands a running agent a message, between its tool calls, or sets one
+// at rest to work again.
 func (a *Agent) Tell(name, text string) string {
 	name = agentName(name)
+	lines := a.chat.viewNow() // in case it was compacted: before a.mu
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	p, ok := a.running[name]
@@ -104,7 +120,11 @@ func (a *Agent) Tell(name, text string) string {
 	switch {
 	case !ok && !resting:
 		return fmt.Sprintf("No subagent [%s] is taking messages. One ends %s after its report; a new one can read its chat with zoom(%q).", name, agentRest.Round(time.Second), name)
-	case !ok: // at work again, its context whole; it reports again
+	case !ok && r.compacting:
+		a.agentWrite(name, "opt", text)
+		r.pending = append(r.pending, text)
+		return fmt.Sprintf("Sent: [%s] is compacting its context; it gets this right after, and will report again.", name)
+	case !ok: // at work again; it reports again
 		delete(a.resting, name)
 		a.running[name], p = r.p, r.p
 		a.chat.hub.notice("info", "[%s] back at work", name)
@@ -112,14 +132,26 @@ func (a *Agent) Tell(name, text string) string {
 		return fmt.Sprintf("[%s] is starting: tell it again in a moment.", name)
 	}
 	a.agentWrite(name, "opt", text)
-	if !p.send(textBlock(text)) {
+	msg := []block{textBlock(text)}
+	if resting && r.compacted {
+		msg = anchored(lines, name, r.task, []string{text})
+	}
+	if !p.send(msg...) {
 		delete(a.running, name)
 		return fmt.Sprintf("[%s] has just ended.", name)
 	}
-	if resting && !ok {
+	if resting {
 		return fmt.Sprintf("Sent: [%s] is at work on it, with all it knew, and will report again.", name)
 	}
 	return "Sent."
+}
+
+// anchored is the message that sets a compacted subagent to work again: the
+// view and its task again, then Opt's messages.
+func anchored(lines []string, name, task string, msgs []string) []block {
+	_, second := viewMessages(lines, []block{textBlock(fmt.Sprintf("Your context was compacted. Above, the chat's view as it is now. "+
+		"You are still subagent [%s], and your task was:\n%s\n\nOpt's new message:\n%s", name, task, strings.Join(msgs, "\n\n")))})
+	return second
 }
 
 func (a *Agent) agentWrite(name, kind, text string) {
@@ -129,12 +161,17 @@ func (a *Agent) agentWrite(name, kind, text string) {
 }
 
 func (a *Agent) runAgent(name, task, effort, model string, window int) {
+	size := 0 // its context: the tokens its latest request read
 	send := func(text string) {
 		a.chat.hub.notice("info", "[%s] done", name)
 		if !strings.HasPrefix(text, "["+name+"]") { // as the prompt asks of a report
 			text = "[" + name + "] " + text
 		}
-		a.report(fmt.Sprintf("%s\n\nRan on %s. Full chat: zoom(%q)", text, strings.TrimSpace(model+" "+effort), name)) // as UniiChat ends a report
+		on := strings.TrimSpace(model + " " + effort)
+		if size > 0 {
+			on += ", its context at " + k(size) + " tokens"
+		}
+		a.report(fmt.Sprintf("%s\n\nRan on %s. Full chat: zoom(%q)", text, on, name)) // as UniiChat ends a report
 	}
 	report := func(text string) { // the end
 		a.mu.Lock()
@@ -168,7 +205,7 @@ func (a *Agent) runAgent(name, task, effort, model string, window int) {
 		window = a.agentWindow
 	}
 	a.mu.Unlock()
-	p, err := a.start(context.Background(), model, effort, roleAgent, window)
+	p, err := a.start(context.Background(), model, effort, roleAgent)
 	if err != nil {
 		report(failed(err))
 		return
@@ -179,18 +216,16 @@ func (a *Agent) runAgent(name, task, effort, model string, window int) {
 		if e.Parent != nil {
 			return
 		}
-		if e.Type == "system" && e.Subtype == "compact_boundary" && !acking {
-			// Claude Code's summary of the call stands in for the view and the
-			// task: they come again, as they are now.
+		if e.Type == "system" && e.Subtype == "compact_boundary" {
 			a.agentWrite(name, "compacted", fmt.Sprintf("%d tokens to %d", e.Compact.Pre, e.Compact.Post))
-			a.chat.hub.notice("info", "[%s]'s context was compacted, %dk tokens to %dk: it gets the view and its task again", name, e.Compact.Pre/1000, e.Compact.Post/1000)
-			c.mu.Lock()
-			lines := c.callView()
-			c.mu.Unlock()
-			_, again := viewMessages(lines, []block{textBlock(fmt.Sprintf("Claude Code compacted your context. Above, the chat's view as it is now; "+
-				"you are still subagent [%s], and your task is:\n%s\nGo on from where you were.", name, task))})
-			p.send(again...)
+			a.chat.hub.notice("info", "[%s]'s context was compacted at rest, %s tokens to %s", name, k(e.Compact.Pre), k(e.Compact.Post))
+			size = e.Compact.Post
 			return
+		}
+		if e.Type == "assistant" {
+			if u := e.Message.Usage; u.Input+u.Read+u.Write > 0 {
+				size = u.Input + u.Read + u.Write
+			}
 		}
 		for _, b := range e.blocks() {
 			switch {
@@ -226,16 +261,30 @@ func (a *Agent) runAgent(name, task, effort, model string, window int) {
 			each(e)
 			continue
 		}
+		lines := c.viewNow()
+		a.mu.Lock()
+		if r := a.resting[name]; r != nil && r.p == p && r.compacting { // the compaction's end, not a report
+			r.compacting, r.compacted = false, true
+			if msgs := r.pending; len(msgs) > 0 { // tells that waited for it
+				delete(a.resting, name)
+				a.running[name] = p
+				p.send(anchored(lines, name, task, msgs)...)
+			}
+			a.mu.Unlock()
+			continue
+		}
 		final := e.Result
 		if e.IsError {
 			final = "failed: " + final
 		}
-		a.mu.Lock() // at rest: a tell sets it to work again, its context whole
+		// At rest: a tell sets it to work again, with all it knew. Past its
+		// window, it is compacted now, between steps, never in one.
 		if a.resting == nil {
-			a.resting = map[string]rest{}
+			a.resting = map[string]*rest{}
 		}
 		delete(a.running, name)
-		a.resting[name] = rest{p, time.Now().Add(agentRest)}
+		r := &rest{p: p, until: time.Now().Add(agentRest), task: task, compacting: window > 0 && size > window}
+		a.resting[name] = r
 		if len(a.resting) > restMax {
 			oldest := slices.MinFunc(slices.Collect(maps.Keys(a.resting)), func(x, y string) int { return a.resting[x].until.Compare(a.resting[y].until) })
 			a.resting[oldest].p.close()
@@ -243,6 +292,9 @@ func (a *Agent) runAgent(name, task, effort, model string, window int) {
 		}
 		a.mu.Unlock()
 		send(final)
+		if r.compacting {
+			p.send(textBlock("/compact Keep what is needed to go on with your task: what was asked, what is done and how, what is left, the decisions and why, the files and commands."))
+		}
 		time.AfterFunc(agentRest, func() {
 			a.mu.Lock()
 			defer a.mu.Unlock()
@@ -253,7 +305,7 @@ func (a *Agent) runAgent(name, task, effort, model string, window int) {
 		})
 	}
 	a.mu.Lock()
-	if r := a.resting[name]; r.p == p {
+	if r := a.resting[name]; r != nil && r.p == p {
 		delete(a.resting, name)
 	}
 	working := a.running[name] == p // its task, or a tell's, left without a reply

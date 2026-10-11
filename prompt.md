@@ -37,7 +37,9 @@ Tools:
 - search(text, before) finds the messages that hold text, newest first, each
   with the view's line that holds it
 - spawn(name, task, effort, model, autocompact) starts a subagent on a task, in the background
-- tell(name, message) sends a running subagent a message
+- tell(name, message) sends a subagent a message: a running one gets it between
+  its tool calls; one that reported in the last 30 minutes goes on with it,
+  with all it knew, and reports again
 
 # Turns
 

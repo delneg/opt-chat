@@ -698,3 +698,47 @@ func TestTurnNamesRunning(t *testing.T) {
 		t.Fatalf("logged: %q", user.Text)
 	}
 }
+
+// A subagent that has reported rests with its call open: a tell sets it to
+// work again, with all it knew, and it reports again; after its rest, its
+// call ends.
+func TestTellResumes(t *testing.T) {
+	defer func(d time.Duration) { agentRest = d }(agentRest)
+	agentRest = 300 * time.Millisecond
+	c, _ := fakeChat(t, t.TempDir(), 100)
+	a, calls := fakeAgent(t, c)
+	reported := make(chan string, 2)
+	a.report = func(text string) { reported <- text }
+	report := func() string {
+		select {
+		case got := <-reported:
+			return got
+		case <-time.After(10 * time.Second):
+			t.Fatal("no report")
+			return ""
+		}
+	}
+	a.Spawn("Rest", "first", "", "", 0)
+	report()
+	if got := a.Tell("Rest", "now the second"); !strings.HasPrefix(got, "Sent: [Rest] is at work on it") {
+		t.Fatal(got)
+	}
+	if got := report(); !strings.HasPrefix(got, `[Rest] answer to "now the second"`) {
+		t.Fatalf("second report: %q", got)
+	}
+	if n := len(calls()); n != 1 {
+		t.Fatalf("%d calls: a tell after the report started another", n)
+	}
+	waitFor(t, "its rest to end", func() bool {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		_, ok := a.resting["Rest"]
+		return !ok
+	})
+	if got := a.Tell("Rest", "third"); !strings.HasPrefix(got, "No subagent [Rest] is taking messages.") {
+		t.Fatal(got)
+	}
+	if out, _, _ := command(a, "/agents"); out != "No subagent is at work." {
+		t.Fatal(out)
+	}
+}

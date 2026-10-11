@@ -77,7 +77,8 @@ var (
 			"autocompact: for a long task, the context size in tokens at which Claude Code compacts the subagent's context, which then gets the view and its task again; leave it out for the user's setting (/autocompact).",
 			schema([]string{"name", "task"}, map[string]any{"name": str, "task": str, "effort": map[string]any{"type": "string", "enum": efforts}, "model": str,
 				"autocompact": map[string]any{"type": "integer", "minimum": windowMin, "maximum": windowMax}})),
-		tool("tell", "Send a running subagent a message; it reaches the subagent between its tool calls.",
+		tool("tell", "Send a subagent a message. A running one gets it between its tool calls; one that reported in the last 30 minutes goes on with it, "+
+			"with all it knew, and reports again.",
 			schema([]string{"name", "message"}, map[string]any{"name": str, "message": str})),
 	}
 )

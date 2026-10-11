@@ -42,6 +42,7 @@ type Agent struct {
 	pluginsSet      map[string]bool   // and plugins turned on or off here, by name@marketplace
 	skillsListed    []skill           // the skills Claude Code listed last, in its own states
 	agentWindow     int               // subagents' auto-compaction window, in tokens; 0: off
+	resting         map[string]rest   // subagents that have reported, still able to go on: see Tell
 	mcpUp           []string          // the servers connected when the last call sent its view: see mcpSettle
 	mcpSeen         []string          // and those listed then
 

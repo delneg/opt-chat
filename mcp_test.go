@@ -66,7 +66,7 @@ func TestMCP(t *testing.T) {
 		`{"name":"zoom","arguments":{"id":0,"n":1}}`:                           "0+1|user: hi",
 		`{"name":"zoom","arguments":{"id":"0","n":1}}`:                         "0+1|user: hi",
 		`{"name":"zoom","arguments":{"id":"Nobody"}}`:                          "No subagent [Nobody].",
-		`{"name":"tell","arguments":{"name":"X","message":"m"}}`:               "No subagent [X] is taking messages.",
+		`{"name":"tell","arguments":{"name":"X","message":"m"}}`:               "No subagent [X] is taking messages. One ends 30m0s after its report; a new one can read its chat with zoom(\"X\").",
 		`{"name":"spawn","arguments":{"name":"X","task":" "}}`:                 "No task given.",
 		`{"name":"spawn","arguments":{"name":"X","task":"t","effort":"lots"}}`: "effort must be one of low, medium, high, xhigh, max, or left out.",
 	} {

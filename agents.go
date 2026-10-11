@@ -3,17 +3,33 @@ package main
 import (
 	"context"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 )
 
 // Agents run in the background, so a long task never blocks the chat. An
 // agent is a fresh call whose first message is the view, then its task. Its
 // own steps stay in its own log, agents/<Name>.log, out of the chat; its
 // final reply comes back to the chat as one work message, "[Name] report".
+
+// agentRest is how long a subagent that has reported waits, its context
+// whole, for a tell that sets it to work again; then its call ends.
+var agentRest = 30 * time.Minute
+
+// restMax is how many rest at once: each is a Claude Code process, a few
+// hundred MB. One more ends the call of the one at rest longest.
+const restMax = 4
+
+// rest is a subagent that has reported, its call open until then.
+type rest struct {
+	p     *proc
+	until time.Time
+}
 
 var badName = regexp.MustCompile(`[^A-Za-z0-9_-]+`)
 
@@ -84,15 +100,24 @@ func (a *Agent) Tell(name, text string) string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	p, ok := a.running[name]
-	if !ok {
-		return fmt.Sprintf("No subagent [%s] is taking messages.", name)
-	}
-	if p == nil {
+	r, resting := a.resting[name]
+	switch {
+	case !ok && !resting:
+		return fmt.Sprintf("No subagent [%s] is taking messages. One ends %s after its report; a new one can read its chat with zoom(%q).", name, agentRest.Round(time.Second), name)
+	case !ok: // at work again, its context whole; it reports again
+		delete(a.resting, name)
+		a.running[name], p = r.p, r.p
+		a.chat.hub.notice("info", "[%s] back at work", name)
+	case p == nil:
 		return fmt.Sprintf("[%s] is starting: tell it again in a moment.", name)
 	}
 	a.agentWrite(name, "opt", text)
 	if !p.send(textBlock(text)) {
-		return fmt.Sprintf("[%s] has just finished.", name)
+		delete(a.running, name)
+		return fmt.Sprintf("[%s] has just ended.", name)
+	}
+	if resting && !ok {
+		return fmt.Sprintf("Sent: [%s] is at work on it, with all it knew, and will report again.", name)
 	}
 	return "Sent."
 }
@@ -104,15 +129,18 @@ func (a *Agent) agentWrite(name, kind, text string) {
 }
 
 func (a *Agent) runAgent(name, task, effort, model string, window int) {
-	report := func(text string) {
-		a.mu.Lock()
-		delete(a.running, name)
-		a.mu.Unlock()
+	send := func(text string) {
 		a.chat.hub.notice("info", "[%s] done", name)
 		if !strings.HasPrefix(text, "["+name+"]") { // as the prompt asks of a report
 			text = "[" + name + "] " + text
 		}
 		a.report(fmt.Sprintf("%s\n\nRan on %s. Full chat: zoom(%q)", text, strings.TrimSpace(model+" "+effort), name)) // as UniiChat ends a report
+	}
+	report := func(text string) { // the end
+		a.mu.Lock()
+		delete(a.running, name)
+		a.mu.Unlock()
+		send(text)
 	}
 	if err := os.MkdirAll(filepath.Join(a.chat.dir, "agents"), 0o700); err != nil {
 		report("failed: " + err.Error())
@@ -189,7 +217,7 @@ func (a *Agent) runAgent(name, task, effort, model string, window int) {
 	p.send(second...)
 	a.running[name] = p
 	a.mu.Unlock()
-	final, replied := "", false
+	replied := false
 	for {
 		e, ok := p.next()
 		if !ok {
@@ -199,19 +227,44 @@ func (a *Agent) runAgent(name, task, effort, model string, window int) {
 			each(e)
 			continue
 		}
-		final, replied = e.Result, true
+		final := e.Result
 		if e.IsError {
 			final = "failed: " + final
 		}
-		a.mu.Lock() // done: Tell now answers that it is not taking messages
+		replied = true
+		a.mu.Lock() // at rest: a tell sets it to work again, its context whole
+		if a.resting == nil {
+			a.resting = map[string]rest{}
+		}
 		delete(a.running, name)
-		p.close()
+		a.resting[name] = rest{p, time.Now().Add(agentRest)}
+		if len(a.resting) > restMax {
+			oldest := slices.MinFunc(slices.Collect(maps.Keys(a.resting)), func(x, y string) int { return a.resting[x].until.Compare(a.resting[y].until) })
+			a.resting[oldest].p.close()
+			delete(a.resting, oldest)
+		}
 		a.mu.Unlock()
+		send(final)
+		time.AfterFunc(agentRest, func() {
+			a.mu.Lock()
+			defer a.mu.Unlock()
+			if r, ok := a.resting[name]; ok && r.p == p && !time.Now().Before(r.until) {
+				delete(a.resting, name)
+				p.close() // with its input closed, Claude Code exits
+			}
+		})
 	}
+	a.mu.Lock()
+	if r := a.resting[name]; r.p == p {
+		delete(a.resting, name)
+	}
+	if a.running[name] == p {
+		delete(a.running, name)
+	}
+	a.mu.Unlock()
 	if err := p.wait(); !replied {
-		final = failed(fmt.Errorf("no reply: %v", err))
+		report(failed(fmt.Errorf("no reply: %v", err)))
 	}
-	report(final)
 }
 
 // ZoomAgent gives a subagent's whole chat.

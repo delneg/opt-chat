@@ -537,11 +537,18 @@ func command(a *Agent, line string) (string, bool, error) {
 		return "", true, errors.New("effort must be one of " + joinEfforts())
 	case word == "model" || word == "effort" || word == "mode":
 	case word == "agents":
-		names := slices.Sorted(maps.Keys(a.running))
-		if len(names) == 0 {
-			return "No subagent is at work.", true, nil
+		names, resting := slices.Sorted(maps.Keys(a.running)), slices.Sorted(maps.Keys(a.resting))
+		out := "No subagent is at work."
+		if len(names) > 0 {
+			out = "At work: [" + strings.Join(names, "], [") + "]."
 		}
-		return "At work: [" + strings.Join(names, "], [") + "]. Each one's steps: " + filepath.Join(a.chat.dir, "agents", "<Name>.log"), true, nil
+		if len(resting) > 0 {
+			out += " Reported, and can go on when told: [" + strings.Join(resting, "], [") + "]."
+		}
+		if len(names)+len(resting) > 0 {
+			out += " Each one's steps: " + filepath.Join(a.chat.dir, "agents", "<Name>.log")
+		}
+		return out, true, nil
 	case word == "help":
 		return "/model [name]       show or set the model for turns, as -model (until quit)\n" +
 			"/effort [level]     show or set their effort: " + joinEfforts() + "\n" +

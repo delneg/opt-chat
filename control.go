@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sync"
 	"time"
 )
 
@@ -19,11 +18,8 @@ import (
 // skills, and it stays up long enough to finish an MCP server's sign-in in
 // the browser.
 type control struct {
-	p       *proc
-	mu      sync.Mutex
-	seq     int
-	waiting map[string]chan controlReply
-	idle    *time.Timer
+	p    *proc
+	idle *time.Timer
 }
 
 type controlReply struct {
@@ -48,7 +44,7 @@ func (a *Agent) control(ctx context.Context, req any) (jsontext.Value, error) {
 	if err != nil {
 		return nil, err
 	}
-	return cl.do(ctx, req)
+	return cl.p.call(ctx, req)
 }
 
 func (a *Agent) controller() (*control, error) {
@@ -65,11 +61,16 @@ func (a *Agent) controller() (*control, error) {
 	if err != nil {
 		return nil, err
 	}
-	cl := &control{p: p, waiting: map[string]chan controlReply{}}
-	cl.idle = time.AfterFunc(controlIdle, p.close) // with its input closed, Claude Code exits
+	cl := &control{p: p, idle: time.AfterFunc(controlIdle, p.close)} // with its input closed, Claude Code exits
 	a.ctl = cl
 	go func() {
-		cl.read()
+		for { // its answers go to their requests as they are read
+			if _, ok := p.next(); !ok {
+				break
+			}
+		}
+		cl.idle.Stop()
+		p.wait()
 		a.ctlMu.Lock()
 		if a.ctl == cl {
 			a.ctl = nil
@@ -79,58 +80,26 @@ func (a *Agent) controller() (*control, error) {
 	return cl, nil
 }
 
-// read hands each response to its request until the call ends, then fails
-// the requests left.
-func (cl *control) read() {
-	for {
-		e, ok := cl.p.next()
-		if !ok {
-			break
-		}
-		if e.Type != "control_response" {
-			continue
-		}
-		r := e.Response
-		cl.mu.Lock()
-		ch := cl.waiting[r.RequestID]
-		delete(cl.waiting, r.RequestID)
-		cl.mu.Unlock()
-		if ch == nil {
-			continue
-		}
-		if r.Subtype == "error" {
-			ch <- controlReply{err: errors.New(r.Error)}
-		} else {
-			ch <- controlReply{v: r.Response}
-		}
-	}
-	cl.idle.Stop()
-	err := fmt.Errorf("Claude Code exited: %v", cl.p.wait())
-	cl.mu.Lock()
-	for id, ch := range cl.waiting {
-		ch <- controlReply{err: err}
-		delete(cl.waiting, id)
-	}
-	cl.p = nil
-	cl.mu.Unlock()
-}
-
-func (cl *control) do(ctx context.Context, req any) (jsontext.Value, error) {
+// call sends the call a control request and waits for its answer, which
+// whoever reads the call's output hands over (next).
+func (p *proc) call(ctx context.Context, req any) (jsontext.Value, error) {
 	ch := make(chan controlReply, 1)
-	cl.mu.Lock()
-	if cl.p == nil {
-		cl.mu.Unlock()
-		return nil, errors.New("Claude Code exited")
+	p.callMu.Lock()
+	if p.callsEnd != nil {
+		p.callMu.Unlock()
+		return nil, p.callsEnd
 	}
-	cl.seq++
-	id := fmt.Sprint("opt-", cl.seq)
-	cl.waiting[id] = ch
-	p := cl.p
-	cl.mu.Unlock()
+	p.callSeq++
+	id := fmt.Sprint("opt-", p.callSeq)
+	if p.calls == nil {
+		p.calls = map[string]chan controlReply{}
+	}
+	p.calls[id] = ch
+	p.callMu.Unlock()
 	drop := func() {
-		cl.mu.Lock()
-		delete(cl.waiting, id)
-		cl.mu.Unlock()
+		p.callMu.Lock()
+		delete(p.calls, id)
+		p.callMu.Unlock()
 	}
 	if !p.control(id, req) {
 		drop()
@@ -144,6 +113,69 @@ func (cl *control) do(ctx context.Context, req any) (jsontext.Value, error) {
 	case <-ctx.Done():
 		drop()
 		return nil, ctx.Err()
+	}
+}
+
+// callNow is call for whoever reads the call's output, before anything
+// else does: it reads it until the answer comes.
+func (p *proc) callNow(req any) (jsontext.Value, error) {
+	ch := make(chan controlReply, 1)
+	p.callMu.Lock()
+	if p.callsEnd != nil {
+		p.callMu.Unlock()
+		return nil, p.callsEnd
+	}
+	p.callSeq++
+	id := fmt.Sprint("opt-", p.callSeq)
+	if p.calls == nil {
+		p.calls = map[string]chan controlReply{}
+	}
+	p.calls[id] = ch
+	p.callMu.Unlock()
+	if !p.control(id, req) {
+		p.callMu.Lock()
+		delete(p.calls, id)
+		p.callMu.Unlock()
+		return nil, errors.New("Claude Code is not taking requests")
+	}
+	for {
+		select {
+		case r := <-ch:
+			return r.v, r.err
+		default:
+		}
+		if _, ok := p.next(); !ok { // ended: next failed the request
+			r := <-ch
+			return r.v, r.err
+		}
+	}
+}
+
+// answered hands a control response to the request waiting for it.
+func (p *proc) answered(r controlResponse) {
+	p.callMu.Lock()
+	ch := p.calls[r.RequestID]
+	delete(p.calls, r.RequestID)
+	p.callMu.Unlock()
+	switch {
+	case ch == nil: // nobody waits: a mode switch's
+	case r.Subtype == "error":
+		ch <- controlReply{err: errors.New(r.Error)}
+	default:
+		ch <- controlReply{v: r.Response}
+	}
+}
+
+// endCalls fails the requests left once the call's output has ended.
+func (p *proc) endCalls() {
+	p.callMu.Lock()
+	defer p.callMu.Unlock()
+	if p.callsEnd == nil {
+		p.callsEnd = errors.New("Claude Code exited")
+	}
+	for id, ch := range p.calls {
+		ch <- controlReply{err: p.callsEnd}
+		delete(p.calls, id)
 	}
 }
 
@@ -201,8 +233,9 @@ func (a *Agent) models(ctx context.Context) ([]modelInfo, error) {
 // settings are what the page's pickers keep for later runs, in
 // <dir>/settings.json. A flag given on the command line wins over them.
 type settings struct {
-	Model  string `json:"model,omitzero"`
-	Effort string `json:"effort,omitzero"`
+	Model  string   `json:"model,omitzero"`
+	Effort string   `json:"effort,omitzero"`
+	MCPOff []string `json:"mcpOff,omitzero"` // the user's MCP servers turned off for Opt
 }
 
 func loadSettings(dir string) settings {
@@ -233,9 +266,18 @@ func (a *Agent) choose(model, effort string, save bool) error {
 	a.model, a.effort = model, effort
 	a.mu.Unlock()
 	if save {
-		return saveSettings(a.chat.dir, settings{Model: model, Effort: effort})
+		return a.updateSettings(func(s *settings) { s.Model, s.Effort = model, effort })
 	}
 	return nil
+}
+
+// updateSettings changes settings.json, one change at a time.
+func (a *Agent) updateSettings(f func(*settings)) error {
+	a.setMu.Lock()
+	defer a.setMu.Unlock()
+	s := loadSettings(a.chat.dir)
+	f(&s)
+	return saveSettings(a.chat.dir, s)
 }
 
 // writeAtomic replaces path with b whole: a crash leaves the old file or the new.

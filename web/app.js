@@ -38,6 +38,9 @@ const S = {
   unseen: false, // Opt replied while the tab was in the background
   asks: [], // tool calls waiting for the user's yes or no
   askSel: 0,
+  panel: null, // /mcp or /skills, open: { kind, sel, busy, error, signIn, name }
+  mcp: null, // the user's MCP servers, once asked
+  skills: null, // and skills
   picker: null, // the model picker, open: { sel, effort }
   models: null, // Claude Code's, once asked
   modelsError: '',
@@ -161,6 +164,11 @@ function onUpdate(u) {
       break;
     }
     case 'models': set({ models: u.models, modelsError: u.error || '' }); break;
+    case 'mcp': case 'skills': {
+      const p = S.panel?.kind === u.t ? { ...S.panel, busy: false, error: u.error || '', signIn: u.signIn || S.panel.signIn, name: u.signIn ? u.name : S.panel.name } : S.panel;
+      set(u.t === 'mcp' ? { mcp: u.servers, panel: p } : { skills: u.skills, panel: p });
+      break;
+    }
     case 'restore': if (u.note) notice('info', u.note); restore(u.text, u.files); break;
     case 'sent': sending.delete(u.seq); break;
     case 'failed': {
@@ -232,6 +240,8 @@ function lookForPaths(now) {
 const commands = [
   ['/model', 'choose the model and effort for turns (Alt+P)'],
   ['/effort', 'show or set their effort'],
+  ['/mcp', 'your Claude Code MCP servers: status, on or off, sign in'],
+  ['/skills', 'your Claude Code skills: on or off'],
   ['/agents', 'list the subagents at work'],
   ['/help', 'list the commands'],
 ];
@@ -251,6 +261,8 @@ async function submit(now) {
   }
   if (S.conn !== 'open') { notice('warn', 'Not connected: your message stays in the input until opt-chat is back.'); return; }
   if (/^\/model\s*$/.test(inputEl.value) && !S.atts.length) { setInput(''); openPicker(); return; }
+  const panel = inputEl.value.match(/^\/(mcp|skills)\s*$/);
+  if (panel && !S.atts.length) { setInput(''); openPanel(panel[1]); return; }
   submitting = true;
   try {
     // Uploads finish, those added meanwhile too, and the paths the input
@@ -281,6 +293,7 @@ async function submit(now) {
 function escape() {
   if (S.lightbox) { set({ lightbox: null }); return; }
   if (S.picker) { closePicker(); return; }
+  if (S.panel) { closePanel(); return; }
   if (S.help) { set({ help: false }); return; } // one Esc, one thing: never a stop by surprise
   if (S.turn.phase) send({ t: 'stop' });
 }
@@ -836,6 +849,7 @@ function effortName(e) { return e === 'xhigh' ? 'Extra high' : e[0].toUpperCase(
 function levelsOf(m) { return m?.supportedEffortLevels?.length ? m.supportedEffortLevels : EFFORTS; }
 
 function openPicker() {
+  if (S.panel) closePanel();
   if (!S.models || S.modelsError) send({ t: 'models' });
   set({ picker: { sel: -1, effort: S.status?.effort || 'high' }, help: false });
 }
@@ -981,6 +995,98 @@ function Ask({ q }) {
   </div>`;
 }
 
+// ---------------------------------------------------------------- /mcp and /skills
+
+// The panels show the user's Claude Code MCP servers and skills, as its
+// /mcp and /skills do. The MCP list is asked again while it is open, as
+// servers connect.
+let panelTimer = 0;
+
+function openPanel(kind) {
+  set({ panel: { kind, sel: 0, busy: true, error: '' }, picker: null, help: false });
+  send({ t: kind });
+  clearInterval(panelTimer);
+  if (kind === 'mcp') panelTimer = setInterval(() => { if (S.panel?.kind === 'mcp' && !S.panel.busy) send({ t: 'mcp' }); }, 2000);
+}
+
+function closePanel() { clearInterval(panelTimer); set({ panel: null }); inputEl?.focus(); }
+
+function panelRows() { return (S.panel?.kind === 'mcp' ? S.mcp : S.skills) || []; }
+
+function panelAct(action, row, extra) {
+  if (!row) return;
+  set({ panel: { ...S.panel, busy: true, error: '' } });
+  send({ t: S.panel.kind, action, name: row.name, ...extra });
+}
+
+function toggleRow(row) {
+  if (!row) return;
+  if (S.panel.kind === 'mcp') panelAct(row.off ? 'on' : 'off', row);
+  else if (!row.locked_by) panelAct('set', row, { state: row.state === 'off' ? 'on' : 'off' });
+}
+
+function panelKey(e) {
+  const p = S.panel;
+  if (!p || S.picker || e.metaKey || e.ctrlKey || e.altKey) return false;
+  if (e.target.tagName === 'TEXTAREA' && e.target.value) return false; // typing a message
+  const rows = panelRows(), row = rows[p.sel];
+  let sel = p.sel;
+  switch (e.key) {
+    case 'Escape': closePanel(); break;
+    case 'ArrowUp': sel = Math.max(0, sel - 1); break;
+    case 'ArrowDown': sel = Math.min(rows.length - 1, sel + 1); break;
+    case 'PageUp': sel = Math.max(0, sel - 10); break;
+    case 'PageDown': sel = Math.min(rows.length - 1, sel + 10); break;
+    case 'Enter': case ' ': toggleRow(row); break;
+    case 'a': if (p.kind === 'mcp') panelAct('signin', row); break;
+    case 'r': if (p.kind === 'mcp') panelAct('reconnect', row); break;
+    default: return false;
+  }
+  e.preventDefault();
+  e.stopPropagation();
+  if (S.panel && sel !== p.sel) {
+    set({ panel: { ...S.panel, sel } });
+    requestAnimationFrame(() => document.querySelector('.panel .row.sel')?.scrollIntoView({ block: 'nearest' }));
+  }
+  return true;
+}
+
+const mcpMarks = { connected: ['✔', 'ok'], pending: ['…', 'dim'], 'needs-auth': ['△', 'warn'], failed: ['✘', 'bad'], disabled: ['○', 'dim'] };
+
+function McpRow({ s }) {
+  const [glyph, cls] = s.off ? ['○', 'dim'] : mcpMarks[s.status] || ['·', 'dim'];
+  const what = s.off ? 'off' : s.status === 'needs-auth' ? 'needs sign-in (a)' : s.status === 'failed' ? 'failed (r to reconnect)' : s.status;
+  return html`<span class="lbl">${s.name}</span><span class=${'st ' + cls}>${glyph} ${what}</span><span class="desc">${s.source || s.scope || ''}${s.error ? ' · ' + s.error : ''}</span>`;
+}
+
+function SkillRow({ s }) {
+  const on = s.state !== 'off';
+  return html`<span class="lbl">${s.display_name || s.name}</span><span class=${'st ' + (on ? 'ok' : 'dim')}>${on ? '●' : '○'} ${s.state}</span>
+    <span class="desc">${s.source}${s.locked_by ? ` (managed by its ${s.locked_by})` : ''} · ${s.tokens} tokens · ${oneLine(s.description, 120)}</span>`;
+}
+
+function Panel() {
+  const p = S.panel, rows = panelRows(), mcp = p.kind === 'mcp';
+  const loaded = mcp ? S.mcp : S.skills;
+  const on = rows.filter(r => mcp ? !r.off : r.state !== 'off');
+  return html`<div class="picker panel" role="dialog" aria-label=${mcp ? 'MCP servers' : 'Skills'}>
+    <div class="title">${mcp ? 'MCP servers' : 'Skills'}${p.busy ? html` <span class="dim">…</span>` : ''}</div>
+    <div class="dim">${mcp
+      ? `Your Claude Code MCP servers, as its /mcp lists them: ${on.length} of ${rows.length} on for Opt. Off is kept for Opt alone; a sign-in is Claude Code's.`
+      : `Your Claude Code skills, as its /skills lists them: ${on.length} of ${rows.length} on, ${on.reduce((n, r) => n + (r.tokens || 0), 0).toLocaleString()} tokens listed. On or off is saved in Claude Code's settings.`}</div>
+    ${p.error && html`<div class="err">${p.error}</div>`}
+    ${p.signIn && html`<div>Sign in to ${p.name}: <a href=${p.signIn} target="_blank" rel="noopener noreferrer">open the sign-in page</a>, then come back here.</div>`}
+    ${!loaded ? html`<div class="dim">Asking Claude Code…</div>` : html`<div class="rows list">
+      ${rows.map((r, j) => html`<div class=${'row' + (j === p.sel ? ' sel' : '')} key=${r.name}
+          onClick=${() => set({ panel: { ...S.panel, sel: j } })} onDblClick=${() => toggleRow(r)}>
+        <span class="ptr">${j === p.sel ? '❯' : ''}</span>${mcp ? html`<${McpRow} s=${r}/>` : html`<${SkillRow} s=${r}/>`}
+      </div>`)}
+      ${!rows.length && html`<div class="dim">None.</div>`}
+    </div>`}
+    <div class="dim">↑/↓ · Enter or Space: on/off${mcp ? ' · a: sign in · r: reconnect' : ''} · Esc to close</div>
+  </div>`;
+}
+
 // ---------------------------------------------------------------- the page
 
 const glyphs = ['·', '✢', '✳', '✶', '✻', '✽', '✻', '✶', '✳', '✢'];
@@ -1098,6 +1204,7 @@ function Help() {
     ['drop · paste · 📎', 'attach files; a path you type (/… or ~/…) attaches its file'],
     ['Alt+P · /model', 'choose the model, ←/→ its effort'],
     ['Shift+Tab', 'permission mode: manual, accept edits, auto'],
+    ['/mcp · /skills', 'your Claude Code MCP servers and skills: on or off'],
     ['/agents /help', 'subagents at work; the commands'],
   ];
   return html`<div class="help">${rows.map(([a, b]) => html`<kbd>${a}</kbd><span>${b}</span>`)}</div>`;
@@ -1184,6 +1291,7 @@ function App() {
       <${Queue} queue=${S.queue}/>
       ${S.asks.length > 0 && !S.picker && html`<${Ask} q=${S.asks[0]}/>`}
       ${S.picker && html`<${Picker}/>`}
+      ${S.panel && !S.picker && html`<${Panel}/>`}
       <${Input}/>
       ${S.help && html`<${Help}/>`}
       <${Footer}/>
@@ -1218,7 +1326,7 @@ addEventListener('keydown', e => {
     cycleMode();
     return;
   }
-  pickerKey(e) || askKey(e);
+  pickerKey(e) || panelKey(e) || askKey(e);
 }, true); // before the input: while the picker or a question is up, the keys are theirs
 addEventListener('keydown', e => {
   if ((e.key === 'Enter' || e.key === ' ') && e.target.getAttribute?.('role') === 'button' && e.target.tagName !== 'BUTTON') {

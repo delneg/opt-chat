@@ -208,6 +208,13 @@ a { color: var(--blue); }
 .picker .scale { margin-left: 2ch; color: var(--faint); }
 .picker .scale span { margin-right: 1.5ch; }
 .picker .scale .on { color: var(--fg); text-decoration: underline; text-underline-offset: .25em; }
+.panel .rows.list { grid-template-columns: 2ch auto auto 1fr; max-height: 45vh; overflow-y: auto; }
+.panel .row .st { white-space: nowrap; padding-right: 2ch; }
+.panel .row .st.ok { color: var(--green); }
+.panel .row .st.warn { color: var(--yellow); }
+.panel .row .st.bad { color: var(--red); }
+.panel .row .st.dim { color: var(--faint); }
+.panel .row .desc { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .banner { background: var(--red); color: var(--bg); padding: .25em 2ch; font-size: .9em; }
 .newer { position: sticky; bottom: .5em; display: flex; padding-left: 2ch; align-items: flex-end; pointer-events: none; height: 0; overflow: visible; }
 .newer button { pointer-events: auto; background: var(--chip); border: 1px solid var(--border); border-radius: 999px; padding: .2em 1.5ch; color: var(--fg); font-size: .9em; }

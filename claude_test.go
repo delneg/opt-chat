@@ -2,10 +2,12 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -29,8 +31,23 @@ func TestMain(m *testing.M) {
 const pngHead = "\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
 
 func fakeClaude() {
+	base := os.Getenv("OPT_FAKE_ARGS")
+	if len(os.Args) > 1 && os.Args[1] == "edit-skill-overrides" { // as Claude Code: saves the state
+		in, _ := io.ReadAll(os.Stdin)
+		appendRaw(base+".skills", append(bytes.TrimSpace(in), '\n'))
+		fmt.Println(`{"ok":true}`)
+		return
+	}
 	b, _ := json.Marshal(os.Args[1:])
-	appendRaw(os.Getenv("OPT_FAKE_ARGS"), append(b, '\n'))
+	appendRaw(base, append(b, '\n'))
+	var env []string
+	for _, kv := range os.Environ() {
+		if strings.HasPrefix(kv, "CLAUDE") || strings.HasPrefix(kv, "ENABLE_TOOL_SEARCH") {
+			env = append(env, kv)
+		}
+	}
+	b, _ = json.Marshal(env)
+	appendRaw(base+".env", append(b, '\n'))
 	if f := os.Getenv("OPT_FAKE_PGID"); f != "" {
 		appendRaw(f, []byte(fmt.Sprintln(syscall.Getpgrp())))
 	}
@@ -70,6 +87,7 @@ func fakeClaude() {
 		}
 		return text, images
 	}
+	statusAsks, mcpOff := 0, map[string]bool{}
 	// control answers a control request as Claude Code would; false for
 	// any other line.
 	control := func(line string) bool {
@@ -85,7 +103,49 @@ func fakeClaude() {
 		ok := func(v any) {
 			emit(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": r.RequestID, "response": v}})
 		}
-		switch r.Request["subtype"] {
+		b, _ := json.Marshal(r.Request)
+		appendRaw(base+".ctl", append(b, '\n'))
+		switch name, _ := r.Request["serverName"].(string); r.Request["subtype"] {
+		case "mcp_status": // alpha connects on the third ask; beta is off once turned off
+			statusAsks++
+			alpha := "pending"
+			if statusAsks >= 3 {
+				alpha = "connected"
+			}
+			beta := "connected"
+			if mcpOff["beta"] {
+				beta = "disabled"
+			}
+			ok(map[string]any{"mcpServers": []map[string]any{
+				{"name": "opt", "status": "connected"},
+				{"name": "alpha", "status": alpha, "scope": "user", "source": "user", "config": map[string]any{"headers": map[string]any{"Authorization": "Bearer SECRET"}}},
+				{"name": "beta", "status": beta, "scope": "claudeai", "source": "claudeai"},
+			}})
+		case "mcp_toggle":
+			if name != "alpha" && name != "beta" {
+				emit(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "error", "request_id": r.RequestID, "error": "Server not found: " + name}})
+				break
+			}
+			mcpOff[name] = r.Request["enabled"] == false
+			ok(nil)
+		case "mcp_authenticate":
+			ok(map[string]any{"authUrl": "https://auth.example/" + name, "requiresUserAction": true})
+		case "get_skills_dialog":
+			state := "on" // the last edit's
+			b, _ := os.ReadFile(base + ".skills")
+			for l := range strings.Lines(string(b)) {
+				var e struct {
+					Name  string `json:"name"`
+					State string `json:"state"`
+				}
+				if json.Unmarshal([]byte(l), &e) == nil && e.Name == "one" {
+					state = e.State
+				}
+			}
+			ok(map[string]any{"skills": []map[string]any{
+				{"name": "one", "display_name": "one", "description": "the first", "source": "user", "tokens": 10, "state": state, "handles": map[string]any{"unqualified_name": "one"}},
+				{"name": "plug:two", "display_name": "plug:two", "description": "the second", "source": "plugin", "tokens": 20, "state": "on", "locked_by": "plugin"},
+			}})
 		case "list_models":
 			ok(map[string]any{"models": []map[string]any{
 				{"value": "default", "displayName": "Default (recommended)", "description": "Big 2 · best", "supportsEffort": true},
@@ -216,6 +276,9 @@ func fakeClaude() {
 	}
 }
 
+// fakeArgsFile is where each fake agent's calls record their arguments.
+var fakeArgsFile = map[*Agent]string{}
+
 // fakeAgent runs its calls on fakeClaude, recording each call's arguments.
 func fakeAgent(t *testing.T, c *Chat) (*Agent, func() [][]string) {
 	self, err := os.Executable()
@@ -234,6 +297,7 @@ func fakeAgent(t *testing.T, c *Chat) (*Agent, func() [][]string) {
 		report: func(text string) { c.Log("work", text) }}
 	a.life, a.stop = context.WithCancel(context.Background())
 	t.Cleanup(a.quit)
+	fakeArgsFile[a] = argsFile
 	return a, func() [][]string {
 		b, _ := os.ReadFile(argsFile)
 		var calls [][]string

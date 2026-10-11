@@ -32,6 +32,9 @@ type Agent struct {
 	cmodel, ceffort string // compactions
 	perm, cwd       string
 	tools           string
+	ownConfig       bool     // turns and subagents get the user's Claude Code skills, plugins and MCP servers
+	mcpOff          []string // of those servers, the ones the user turned off here
+	mcpUp           []string // and the ones connected when the last call sent its view: see mcpSettle
 
 	report func(text string) // hands an agent's report to the chat
 
@@ -52,7 +55,8 @@ type Agent struct {
 	allowed     []string // rules the user allowed for good this run, as "Bash(npm test:*)"
 
 	ctlMu sync.Mutex
-	ctl   *control // nil until asked, and once stopped
+	ctl   *control   // nil until asked, and once stopped
+	setMu sync.Mutex // settings.json's writes
 }
 
 // writeOnce lets one call at a time write a prefix to the cache: a call
@@ -198,6 +202,11 @@ type proc struct {
 	declined  atomic.Bool // the user said no to a tool call, which stops the call
 	who       string      // a subagent's name; empty for the turn
 	onRequest func(event) // takes Claude Code's control requests; nil: refused
+
+	callMu   sync.Mutex // not mu: a write to the call can wait on its reader
+	callSeq  int
+	calls    map[string]chan controlReply // our control requests, waiting for answers
+	callsEnd error                        // set once its output has ended
 }
 
 type role int
@@ -210,7 +219,22 @@ const (
 )
 
 // noTools blocks every tool call of a compaction. Its tools stay listed, the
-// same as a turn's, so that on one model both read one cache entry (gist §4).
+// same as a turn's, so that on one model both read one cache entry (gist §4);
+// with the user's own setup, a turn's add Skill and ToolSearch.
+// noHooks keeps the user's hooks out of a call that loads their settings.
+const noHooks = `{"disableAllHooks":true}`
+
+// withTools is the tools list with names added, each once.
+func withTools(list string, names ...string) string {
+	have := strings.Split(list, ",")
+	for _, n := range names {
+		if !slices.Contains(have, n) {
+			have = append(have, n)
+		}
+	}
+	return strings.Join(slices.DeleteFunc(have, func(s string) bool { return s == "" }), ",")
+}
+
 const noTools = `{"hooks":{"PreToolUse":[{"matcher":"*","hooks":[{"type":"command","command":"echo 'Compactions call no tools.' >&2; exit 2"}]}]}}`
 
 func (a *Agent) start(ctx context.Context, model, effort string, r role) (p *proc, err error) {
@@ -237,12 +261,24 @@ func (a *Agent) start(ctx context.Context, model, effort string, r role) (p *pro
 		// clarifying questions" mid-call.
 		perm = "default"
 	}
-	// Every role gets the same system prompt and tools.
+	// Every role gets the same system prompt.
+	own := a.ownConfig && r != roleCompact
+	tools := a.tools
+	if own {
+		tools = withTools(tools, "Skill", "ToolSearch") // ToolSearch: MCP servers' tools load as needed, not in every prompt
+	}
 	args := []string{"-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
-		"--model", model, "--system-prompt", a.system, "--tools", a.tools, "--mcp-config", mcp,
-		"--permission-mode", perm, "--allowedTools", strings.Join(allowed, ","),
+		"--model", model, "--system-prompt", a.system, "--tools", tools, "--mcp-config", mcp,
+		"--permission-mode", perm, "--allowedTools", strings.Join(allowed, ","), "--no-session-persistence"}
+	if own {
+		// The user's skills, plugins, MCP servers and settings, as Claude Code
+		// run in cwd has them; never their hooks, CLAUDE.md or memory (env),
+		// which would make Opt someone else.
+		args = append(args, "--setting-sources", "user,project,local", "--settings", noHooks)
+	} else {
 		// Nothing of the user's Claude Code setup leaks in: no hooks, plugins, CLAUDE.md or MCP servers.
-		"--setting-sources", "", "--strict-mcp-config", "--disable-slash-commands", "--no-session-persistence"}
+		args = append(args, "--setting-sources", "", "--strict-mcp-config", "--disable-slash-commands")
+	}
 	if effort != "" {
 		args = append(args, "--effort", effort)
 	}
@@ -265,6 +301,12 @@ func (a *Agent) start(ctx context.Context, model, effort string, r role) (p *pro
 	cmd.WaitDelay = 5 * time.Second
 	cmd.Dir = a.cwd
 	cmd.Env = childEnv()
+	if own {
+		// Tool search always: left to decide, Claude Code defers MCP tools or
+		// not by which servers have connected by each request, so the ack and
+		// the turn after it disagreed, and the view was written again.
+		cmd.Env = append(cmd.Env, "CLAUDE_CODE_DISABLE_CLAUDE_MDS=1", "CLAUDE_CODE_DISABLE_AUTO_MEMORY=1", "ENABLE_TOOL_SEARCH=true")
+	}
 	p = &proc{prefix: model + " " + effort, ctx: ctx, cmd: cmd, done: done}
 	cmd.Stderr = &p.stderr
 	if p.stdin, err = cmd.StdinPipe(); err != nil {
@@ -289,6 +331,9 @@ func (a *Agent) start(ctx context.Context, model, effort string, r role) (p *pro
 		}
 		a.live[p] = struct{}{}
 		a.mu.Unlock()
+	}
+	if own && r == roleControl { // a turn's or subagent's waits for its servers: see mcpSettle
+		go a.mcpApply(p)
 	}
 	p.done = func() {
 		children.Delete(pid)
@@ -344,7 +389,11 @@ func childEnv() []string {
 	})
 	// Long work goes to subagents, whose reports reach the chat. A shell left
 	// running in the background would die with its call, its result unseen.
-	return append(env, "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1")
+	// No server-side threads: with them, each request after the first sends
+	// only what is new, and the server wrote the call's environment block
+	// (skills, MCP servers: 20k tokens with the user's own setup) to the
+	// cache again every turn; sent whole, the call reads it back.
+	return append(env, "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1", "CLAUDE_CODE_TETHER_LIVE=0")
 }
 
 // send writes one user message; false once stdin is closed.
@@ -375,6 +424,9 @@ func (p *proc) next() (event, bool) {
 		if json.Unmarshal(p.out.Bytes(), &e) != nil {
 			continue
 		}
+		if e.Type == "control_response" { // to its request; returned too, for callNow
+			p.answered(e.Response)
+		}
 		if e.Type == "control_request" {
 			if p.onRequest != nil {
 				p.onRequest(e)
@@ -385,6 +437,7 @@ func (p *proc) next() (event, bool) {
 		}
 		return e, true
 	}
+	p.endCalls()
 	return event{}, false
 }
 
@@ -740,6 +793,7 @@ func (t *Turn) Run(ctx context.Context, msgs []message) error {
 			}
 		}
 	}
+	a.mcpSettle(p)
 	first, second := viewMessages(lines, input)
 	if err := a.ack(p, first, &vu, handle); err != nil {
 		p.wait()

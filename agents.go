@@ -148,6 +148,7 @@ func (a *Agent) runAgent(name, task, effort string) {
 		}
 	}
 	var u usage
+	a.mcpSettle(p)
 	first, second := viewMessages(lines, []block{textBlock(fmt.Sprintf("You are subagent [%s]. Your task:\n%s", name, task))})
 	if err := a.ack(p, first, &u, each); err != nil {
 		p.wait()

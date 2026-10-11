@@ -275,6 +275,9 @@ type request struct {
 	Mode   string       `json:"mode"`   // mode: the permission mode
 	Allow  bool         `json:"allow"`  // answer: yes
 	Always bool         `json:"always"` // answer: yes, and don't ask again
+	Action string       `json:"action"` // mcp: on, off, reconnect, signin; skills: set; empty: list
+	Name   string       `json:"name"`   // mcp, skills: which
+	State  string       `json:"state"`  // skills: on, off, name-only, user-invocable-only
 }
 
 type (
@@ -306,6 +309,18 @@ type (
 		T      string      `json:"t"` // models: Claude Code's, for the picker
 		Models []modelInfo `json:"models"`
 		Error  string      `json:"error,omitzero"`
+	}
+	mcpReply struct {
+		T       string      `json:"t"` // mcp: the user's MCP servers
+		Servers []mcpServer `json:"servers"`
+		SignIn  string      `json:"signIn,omitzero"` // the page to open to sign in to Name
+		Name    string      `json:"name,omitzero"`
+		Error   string      `json:"error,omitzero"`
+	}
+	skillsReply struct {
+		T      string  `json:"t"` // skills: the user's skills
+		Skills []skill `json:"skills"`
+		Error  string  `json:"error,omitzero"`
 	}
 	failedReply struct {
 		T   string `json:"t"` // failed: not sent, back to the input
@@ -378,7 +393,7 @@ func (w *webServer) ws(rw http.ResponseWriter, r *http.Request) {
 			write(noticeUpdate{T: "notice", Level: "warn", S: "bad request: " + err.Error()})
 			continue
 		}
-		if slow[req.T] { // asks Claude Code: the page's sends go on meanwhile
+		if slow(req) { // asks Claude Code: the page's sends go on meanwhile
 			go func() {
 				if reply := w.serveSlow(ctx, req); reply != nil {
 					write(reply)
@@ -493,7 +508,16 @@ func (w *webServer) serve(req request) any {
 }
 
 // slow are the requests that ask Claude Code, which can take seconds.
-var slow = map[string]bool{"models": true}
+func slow(req request) bool {
+	switch req.T {
+	case "models", "mcp", "skills":
+		return true
+	case "send":
+		w, _, _ := strings.Cut(strings.TrimSpace(req.Text), " ")
+		return w == "/mcp" || w == "/skills"
+	}
+	return false
+}
 
 func (w *webServer) serveSlow(ctx context.Context, req request) any {
 	a := w.h.agent
@@ -504,6 +528,47 @@ func (w *webServer) serveSlow(ctx context.Context, req request) any {
 			return modelsReply{T: "models", Models: []modelInfo{}, Error: err.Error()}
 		}
 		return modelsReply{T: "models", Models: ms}
+	case "send": // /mcp or /skills
+		out, _ := command(a, req.Text)
+		w.c.hub.send(noticeUpdate{T: "notice", Level: "info", S: out}) // all pages: as a command's answer
+		return sentReply{T: "sent", Seq: req.Seq}
+	case "mcp":
+		if !a.ownConfig {
+			return mcpReply{T: "mcp", Servers: []mcpServer{}, Error: "Opt runs without your Claude Code setup (-claude-config=false)."}
+		}
+		var err error
+		r := mcpReply{T: "mcp", Name: req.Name}
+		switch req.Action {
+		case "on", "off":
+			err = a.setMCP(ctx, req.Name, req.Action == "on")
+		case "reconnect":
+			err = a.mcpReconnect(ctx, req.Name)
+		case "signin":
+			r.SignIn, err = a.mcpSignIn(ctx, req.Name)
+		}
+		if err != nil {
+			r.Error = err.Error()
+		}
+		if r.Servers, err = a.mcpServers(ctx); err != nil {
+			r.Servers, r.Error = []mcpServer{}, err.Error()
+		}
+		return r
+	case "skills":
+		if !a.ownConfig {
+			return skillsReply{T: "skills", Skills: []skill{}, Error: "Opt runs without your Claude Code setup (-claude-config=false)."}
+		}
+		r := skillsReply{T: "skills"}
+		if req.Action == "set" {
+			if err := a.setSkill(ctx, req.Name, req.State); err != nil {
+				r.Error = err.Error()
+			}
+		}
+		ss, err := a.skills(ctx)
+		if err != nil {
+			ss, r.Error = []skill{}, err.Error()
+		}
+		r.Skills = ss
+		return r
 	}
 	return nil
 }

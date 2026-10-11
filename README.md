@@ -101,7 +101,8 @@ a change.
 | `-compact-model` | `haiku` | model for compactions |
 | `-compact-effort` | `high` | effort for compactions (the recipe's: `xhigh`) |
 | `-permission-mode` | `auto` | permission mode to start in: `manual`, `acceptEdits` or `auto` |
-| `-tools` | `Bash,Read,Edit,Write,WebSearch,WebFetch` | Claude Code tools |
+| `-tools` | `Bash,Read,Edit,Write,WebSearch,WebFetch` | Claude Code tools (with your setup, also `Skill` and `ToolSearch`) |
+| `-claude-config` | on | your Claude Code skills, plugins, MCP servers and settings in turns and subagents (below) |
 | `-import` | | import past chats first (below) |
 | `-import-since` | | import only messages from this day on, `YYYY-MM-DD` |
 | `-import-tools` | off | import tool calls and results too |
@@ -219,6 +220,39 @@ tool result's images, such as an image file that Read opened, go with its
 writes the message's line, which says in words what they show: such a
 message is never its own line. `zoom(id, 1)` gives the message whole, with
 its images (a PDF there is a path).
+
+## Your Claude Code setup
+
+Turns and subagents run with your own Claude Code skills, plugins, MCP
+servers (yours, your plugins' and claude.ai's connectors) and settings, as
+`claude` run in `-cwd` has them, but never your hooks, CLAUDE.md or
+Claude Code's memory, which would make Opt someone else. `-claude-config=false`
+runs them bare, as compactions always run.
+
+- `/mcp` lists the MCP servers with their status, live as they connect:
+  Enter or Space turns one off or on for Opt (kept in `<dir>/settings.json`:
+  Claude Code saves no such choice for `claude -p`), `a` signs in to one
+  that needs it (the sign-in is Claude Code's own, for every session), `r`
+  reconnects one.
+- `/skills` lists the skills, each with what its listing costs every turn:
+  Enter or Space turns one on or off, saved where Claude Code's own
+  `/skills` saves it (`claude edit-skill-overrides`, in the local settings
+  of `-cwd`). A plugin's skills go with the plugin.
+- In the terminal, `/mcp` and `/skills` list them; `/mcp off NAME`,
+  `/skills on NAME` and so on switch one.
+
+What it costs: the skills and servers sit in a block Claude Code adds after
+the view's first message (with the default setup here, about 20k tokens),
+cached with it. Two things keep it cached from turn to turn. Before a call
+sends the view it waits, up to 5 seconds, for the MCP servers that were
+connected last time to connect again, since the block lists those connected
+by then (a server that is always slow is not waited for). And calls run
+with `ENABLE_TOOL_SEARCH=true` (MCP tools load when needed, so a server's
+hundreds of tools never sit in every prompt) and `CLAUDE_CODE_TETHER_LIVE=0`.
+With Claude Code's server-side threads, each request after the first sent
+only what was new, and the server wrote the whole block to the cache again
+on every turn. Measured on a 27,000-message chat: about 22k tokens written
+per turn with threads, 500 without.
 
 ## Subagents
 

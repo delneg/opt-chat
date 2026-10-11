@@ -53,7 +53,7 @@ func TestChoose(t *testing.T) {
 	if err := a.choose("sonnet", "low", true); err != nil {
 		t.Fatal(err)
 	}
-	if s := loadSettings(c.dir); s != (settings{Model: "sonnet", Effort: "low"}) {
+	if s := loadSettings(c.dir); s.Model != "sonnet" || s.Effort != "low" || s.MCPOff != nil {
 		t.Fatalf("saved %+v", s)
 	}
 	for _, bad := range [][2]string{{"two words", "high"}, {"opus", "huge"}, {"opus", ""}} {

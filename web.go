@@ -539,7 +539,7 @@ func (w *webServer) command(a *Agent, req request) (any, bool) {
 // slow are the requests that ask Claude Code, which can take seconds.
 func slow(a *Agent, req request) bool {
 	switch req.T {
-	case "models", "mcp", "skills", "plugins", "files":
+	case "models", "mcp", "skills", "plugins", "files", "usage":
 		return true
 	case "send":
 		return asks(a, req.Text)
@@ -550,6 +550,12 @@ func slow(a *Agent, req request) bool {
 func (w *webServer) serveSlow(ctx context.Context, req request) any {
 	a := w.h.agent
 	switch req.T {
+	case "usage": // its answer goes in the bar
+		if err := a.askUsage(ctx); err != nil {
+			dim("usage: " + err.Error())
+		}
+		w.c.hub.setStatus(currentStatus(w.c, a))
+		return nil
 	case "models":
 		ms, err := a.models(ctx)
 		if err != nil {

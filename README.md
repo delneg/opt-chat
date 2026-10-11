@@ -106,8 +106,13 @@ The page works like Claude Code:
 - The bar at the bottom shows the memory: messages, the view's size, what is
   left to summarize, and the last turn's context (the tokens its biggest
   request read: the view, the prompt and tools, your message, its steps) and
-  output; the spinner shows the context as the turn goes. `?` on an empty input lists
-  the shortcuts. While a reply lands in a tab in the background, its title
+  output; the spinner shows the context as the turn goes. It shows your
+  plan's limits too, as Claude Code's status line can: `5h 10% · 7d 31%`,
+  and any other window while it is in use (a model's weekly one, or
+  credits), with when each resets on hover. Every call reports the two
+  windows as it starts; the page asks Claude Code for all of them
+  (get_usage) after each turn, at most once a minute. `?` on an empty
+  input lists the shortcuts. While a reply lands in a tab in the background, its title
   says so.
 
 Put your own instructions in `<dir>/AGENTS.md`: who you are, how your files

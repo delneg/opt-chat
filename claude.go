@@ -57,6 +57,8 @@ type Agent struct {
 	running     map[string]*proc         // agents by name; nil while starting or finished
 	writing     map[string]chan struct{} // first messages being written to the cache
 	modelList   []modelInfo              // Claude Code's, once asked
+	limits      map[string]window        // the plan's usage limits, by name: see limits.go
+	usageAsked  time.Time                // when get_usage was last asked
 	live        map[*proc]struct{}       // turns and subagents underway: a mode switch reaches them
 	asks        []*ask                   // tool calls waiting for the user's yes or no
 	askSeq      int
@@ -168,6 +170,8 @@ type event struct {
 	RequestID string          `json:"request_id"` // control_request: Claude Code asks
 	Request   jsontext.Value  `json:"request"`
 	Response  controlResponse `json:"response"` // control_response: Claude Code answers
+
+	Limits limitInfo `json:"rate_limit_info"` // rate_limit_event
 }
 
 // streamEvent is the API's streaming event inside a stream_event, which a
@@ -220,6 +224,7 @@ type proc struct {
 	declined  atomic.Bool // the user said no to a tool call, which stops the call
 	who       string      // a subagent's name; empty for the turn
 	onRequest func(event) // takes Claude Code's control requests; nil: refused
+	onLimits  func(limitInfo)
 
 	callMu   sync.Mutex // not mu: a write to the call can wait on its reader
 	callSeq  int
@@ -346,7 +351,7 @@ func (a *Agent) start(ctx context.Context, model, effort string, r role) (p *pro
 		// the turn after it disagreed, and the view was written again.
 		cmd.Env = append(cmd.Env, "CLAUDE_CODE_DISABLE_CLAUDE_MDS=1", "CLAUDE_CODE_DISABLE_AUTO_MEMORY=1", "ENABLE_TOOL_SEARCH=true")
 	}
-	p = &proc{prefix: model + " " + effort, ctx: ctx, cmd: cmd, done: done}
+	p = &proc{prefix: model + " " + effort, ctx: ctx, cmd: cmd, done: done, onLimits: a.noteLimits}
 	cmd.Stderr = &p.stderr
 	if p.stdin, err = cmd.StdinPipe(); err != nil {
 		return nil, err
@@ -476,6 +481,12 @@ func (p *proc) next() (event, bool) {
 		}
 		if e.Type == "control_response" { // to its request; returned too, for callNow
 			p.answered(e.Response)
+		}
+		if e.Type == "rate_limit_event" {
+			if p.onLimits != nil {
+				p.onLimits(e.Limits)
+			}
+			continue
 		}
 		if e.Type == "control_request" || e.Type == "control_cancel_request" {
 			switch {

@@ -125,6 +125,7 @@ type status struct {
 	Effort    string   `json:"effort"`
 	Mode      string   `json:"mode"` // the permission mode
 	Agents    []string `json:"agents"`
+	Limits    []window `json:"limits,omitzero"` // the plan's usage
 	Dir       string   `json:"dir"`
 	Cwd       string   `json:"cwd"` // where Opt's tools run
 }
@@ -437,6 +438,7 @@ func currentStatus(c *Chat, a *Agent) status {
 	a.mu.Lock()
 	s := status{Model: a.model, Effort: a.effort, Mode: a.perm, Agents: sortedKeys(a.running), Cwd: a.cwd}
 	a.mu.Unlock()
+	s.Limits = a.windows(time.Now())
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	s.Msgs, s.ViewLines, s.ViewBytes = len(c.msgs), len(c.view.keys), c.view.size()

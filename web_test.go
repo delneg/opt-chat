@@ -438,3 +438,21 @@ func TestWebModel(t *testing.T) {
 		t.Fatalf("a bad effort: %v", u)
 	}
 }
+
+// The page asks for the plan's limits; they come in the bar's status.
+func TestWebUsage(t *testing.T) {
+	wt := startWeb(t)
+	ws, err := wt.dial(-1, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws.next("hello", typ("hello"))
+	ws.send(map[string]any{"t": "usage"})
+	u := ws.next("limits", func(u map[string]any) bool {
+		s, _ := u["status"].(map[string]any)
+		return u["t"] == "status" && s["limits"] != nil
+	})
+	if ls := u["status"].(map[string]any)["limits"].([]any); len(ls) < 2 || ls[0].(map[string]any)["name"] != "five_hour" || ls[0].(map[string]any)["used"] != 12.0 {
+		t.Fatalf("limits: %v", ls)
+	}
+}

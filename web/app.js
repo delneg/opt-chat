@@ -142,6 +142,7 @@ function onUpdate(u) {
       if (S.panel) { set({ panel: { ...S.panel, busy: true, acting: false } }); send({ t: S.panel.kind }); } // a reply lost with the connection
       if (S.picker && (!S.models || S.modelsError)) send({ t: 'models' });
       if (S.panel?.kind !== 'skills') send({ t: 'skills' }); // for the / menu
+      send({ t: 'usage' }); // the plan's limits, for the bar
       break;
     }
     case 'msgs': {
@@ -173,7 +174,7 @@ function onUpdate(u) {
     }
     case 'thought': set({ thinking: '' }); break;
     case 'status': set({ status: u.status }); break;
-    case 'end': set({ last: u.end }); break;
+    case 'end': set({ last: u.end }); send({ t: 'usage' }); break;
     case 'notice': notice(u.level, u.s); break;
     case 'history': { // asked before a reconnect's hello reset the log: not the page before it now
       const fits = u.msgs.length && u.msgs[u.msgs.length - 1].i + 1 === S.msgs[0]?.i;
@@ -1553,6 +1554,7 @@ function Footer() {
     if (s.failing) right.push(html`<span class="conn bad">${s.failing} failing, retrying</span>`);
     if (s.agents?.length) right.push(`agents: ${s.agents.map(a => '[' + a + ']').join(' ')}`);
   }
+  if (s?.limits?.length) right.push(html`<${Limits} windows=${s.limits}/>`);
   if (l) right.push(html`<span title="the turn's biggest request: the view, the prompt, your message and its steps; and what it wrote">last turn ${l.context ? k(l.context) + ' context, ' : ''}↓${k(l.turn.output_tokens)}</span>`);
   const conn = { open: ['ok', '● connected'], connecting: ['', '○ connecting'], closed: ['bad', '● reconnecting'], denied: ['bad', '● no key'] }[S.conn];
   const mode = s?.mode;
@@ -1562,6 +1564,17 @@ function Footer() {
     <span class=${'seg conn ' + conn[0]}>${conn[1]}</span>
     ${right.map(x => html`<span class="seg">${x}</span>`)}
   </div></div>`;
+}
+
+// Limits are the plan's usage, as Claude Code's status line shows it: the
+// five-hour and seven-day windows, and any other in use (a model's, or
+// credits).
+const windowNames = { five_hour: '5h', seven_day: '7d', seven_day_opus: '7d Opus', seven_day_sonnet: '7d Sonnet' };
+function Limits({ windows }) {
+  const name = w => windowNames[w.name] || w.name.replace(/_/g, ' ');
+  const resets = w => w.resets ? new Date(w.resets * 1000).toLocaleString(undefined, { weekday: 'short', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
+  const tip = 'your plan\'s usage\n' + windows.map(w => `${name(w)}: ${Math.round(w.used)}%${w.limit ? ` ($${w.spent} of $${w.limit})` : ''}${w.resets ? ', resets ' + resets(w) : ''}`).join('\n');
+  return html`<span title=${tip}>${windows.map((w, j) => html`${j > 0 && ' · '}<span class=${w.used >= 95 ? 'conn bad' : w.used >= 80 ? 'warnt' : ''}>${name(w)} ${Math.round(w.used)}%</span>`)}</span>`;
 }
 
 function Help() {

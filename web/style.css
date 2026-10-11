@@ -177,6 +177,7 @@ a { color: var(--blue); }
 .footer .seg::before { content: "·"; position: absolute; left: 1ch; color: var(--faint); }
 .footer .conn.ok { color: var(--green); }
 .footer .conn.bad { color: var(--red); }
+.footer .warnt { color: var(--yellow); }
 .footer .busy { color: var(--accent); }
 .footer button { color: var(--faint); }
 .footer button:hover { color: var(--fg); }

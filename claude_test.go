@@ -139,6 +139,17 @@ func fakeClaude() {
 				{"value": "big", "displayName": "Big 2", "description": "best", "supportsEffort": true, "supportedEffortLevels": []string{"low", "high"}},
 				{"value": "claude-big-1", "displayName": "Big 1", "description": "older"},
 			}})
+		case "get_usage":
+			at := func(u float64, unix int64) map[string]any {
+				return map[string]any{"utilization": u, "resets_at": time.Unix(unix, 0).UTC().Format(time.RFC3339Nano), "limit_dollars": nil, "used_dollars": nil}
+			}
+			spend := at(0, 1_802_000_000)
+			spend["limit_dollars"], spend["used_dollars"] = 250, 20
+			ok(map[string]any{"subscription_type": "max", "rate_limits": map[string]any{
+				"five_hour": at(12, 1_800_010_000), "seven_day": at(33, 1_800_500_000), "seven_day_opus": nil,
+				"seven_day_sonnet": at(0, 1_800_500_000), "seven_day_fable": at(40, 1_800_500_000), "spend": spend,
+				"extra_usage": map[string]any{"is_enabled": true, "monthly_limit": 5000, "utilization": nil}, "odd": 5,
+			}})
 		case "fail":
 			emit(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "error", "request_id": r.RequestID, "error": "no such thing"}})
 		default:
@@ -252,6 +263,8 @@ func fakeClaude() {
 			<-stop
 			os.Exit(143)
 		case strings.Contains(in, "stream-reply"):
+			emit(map[string]any{"type": "rate_limit_event", "rate_limit_info": map[string]any{"status": "allowed", "unifiedWindows": map[string]any{
+				"five_hour": map[string]any{"utilization": 0.09, "resetsAt": 1_800_010_000}, "seven_day": map[string]any{"utilization": 0.31, "resetsAt": 1_800_500_000}}}})
 			stream(map[string]any{"type": "message_start", "message": map[string]any{"usage": map[string]any{"output_tokens": 5}}})
 			stream(map[string]any{"type": "content_block_start", "content_block": map[string]any{"type": "thinking"}})
 			stream(map[string]any{"type": "content_block_delta", "delta": map[string]any{"type": "thinking_delta", "thinking": "hmm"}})

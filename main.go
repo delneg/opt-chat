@@ -97,7 +97,7 @@ func main() {
 	}
 	h := &harness{}
 	a := &Agent{chat: c, system: system, model: *model, effort: *effort,
-		amodel: *amodel, aeffort: *aeffort, cmodel: *cmodel, ceffort: *ceffort, perm: *perm, cwd: *cwd, tools: *tools, ownConfig: *ownConfig, mcpOff: saved.MCPOff, skillsSet: saved.Skills,
+		amodel: *amodel, aeffort: *aeffort, cmodel: *cmodel, ceffort: *ceffort, perm: *perm, cwd: *cwd, tools: *tools, ownConfig: *ownConfig, mcpOff: saved.MCPOff, skillsSet: saved.Skills, pluginsSet: saved.Plugins,
 		running: map[string]*proc{}, writing: map[string]chan struct{}{}, report: func(text string) { h.input(message{kind: "work", text: text}) }}
 	a.life, a.stop = context.WithCancel(context.Background())
 	h.agent = a
@@ -499,7 +499,7 @@ func command(a *Agent, line string) (string, bool) {
 		return "", false
 	}
 	word, arg := strings.ToLower(m[1]), m[2]
-	if word == "mcp" || word == "skills" { // asks Claude Code: outside a.mu
+	if word == "mcp" || word == "skills" || word == "plugins" { // asks Claude Code: outside a.mu
 		return configCommand(a, word, arg), true
 	}
 	if word == "mode" && arg != "" {
@@ -530,7 +530,8 @@ func command(a *Agent, line string) (string, bool) {
 			"/effort [level]     show or set their effort: " + joinEfforts() + "\n" +
 			"/mode [mode]        show or set the permission mode: " + strings.Join(modes, ", ") + "\n" +
 			"/mcp [on|off name]  your Claude Code MCP servers: list them, or turn one on or off for Opt\n" +
-			"/skills [on|off name] your Claude Code skills: list them, or turn one on or off\n" +
+			"/skills [on|off name] your Claude Code skills: list them, or turn one on or off for Opt\n" +
+			"/plugins [on|off id] your Claude Code plugins (skills and MCP servers together), as name@marketplace\n" +
 			"/agents             list the subagents at work\n" +
 			"Ctrl-C stops the turn; Ctrl-C when idle, or Ctrl-D, quits.", true
 	default:

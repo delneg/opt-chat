@@ -259,8 +259,14 @@ runs them bare, as compactions always run.
   `<dir>/settings.json` and given to each call as settings; your Claude
   Code keeps its own). A skill your organization or a plugin manages stays
   as it set it.
-- In the terminal, `/mcp` and `/skills` list them; `/mcp off NAME`,
-  `/skills on NAME` and so on switch one.
+- `/plugins` lists your plugins, each with the skills, MCP servers and
+  tokens it brings: Enter or Space turns one on or off for Opt, all of it
+  at once (turn off `figma` and its skills and MCP server go), from its
+  next call, kept in `<dir>/settings.json` and given to each call as
+  settings (`enabledPlugins`); your Claude Code keeps its own.
+- In the terminal, `/mcp`, `/skills` and `/plugins` list them; `/mcp off
+  NAME`, `/skills on NAME`, `/plugins off figma@claude-plugins-official`
+  and so on switch one.
 
 What it costs: the skills and servers sit in a block Claude Code adds after
 the view's first message (with the default setup here, about 20k tokens),

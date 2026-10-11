@@ -30,6 +30,12 @@ const pngHead = "\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
 
 func fakeClaude() {
 	base := os.Getenv("OPT_FAKE_ARGS")
+	if len(os.Args) > 2 && os.Args[1] == "plugin" && os.Args[2] == "list" { // as Claude Code: one installed for two folders
+		fmt.Println(`[{"id":"plug@market","scope":"user","enabled":true,"projectEnabled":false},
+			{"id":"other@market","scope":"local","enabled":true,"projectEnabled":false},
+			{"id":"other@market","scope":"local","enabled":false,"projectEnabled":false}]`)
+		return
+	}
 	b, _ := json.Marshal(os.Args[1:])
 	appendRaw(base, append(b, '\n'))
 	var env []string

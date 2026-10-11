@@ -233,10 +233,11 @@ func (a *Agent) models(ctx context.Context) ([]modelInfo, error) {
 // settings are what the page's pickers keep for later runs, in
 // <dir>/settings.json. A flag given on the command line wins over them.
 type settings struct {
-	Model  string            `json:"model,omitzero"`
-	Effort string            `json:"effort,omitzero"`
-	MCPOff []string          `json:"mcpOff,omitzero"` // the user's MCP servers turned off for Opt
-	Skills map[string]string `json:"skills,omitzero"` // the user's skills' states for Opt, by name
+	Model   string            `json:"model,omitzero"`
+	Effort  string            `json:"effort,omitzero"`
+	MCPOff  []string          `json:"mcpOff,omitzero"`  // the user's MCP servers turned off for Opt
+	Skills  map[string]string `json:"skills,omitzero"`  // the user's skills' states for Opt, by name
+	Plugins map[string]bool   `json:"plugins,omitzero"` // the user's plugins on or off for Opt, by name@marketplace
 }
 
 func loadSettings(dir string) settings {

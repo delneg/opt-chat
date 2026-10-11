@@ -5,6 +5,7 @@ import (
 	"encoding/json/v2"
 	"fmt"
 	"maps"
+	"os/exec"
 	"slices"
 	"strings"
 	"sync"
@@ -285,8 +286,109 @@ func (a *Agent) setSkill(ctx context.Context, name, state string) error {
 	return a.updateSettings(func(s *settings) { s.Skills = set })
 }
 
-// configCommand runs /mcp and /skills in the terminal: a list, or "on
-// name" and "off name".
+// plugin is one of the user's Claude Code plugins, as /plugins shows it:
+// with the skills and MCP servers it brings, while on.
+type plugin struct {
+	ID     string `json:"id"` // name@marketplace
+	Name   string `json:"name"`
+	Scope  string `json:"scope"` // user, project, local
+	On     bool   `json:"on"`
+	Skills int    `json:"skills"`
+	Tokens int    `json:"tokens"` // its skills' listing, every turn
+	MCP    int    `json:"mcp"`    // its MCP servers
+}
+
+// plugins lists the user's plugins, on or off as set here, else as
+// Claude Code in -cwd has them.
+func (a *Agent) plugins(ctx context.Context) ([]plugin, error) {
+	cmd := exec.CommandContext(ctx, "claude", "plugin", "list", "--json")
+	cmd.Dir, cmd.Env = a.cwd, childEnv()
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("claude plugin list: %v", err)
+	}
+	var all []struct {
+		ID      string `json:"id"`
+		Scope   string `json:"scope"`
+		Enabled bool   `json:"enabled"`        // installed for the user: on everywhere
+		Here    bool   `json:"projectEnabled"` // installed for a folder: on in -cwd
+	}
+	if err := json.Unmarshal(out, &all); err != nil {
+		return nil, err
+	}
+	skills, _ := a.skills(ctx) // their costs, for those on
+	servers, _ := a.mcpServers(ctx)
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	ps := []plugin{}
+	for _, e := range all {
+		if e.Scope != "user" {
+			e.Enabled = e.Here
+		}
+		if i := slices.IndexFunc(ps, func(p plugin) bool { return p.ID == e.ID }); i >= 0 { // installed for several folders
+			ps[i].On = ps[i].On || e.Enabled
+			continue
+		}
+		name, _, _ := strings.Cut(e.ID, "@")
+		ps = append(ps, plugin{ID: e.ID, Name: name, Scope: e.Scope, On: e.Enabled})
+	}
+	for i := range ps {
+		p := &ps[i]
+		if on, ok := a.pluginsSet[p.ID]; ok {
+			p.On = on
+		}
+		if !p.On { // nothing of it is loaded
+			continue
+		}
+		for _, sk := range skills {
+			if strings.HasPrefix(sk.Name, p.Name+":") {
+				p.Skills++
+				p.Tokens += sk.Tokens
+			}
+		}
+		for _, sv := range servers {
+			if strings.HasPrefix(sv.Name, "plugin:"+p.Name+":") {
+				p.MCP++
+			}
+		}
+	}
+	return ps, nil
+}
+
+// setPlugin turns a plugin on or off for Opt, from its next call on; the
+// user's Claude Code keeps its own. The control call restarts with it, so
+// /skills and /mcp list what Opt's calls get.
+func (a *Agent) setPlugin(ctx context.Context, id string, on bool) error {
+	all, err := a.plugins(ctx)
+	if err != nil {
+		return err
+	}
+	if !slices.ContainsFunc(all, func(p plugin) bool { return p.ID == id }) {
+		return fmt.Errorf("no plugin %q", id)
+	}
+	a.mu.Lock()
+	if a.pluginsSet == nil {
+		a.pluginsSet = map[string]bool{}
+	}
+	a.pluginsSet[id] = on
+	set := maps.Clone(a.pluginsSet)
+	a.mu.Unlock()
+	if err := a.updateSettings(func(s *settings) { s.Plugins = set }); err != nil {
+		return err
+	}
+	a.ctlMu.Lock()
+	cl := a.ctl
+	a.ctl = nil
+	a.ctlMu.Unlock()
+	if cl != nil {
+		cl.idle.Stop()
+		cl.p.close()
+	}
+	return nil
+}
+
+// configCommand runs /mcp, /skills and /plugins in the terminal: a list,
+// or "on name" and "off name".
 func configCommand(a *Agent, word, arg string) string {
 	if !a.ownConfig {
 		return "Opt runs without your Claude Code setup (-claude-config=false)."
@@ -300,6 +402,10 @@ func configCommand(a *Agent, word, arg string) string {
 		if err := a.setMCP(ctx, name, how == "on"); err != nil {
 			return err.Error()
 		}
+	case (how == "on" || how == "off") && name != "" && word == "plugins":
+		if err := a.setPlugin(ctx, name, how == "on"); err != nil {
+			return err.Error()
+		}
 	case (how == "on" || how == "off") && name != "":
 		if err := a.setSkill(ctx, name, how); err != nil {
 			return err.Error()
@@ -308,7 +414,20 @@ func configCommand(a *Agent, word, arg string) string {
 		return "/" + word + " lists them; /" + word + " on NAME or off NAME turns one on or off."
 	}
 	var lines []string
-	if word == "mcp" {
+	switch word {
+	case "plugins":
+		ps, err := a.plugins(ctx)
+		if err != nil {
+			return err.Error()
+		}
+		for _, p := range ps {
+			st := "off"
+			if p.On {
+				st = fmt.Sprintf("on   %d skills, %d tokens, %d MCP servers", p.Skills, p.Tokens, p.MCP)
+			}
+			lines = append(lines, fmt.Sprintf("%-50s %s", p.ID, st))
+		}
+	case "mcp":
 		ss, err := a.mcpServers(ctx)
 		if err != nil {
 			return err.Error()
@@ -320,7 +439,7 @@ func configCommand(a *Agent, word, arg string) string {
 			}
 			lines = append(lines, fmt.Sprintf("%-40s %s", s.Name, st))
 		}
-	} else {
+	default:
 		ss, err := a.skills(ctx)
 		if err != nil {
 			return err.Error()

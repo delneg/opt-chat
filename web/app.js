@@ -38,9 +38,10 @@ const S = {
   unseen: false, // Opt replied while the tab was in the background
   asks: [], // tool calls waiting for the user's yes or no
   askSel: 0,
-  panel: null, // /mcp or /skills, open: { kind, sel, busy, error, signIn, name }
+  panel: null, // /mcp, /skills or /plugins, open: { kind, sel, busy, error, signIn, name }
   mcp: null, // the user's MCP servers, once asked
   skills: null, // and skills
+  plugins: null, // and plugins
   mention: null, // the @ menu, open: { start, query, items, sel }
   picker: null, // the model picker, open: { sel, effort }
   models: null, // Claude Code's, once asked
@@ -168,14 +169,14 @@ function onUpdate(u) {
     }
     case 'models': set({ models: u.models, modelsError: u.error || '' }); break;
     case 'files': if (S.mention && u.seq === mentionSeq) set({ mention: { ...S.mention, items: u.items, sel: 0, stale: false } }); break;
-    case 'mcp': case 'skills': {
+    case 'mcp': case 'skills': case 'plugins': {
       let p = S.panel;
       if (p?.kind === u.t && p.acting && !u.action) break; // a poll's, from before the action: its answer comes
       if (p?.kind === u.t && (u.action || !p.acting)) {
         p = { ...p, busy: false, acting: false, signIn: u.signIn || p.signIn, name: u.signIn ? u.name : p.name };
         if (u.action || u.error) p.error = u.error || ''; // a poll keeps an action's error
       }
-      set(u.t === 'mcp' ? { mcp: u.servers, panel: p } : { skills: u.skills, panel: p });
+      set({ [u.t]: u.t === 'mcp' ? u.servers : u[u.t], panel: p });
       break;
     }
     case 'restore': if (u.note) notice('info', u.note); restore(u.text, u.files); break;
@@ -340,6 +341,7 @@ const commands = [
   ['/effort', 'show or set their effort'],
   ['/mcp', 'your Claude Code MCP servers: status, on or off, sign in'],
   ['/skills', 'your Claude Code skills: on or off'],
+  ['/plugins', 'your Claude Code plugins, their skills and MCP servers at once: on or off'],
   ['/agents', 'list the subagents at work'],
   ['/help', 'list the commands'],
 ];
@@ -359,7 +361,7 @@ async function submit(now) {
   }
   if (S.conn !== 'open') { notice('warn', 'Not connected: your message stays in the input until opt-chat is back.'); return; }
   if (/^\/model\s*$/.test(inputEl.value) && !S.atts.length) { setInput(''); openPicker(); return; }
-  const panel = inputEl.value.match(/^\/(mcp|skills)\s*$/);
+  const panel = inputEl.value.match(/^\/(mcp|skills|plugins)\s*$/);
   if (panel && !S.atts.length) { setInput(''); openPanel(panel[1]); return; }
   submitting = true;
   try {
@@ -1220,17 +1222,18 @@ function openPanel(kind) {
 
 function closePanel() { clearInterval(panelTimer); set({ panel: null }); inputEl?.focus(); }
 
-function panelRows() { return (S.panel?.kind === 'mcp' ? S.mcp : S.skills) || []; }
+function panelRows() { return (S.panel && S[S.panel.kind]) || []; }
 
 function panelAct(action, row, extra) {
   if (!row || S.panel.acting) return; // one at a time: a second Enter would undo the first
   set({ panel: { ...S.panel, busy: true, acting: true, error: '' } });
-  send({ t: S.panel.kind, action, name: row.name, ...extra });
+  send({ t: S.panel.kind, action, name: row.id || row.name, ...extra });
 }
 
 function toggleRow(row) {
   if (!row) return;
   if (S.panel.kind === 'mcp') panelAct(row.off ? 'on' : 'off', row);
+  else if (S.panel.kind === 'plugins') panelAct(row.on ? 'off' : 'on', row);
   else if (!row.locked_by) panelAct('set', row, { state: row.state === 'off' ? 'on' : 'off' });
 }
 
@@ -1273,26 +1276,38 @@ function McpRow({ s }) {
 function SkillRow({ s }) {
   const on = s.state !== 'off';
   return html`<span class="lbl">${s.display_name || s.name}</span><span class=${'st ' + (on ? 'ok' : 'dim')}>${on ? '●' : '○'} ${s.state}</span>
-    <span class="desc">${s.source}${s.locked_by ? ` (managed by its ${s.locked_by})` : ''} · ${s.tokens} tokens · ${oneLine(s.description, 120)}</span>`;
+    <span class="desc">${s.source}${s.locked_by === 'plugin' ? ' (its plugin\'s: /plugins)' : s.locked_by ? ` (managed by its ${s.locked_by})` : ''} · ${s.tokens} tokens · ${oneLine(s.description, 120)}</span>`;
 }
 
+function PluginRow({ s }) {
+  const what = [s.skills && count(s.skills, 'skill'), s.mcp && count(s.mcp, 'MCP server'), s.tokens && `${s.tokens.toLocaleString()} tokens`].filter(Boolean).join(' · ');
+  return html`<span class="lbl">${s.name}</span><span class=${'st ' + (s.on ? 'ok' : 'dim')}>${s.on ? '● on' : '○ off'}</span>
+    <span class="desc">${s.id.slice(s.name.length + 1)} · ${s.scope}${s.on && what ? ' · ' + what : ''}</span>`;
+}
+
+const panels = {
+  mcp: { title: 'MCP servers', Row: McpRow, on: r => !r.off,
+    about: (on, all) => `Your Claude Code MCP servers, as its /mcp lists them: ${on.length} of ${all.length} on for Opt. Off is kept for Opt alone; a sign-in is Claude Code's.` },
+  skills: { title: 'Skills', Row: SkillRow, on: r => r.state !== 'off',
+    about: (on, all) => `Your Claude Code skills, as its /skills lists them: ${on.length} of ${all.length} on, ${on.reduce((n, r) => n + (r.tokens || 0), 0).toLocaleString()} tokens listed. On or off is kept for Opt alone, from its next call.` },
+  plugins: { title: 'Plugins', Row: PluginRow, on: r => r.on,
+    about: (on, all) => `Your Claude Code plugins, as its /plugins lists them: ${on.length} of ${all.length} on for Opt, each with its skills and MCP servers. On or off is kept for Opt alone, from its next call.` },
+};
+
 function Panel() {
-  const p = S.panel, rows = panelRows(), mcp = p.kind === 'mcp';
+  const p = S.panel, rows = panelRows(), mcp = p.kind === 'mcp', kind = panels[p.kind];
   const ref = useRef();
   useEffect(() => ref.current.focus(), [p.kind]);
-  const loaded = mcp ? S.mcp : S.skills;
-  const on = rows.filter(r => mcp ? !r.off : r.state !== 'off');
-  return html`<div class="picker panel" role="dialog" aria-label=${mcp ? 'MCP servers' : 'Skills'} tabindex="-1" ref=${ref}>
-    <div class="title">${mcp ? 'MCP servers' : 'Skills'}${p.busy ? html` <span class="dim">…</span>` : ''}</div>
-    <div class="dim">${mcp
-      ? `Your Claude Code MCP servers, as its /mcp lists them: ${on.length} of ${rows.length} on for Opt. Off is kept for Opt alone; a sign-in is Claude Code's.`
-      : `Your Claude Code skills, as its /skills lists them: ${on.length} of ${rows.length} on, ${on.reduce((n, r) => n + (r.tokens || 0), 0).toLocaleString()} tokens listed. On or off is kept for Opt alone, from its next call.`}</div>
+  const loaded = S[p.kind];
+  return html`<div class="picker panel" role="dialog" aria-label=${kind.title} tabindex="-1" ref=${ref}>
+    <div class="title">${kind.title}${p.busy ? html` <span class="dim">…</span>` : ''}</div>
+    <div class="dim">${kind.about(rows.filter(kind.on), rows)}</div>
     ${p.error && html`<div class="err">${p.error}</div>`}
     ${/^https?:\/\//i.test(p.signIn || '') && html`<div>Sign in to ${p.name}: <a href=${p.signIn} target="_blank" rel="noopener noreferrer">open the sign-in page</a>, then come back here.</div>`}
     ${!loaded ? html`<div class="dim">Asking Claude Code…</div>` : html`<div class="rows list">
-      ${rows.map((r, j) => html`<div class=${'row' + (j === p.sel ? ' sel' : '')} key=${r.name}
+      ${rows.map((r, j) => html`<div class=${'row' + (j === p.sel ? ' sel' : '')} key=${r.id || r.name}
           onClick=${() => { set({ panel: { ...S.panel, sel: j } }); ref.current.focus(); }} onDblClick=${() => toggleRow(r)}>
-        <span class="ptr">${j === p.sel ? '❯' : ''}</span>${mcp ? html`<${McpRow} s=${r}/>` : html`<${SkillRow} s=${r}/>`}
+        <span class="ptr">${j === p.sel ? '❯' : ''}</span><${kind.Row} s=${r}/>
       </div>`)}
       ${!rows.length && html`<div class="dim">None.</div>`}
     </div>`}
@@ -1427,7 +1442,7 @@ function Help() {
     ['@', 'find a file or folder by its path or name: Tab or Enter takes it'],
     ['Alt+P · /model', 'choose the model, ←/→ its effort'],
     ['Shift+Tab', 'permission mode: manual, accept edits, auto'],
-    ['/mcp · /skills', 'your Claude Code MCP servers and skills: on or off'],
+    ['/mcp · /skills · /plugins', 'your Claude Code MCP servers, skills and plugins: on or off'],
     ['/agents /help', 'subagents at work; the commands'],
   ];
   return html`<div class="help">${rows.map(([a, b]) => html`<kbd>${a}</kbd><span>${b}</span>`)}</div>`;

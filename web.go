@@ -276,7 +276,7 @@ type request struct {
 	Mode   string       `json:"mode"`   // mode: the permission mode
 	Allow  bool         `json:"allow"`  // answer: yes
 	Always bool         `json:"always"` // answer: yes, and don't ask again
-	Action string       `json:"action"` // mcp: on, off, reconnect, signin; skills: set; empty: list
+	Action string       `json:"action"` // mcp: on, off, reconnect, signin; skills: set; plugins: on, off; empty: list
 	Name   string       `json:"name"`   // mcp, skills: which
 	State  string       `json:"state"`  // skills: on, off, name-only, user-invocable-only
 }
@@ -323,6 +323,12 @@ type (
 		T     string           `json:"t"` // files: the @ menu's
 		Seq   int              `json:"seq"`
 		Items []fileSuggestion `json:"items"`
+	}
+	pluginsReply struct {
+		T       string   `json:"t"` // plugins: the user's plugins
+		Plugins []plugin `json:"plugins"`
+		Action  string   `json:"action,omitzero"`
+		Error   string   `json:"error,omitzero"`
 	}
 	skillsReply struct {
 		T      string  `json:"t"` // skills: the user's skills
@@ -518,12 +524,12 @@ func (w *webServer) serve(req request) any {
 // slow are the requests that ask Claude Code, which can take seconds.
 func slow(req request) bool {
 	switch req.T {
-	case "models", "mcp", "skills", "files":
+	case "models", "mcp", "skills", "plugins", "files":
 		return true
 	case "send":
 		w, _, _ := strings.Cut(strings.TrimSpace(req.Text), " ")
 		w = strings.ToLower(w)
-		return w == "/mcp" || w == "/skills"
+		return w == "/mcp" || w == "/skills" || w == "/plugins"
 	}
 	return false
 }
@@ -543,7 +549,7 @@ func (w *webServer) serveSlow(ctx context.Context, req request) any {
 			items = []fileSuggestion{}
 		}
 		return filesReply{T: "files", Seq: req.Seq, Items: items}
-	case "send": // /mcp or /skills
+	case "send": // /mcp, /skills or /plugins
 		out, _ := command(a, req.Text)
 		w.c.hub.send(noticeUpdate{T: "notice", Level: "info", S: out}) // all pages: as a command's answer
 		return sentReply{T: "sent", Seq: req.Seq}
@@ -567,6 +573,22 @@ func (w *webServer) serveSlow(ctx context.Context, req request) any {
 		if r.Servers, err = a.mcpServers(ctx); err != nil {
 			r.Servers, r.Error = []mcpServer{}, cmp.Or(r.Error, err.Error())
 		}
+		return r
+	case "plugins":
+		if !a.ownConfig {
+			return pluginsReply{T: "plugins", Plugins: []plugin{}, Error: "Opt runs without your Claude Code setup (-claude-config=false)."}
+		}
+		r := pluginsReply{T: "plugins", Action: req.Action}
+		if req.Action == "on" || req.Action == "off" {
+			if err := a.setPlugin(ctx, req.Name, req.Action == "on"); err != nil {
+				r.Error = err.Error()
+			}
+		}
+		ps, err := a.plugins(ctx)
+		if err != nil {
+			ps, r.Error = []plugin{}, cmp.Or(r.Error, err.Error())
+		}
+		r.Plugins = ps
 		return r
 	case "skills":
 		if !a.ownConfig {

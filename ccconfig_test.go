@@ -111,6 +111,38 @@ func TestWebConfig(t *testing.T) {
 	if u := ws.next("locked", typ("skills")); !strings.Contains(u["error"].(string), "set by plugin") {
 		t.Fatalf("a locked skill: %v", u)
 	}
+	// Plugins: listed once each, with what they bring; one turned off for
+	// Opt goes to the next call's settings, and the control call starts
+	// again with it.
+	ws.send(map[string]any{"t": "plugins"})
+	u = ws.next("plugins", typ("plugins"))
+	if ps := u["plugins"].([]any); len(ps) != 2 || ps[0].(map[string]any)["skills"] != 1.0 || ps[0].(map[string]any)["tokens"] != 20.0 ||
+		ps[0].(map[string]any)["on"] != true || ps[1].(map[string]any)["on"] != false {
+		t.Fatalf("plugins: %v", u)
+	}
+	ctl := a.ctl
+	ws.send(map[string]any{"t": "plugins", "action": "off", "name": "plug@market"})
+	if u := ws.next("plugin off", typ("plugins")); u["plugins"].([]any)[0].(map[string]any)["on"] != false || u["error"] != nil {
+		t.Fatalf("after off: %v", u)
+	}
+	a.mu.Lock()
+	set = a.ownSettings()
+	a.mu.Unlock()
+	if s := loadSettings(a.chat.dir); s.Plugins["plug@market"] != false || len(s.Plugins) != 1 ||
+		set != `{"disableAllHooks":true,"skillOverrides":{"one":"off"},"enabledPlugins":{"plug@market":false}}` {
+		t.Fatalf("settings: %+v; a call's: %s", s, set)
+	}
+	a.ctlMu.Lock()
+	again := a.ctl
+	a.ctlMu.Unlock()
+	if again == ctl {
+		t.Fatal("the control call goes on with the old plugins")
+	}
+	ws.send(map[string]any{"t": "plugins", "action": "off", "name": "nope@market"})
+	if u := ws.next("no such plugin", typ("plugins")); !strings.Contains(u["error"].(string), "no plugin") {
+		t.Fatalf("a missing plugin: %v", u)
+	}
+
 	ws.send(map[string]any{"t": "skills", "action": "set", "name": "nope", "state": "off"})
 	if u := ws.next("no such skill", typ("skills")); !strings.Contains(u["error"].(string), "no skill") {
 		t.Fatalf("a missing skill: %v", u)

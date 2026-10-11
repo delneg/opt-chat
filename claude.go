@@ -36,6 +36,7 @@ type Agent struct {
 	ownConfig       bool              // turns and subagents get the user's Claude Code skills, plugins and MCP servers
 	mcpOff          []string          // of those servers, the ones the user turned off here
 	skillsSet       map[string]string // the user's skills' states set here: on, off, ...
+	pluginsSet      map[string]bool   // and plugins turned on or off here, by name@marketplace
 	mcpUp           []string          // the servers connected when the last call sent its view: see mcpSettle
 	mcpSeen         []string          // and those listed then
 
@@ -229,12 +230,13 @@ const (
 // same as a turn's, so that on one model both read one cache entry (gist §4);
 // with the user's own setup, a turn's add Skill and ToolSearch.
 // ownSettings are a call's settings over the user's own: never their hooks;
-// their skills' states as set here. Under a.mu.
+// their skills and plugins on or off as set here. Under a.mu.
 func (a *Agent) ownSettings() string {
 	b, _ := json.Marshal(struct {
 		DisableAllHooks bool              `json:"disableAllHooks"`
 		SkillOverrides  map[string]string `json:"skillOverrides,omitzero"`
-	}{true, a.skillsSet}, json.Deterministic(true))
+		EnabledPlugins  map[string]bool   `json:"enabledPlugins,omitzero"`
+	}{true, a.skillsSet, a.pluginsSet}, json.Deterministic(true))
 	return string(b)
 }
 

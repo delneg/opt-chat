@@ -214,10 +214,19 @@ function loadOlder() {
 
 let inputEl = null, histPos = -1, histList = [], draft = '', pathTimer = 0, uploadSeq = 0;
 
+// autosize fits the input to its text. Measuring shrinks it for a moment,
+// which makes the log taller, and the browser clamps the log's scroll to
+// fit: put back, it would sit lines above where it was, a keystroke at a
+// time. So the log keeps its place: at the end if it was there.
 function autosize() {
   if (!inputEl) return;
+  const log = document.querySelector('.scroll');
+  const top = log?.scrollTop, atEnd = log && log.scrollHeight - log.scrollTop - log.clientHeight < 2;
+  const own = inputEl.scrollTop; // past its max height it scrolls too
   inputEl.style.height = 'auto';
   inputEl.style.height = inputEl.scrollHeight + 'px';
+  inputEl.scrollTop = own;
+  if (log) log.scrollTop = atEnd ? log.scrollHeight : top;
 }
 
 function setInput(text) {

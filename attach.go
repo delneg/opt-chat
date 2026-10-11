@@ -425,13 +425,9 @@ func (c *Chat) compose(text string, atts []attachment) message {
 		}
 		switch {
 		case at.At != "":
-			m.inline = append(m.inline, placed{anchors: []string{at.At}, mark: mark})
+			m.inline = append(m.inline, placed{at: at.At, mark: mark})
 		case at.path != "":
-			anchors := []string{at.path}
-			if home, _ := os.UserHomeDir(); home != "" && strings.HasPrefix(at.path, home+"/") {
-				anchors = append(anchors, "~"+strings.TrimPrefix(at.path, home))
-			}
-			m.inline = append(m.inline, placed{anchors: anchors, mark: mark, keep: true})
+			m.inline = append(m.inline, placed{path: at.path, mark: mark})
 		default:
 			marks = append(marks, mark)
 		}
@@ -442,44 +438,72 @@ func (c *Chat) compose(text string, atts []attachment) message {
 
 // placed is an attachment's mark with its place in the message's text.
 type placed struct {
-	anchors []string // the text it goes at: the first of these found
-	mark    string
-	keep    bool // the anchor stays, the mark after it (a path); else the mark replaces it (a placeholder)
+	at   string // a placeholder, as "[Image #1]": the mark replaces it
+	path string // or the file's path: the mark goes after it, where the text names it
+	mark string
 }
 
-// place puts each mark in text, where its anchor first is; the marks with
-// no place found are returned, in order.
+// place puts each mark in text, where its placeholder or path first is;
+// the marks with no place found are returned, in order. A path is a whole
+// word of the text, as filePaths reads them, quotes and brackets and all,
+// not in a block of code.
 func place(text string, marks []placed) (string, []string) {
 	type hit struct {
-		i, j int
-		p    placed
+		i, j int // the placeholder; or i == j, after the path
+		mark string
 	}
 	var hits []hit
-	var left []string
-	for _, p := range marks {
-		i := -1
-		var anchor string
-		for _, a := range p.anchors {
-			if i = strings.Index(text, a); i >= 0 {
-				anchor = a
-				break
+	taken := func(i, j int) bool {
+		return slices.ContainsFunc(hits, func(h hit) bool { return i < h.j && h.i < j || i == j && i == h.i })
+	}
+	var words [][]int // the text's words out of blocks of code, as filePaths reads them
+	if slices.ContainsFunc(marks, func(p placed) bool { return p.path != "" }) {
+		code := fenced.FindAllStringIndex(text, -1)
+		for _, w := range pathToken.FindAllStringIndex(text, -1) {
+			if !slices.ContainsFunc(code, func(c []int) bool { return w[0] < c[1] && c[0] < w[1] }) {
+				words = append(words, w)
 			}
 		}
-		if i < 0 || slices.ContainsFunc(hits, func(h hit) bool { return i < h.j && h.i < i+len(anchor) }) {
+	}
+	home, _ := os.UserHomeDir()
+	var left []string
+	for _, p := range marks {
+		i, j := -1, -1
+		if p.at != "" {
+			for from := 0; ; {
+				k := strings.Index(text[from:], p.at)
+				if k < 0 {
+					break
+				}
+				if k += from; !taken(k, k+len(p.at)) {
+					i, j = k, k+len(p.at)
+					break
+				}
+				from = k + 1
+			}
+		} else {
+			for _, w := range words {
+				if tokenPath(text[w[0]:w[1]], home) == p.path && !taken(w[1], w[1]) {
+					i, j = w[1], w[1]
+					break
+				}
+			}
+		}
+		if i < 0 {
 			left = append(left, p.mark)
 			continue
 		}
-		hits = append(hits, hit{i, i + len(anchor), p})
+		hits = append(hits, hit{i, j, p.mark})
 	}
 	slices.SortFunc(hits, func(a, b hit) int { return a.i - b.i })
 	var out strings.Builder
 	prev := 0
 	for _, h := range hits {
 		out.WriteString(text[prev:h.i])
-		if h.p.keep {
-			out.WriteString(text[h.i:h.j] + " ")
+		if h.i == h.j { // after a path
+			out.WriteString(" ")
 		}
-		out.WriteString(h.p.mark)
+		out.WriteString(h.mark)
 		prev = h.j
 	}
 	out.WriteString(text[prev:])
@@ -525,18 +549,7 @@ func filePaths(text string) []string {
 	var out []string
 	home, _ := os.UserHomeDir()
 	for _, tok := range pathToken.FindAllString(fenced.ReplaceAllString(text, ""), -1) {
-		p := escaped.ReplaceAllString(tok, "$1")
-		if i := strings.LastIndex(p, "]("); i >= 0 { // a markdown link
-			p = p[i+2:]
-		}
-		p = strings.TrimLeft(p, "@([{<`")       // @: a file mentioned, as the page's @ completes it
-		p = strings.TrimRight(p, ".,;:!?)]}>`") // a path ending a sentence, or in brackets
-		if tok[0] == '\'' || tok[0] == '"' {
-			p = tok[1 : len(tok)-1]
-		}
-		if rest, ok := strings.CutPrefix(p, "~/"); ok {
-			p = filepath.Join(home, rest)
-		}
+		p := tokenPath(tok, home)
 		if !filepath.IsAbs(p) || slices.Contains(out, p) {
 			continue
 		}
@@ -548,4 +561,23 @@ func filePaths(text string) []string {
 		return nil
 	}
 	return out
+}
+
+// tokenPath is the path a word of a message names, if any: the word
+// unquoted, out of a markdown link, brackets or a sentence's end, and from
+// ~/ made absolute.
+func tokenPath(tok, home string) string {
+	p := escaped.ReplaceAllString(tok, "$1")
+	if i := strings.LastIndex(p, "]("); i >= 0 { // a markdown link
+		p = p[i+2:]
+	}
+	p = strings.TrimLeft(p, "@([{<`")       // @: a file mentioned, as the page's @ completes it
+	p = strings.TrimRight(p, ".,;:!?)]}>`") // a path ending a sentence, or in brackets
+	if tok[0] == '\'' || tok[0] == '"' {
+		p = tok[1 : len(tok)-1]
+	}
+	if rest, ok := strings.CutPrefix(p, "~/"); ok {
+		p = filepath.Join(home, rest)
+	}
+	return p
 }

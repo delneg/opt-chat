@@ -302,3 +302,29 @@ func TestPlaced(t *testing.T) {
 		t.Fatalf("after the edit: %s", full)
 	}
 }
+
+// A path's mark goes after the whole word naming it: never into a longer
+// path, a link, quotes or a block of code.
+func TestPlacePaths(t *testing.T) {
+	home, _ := os.UserHomeDir()
+	for _, c := range []struct {
+		text  string
+		marks []placed
+		want  string
+	}{
+		{"see /tmp/a.txt and /tmp/a", []placed{{path: "/tmp/a", mark: "<A>"}, {path: "/tmp/a.txt", mark: "<B>"}},
+			"see /tmp/a.txt <B> and /tmp/a <A>"},
+		{"look at `~/x.png` here", []placed{{path: home + "/x.png", mark: "<A>"}}, "look at `~/x.png` <A> here"},
+		{"[it](/tmp/x.png), then", []placed{{path: "/tmp/x.png", mark: "<A>"}}, "[it](/tmp/x.png), <A> then"},
+		{"'/tmp/my x.png' ok", []placed{{path: "/tmp/my x.png", mark: "<A>"}}, "'/tmp/my x.png' <A> ok"},
+		{`@~/My\ File.png ok`, []placed{{path: home + "/My File.png", mark: "<A>"}}, `@~/My\ File.png <A> ok`},
+		{"```\ncat /tmp/x.png\n```\nlook at /tmp/x.png", []placed{{path: "/tmp/x.png", mark: "<A>"}},
+			"```\ncat /tmp/x.png\n```\nlook at /tmp/x.png <A>"},
+		{"a [Image #1] b [Image #1]", []placed{{at: "[Image #1]", mark: "<A>"}, {at: "[Image #1]", mark: "<B>"}}, "a <A> b <B>"},
+	} {
+		got, left := place(c.text, c.marks)
+		if got != c.want || len(left) > 0 {
+			t.Errorf("place(%q) = %q, left %q; want %q", c.text, got, left, c.want)
+		}
+	}
+}

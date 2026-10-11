@@ -32,8 +32,8 @@ const (
 	viewHi  = 128_000 // ...once it passes this
 	cviewLo = 16_000  // same sawtooth for the compactions' view
 	cviewHi = 32_000
-	jobs    = 8      // compactions running at once
-	clipMax = 30_000 // characters: a tool output's head and tail, and the most in one message
+	jobs    = 8                // compactions running at once
+	clipMax = 30_000           // characters: a tool output's head and tail, and the most in one message
 	waitMax = 10 * time.Minute // a failed compaction's longest wait
 	giveUp  = 4                // failures while other lines got built: the line is its source, cut
 	// A stuck compaction must not hold a job slot forever.
@@ -83,14 +83,14 @@ type Chat struct {
 	mu      sync.Mutex
 	msgs    []Msg
 	tree    map[key]string
-	view    view         // what turns see
-	cview   view         // what compactions see
-	queued  map[key]bool // waiting in ready0/readyM or running
-	busy    map[key]bool // running
+	view    view             // what turns see
+	cview   view             // what compactions see
+	queued  map[key]bool     // waiting in ready0/readyM or running
+	busy    map[key]bool     // running
 	failing map[key]*failure // lines whose compaction failed, until built
-	ready0  []int        // messages whose line needs a model call, in order
-	readyM  []key        // merges whose line needs a model call
-	written int          // lines a model has built in this run
+	ready0  []int            // messages whose line needs a model call, in order
+	readyM  []key            // merges whose line needs a model call
+	written int              // lines a model has built in this run
 	changed chan struct{}
 	hub     *hub // where what happens is shown; nil: nowhere
 	// compact builds one line with a model; set before the first pump, nil

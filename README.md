@@ -94,3 +94,8 @@ go test -short ./...   # skips those
 
 The tests run against a fake `claude`: the test binary itself, speaking
 stream-json.
+
+## License
+
+[MIT](LICENSE). The libraries in `web/vendor` keep their own licenses
+([web/vendor/LICENSES](web/vendor/LICENSES)).

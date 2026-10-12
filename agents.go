@@ -194,7 +194,7 @@ func (a *Agent) resume(name, text string) string {
 // with a message, resumed.
 func (a *Agent) runAgent(name string, rec agentRecord, msg string) {
 	task, effort, model, window := rec.Task, rec.Effort, rec.Model, rec.Window
-	resumed := msg != ""
+	resumed, note := msg != "", resumeNote(rec.State)+msg
 	size := 0 // its context: the tokens its latest request read
 	send := func(text string) {
 		a.chat.hub.notice("info", "[%s] done", name)
@@ -301,10 +301,10 @@ func (a *Agent) runAgent(name string, rec agentRecord, msg string) {
 	var second []block
 	switch {
 	case resumed && rec.Compacted: // its view and task again, as a tell after a compaction brings them
-		second = anchored(c.viewNow(), name, task, []string{resumeNote + msg})
+		second = anchored(c.viewNow(), name, task, []string{note})
 		a.note(name, func(r *agentRecord) { r.Compacted = false })
 	case resumed:
-		second = []block{textBlock(resumeNote + msg)}
+		second = []block{textBlock(note)}
 	default:
 		var first []block
 		first, second = viewMessages(lines, []block{textBlock(fmt.Sprintf("You are subagent [%s]. Your task:\n%s", name, task))})

@@ -74,9 +74,15 @@ func saved(session string) bool {
 	return len(found) > 0
 }
 
-// resumeNote begins the message that resumes a subagent's session.
-const resumeNote = "opt-chat resumed your call from its saved session (it had restarted, or your call had ended after your report): " +
-	"a tool call underway then was cut short. Opt's message:\n"
+// resumeNote begins the message that resumes a subagent's session, its
+// record in state: one whose call ended after its report, or one stopped
+// mid-task.
+func resumeNote(state string) string {
+	if state == "ended" || state == "resting" { // resting: its call ended before the record said so
+		return "Your call had ended after your report; opt-chat resumed it from its saved session. Opt's message:\n"
+	}
+	return "opt-chat stopped while you worked, and resumed your call from its saved session: a tool call underway then was cut short. Opt's message:\n"
+}
 
 // recoverAgents, as opt-chat starts, marks the subagents a crash stopped
 // mid-task, and returns a report for each, for the chat; those stopped in

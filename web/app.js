@@ -1693,7 +1693,7 @@ function toggleRail(name) {
 }
 
 function openAgent(name) {
-  set({ agent: { name, steps: [], cut: false, loading: true } });
+  set({ agent: { name, steps: [], off: 0, cut: false, loading: true } });
   send({ t: 'steps', name });
 }
 
@@ -1789,7 +1789,7 @@ function stepMsgs(name, steps, off) {
 function AgentView({ a, s, now }) {
   const ref = useRef(), stick = useRef(true);
   const busy = s && (s.state === 'working' || s.state === 'starting');
-  const list = useMemo(() => items(stepMsgs(a.name, a.steps, a.off || 0)).map(it => ({ ...it, state: it.m.kind !== 'tool' ? '' : it.echo ? 'done' : busy ? 'run' : 'cut' })), [a.steps, busy]);
+  const list = useMemo(() => items(stepMsgs(a.name, a.steps, a.off)).map(it => ({ ...it, state: it.m.kind !== 'tool' ? '' : it.echo ? 'done' : busy ? 'run' : 'cut' })), [a.steps, busy]);
   const toBottom = () => { const el = ref.current; if (el) el.scrollTop = el.scrollHeight; };
   const onResize = useMemo(() => () => { if (stick.current) toBottom(); }, []);
   useLayoutEffect(() => { if (stick.current) toBottom(); });

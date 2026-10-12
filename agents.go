@@ -239,8 +239,9 @@ func (a *Agent) runAgent(name, task, effort, model string, window int) {
 			case e.Type == "assistant" && b.Type == "text" && !acking:
 				a.agentWrite(name, "agent", b.Text)
 			case e.Type == "assistant" && b.Type == "tool_use":
-				a.setSub(name, func(s *sub) { s.Step, s.StepAt = head(toolCall(b), 400), nowMs(); s.Steps++ })
-				a.agentWrite(name, "tool", toolCall(b))
+				call := toolCall(b)
+				a.setSub(name, func(s *sub) { s.Step, s.StepAt = head(call, 400), nowMs(); s.Steps++ })
+				a.agentWrite(name, "tool", call)
 			case e.Type == "user" && b.Type == "tool_result":
 				out, _ := resultContent(b.Content)
 				a.agentWrite(name, "echo", clip(out, clipMax))

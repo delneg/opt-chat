@@ -50,10 +50,6 @@ func (a *Agent) setSub(name string, f func(*sub)) {
 	a.subLocked(name, f)
 }
 
-func (a *Agent) subState(name, state string) {
-	a.setSub(name, func(s *sub) { s.State = state })
-}
-
 func done(s *sub) bool { return s.State == "ended" || s.State == "failed" }
 
 // subsLocked lists them, the newest first, the ended ones past subsKept
@@ -137,20 +133,20 @@ func (a *Agent) steps(name string) ([]step, bool, error) {
 // parseSteps splits a log into its entries, each "kind: text" and a blank
 // line; a text's own blank line followed by such a start is taken for one.
 func parseSteps(b []byte) []step {
+	blank := []byte("\n\n")
+	var at [][]int
+	for _, m := range stepStart.FindAllSubmatchIndex(b, -1) {
+		if m[0] == 0 || bytes.HasSuffix(b[:m[0]], blank) {
+			at = append(at, m)
+		}
+	}
 	out := []step{}
-	at := stepStart.FindAllSubmatchIndex(b, -1)
 	for j, m := range at {
-		if m[0] > 0 && !bytes.HasSuffix(b[:m[0]], []byte("\n\n")) {
-			continue
-		}
 		end := len(b)
-		for _, n := range at[j+1:] {
-			if bytes.HasSuffix(b[:n[0]], []byte("\n\n")) {
-				end = n[0]
-				break
-			}
+		if j+1 < len(at) {
+			end = at[j+1][0]
 		}
-		out = append(out, step{Kind: string(b[m[2]:m[3]]), Text: string(bytes.TrimSuffix(b[m[1]:end], []byte("\n\n")))})
+		out = append(out, step{Kind: string(b[m[2]:m[3]]), Text: string(bytes.TrimSuffix(b[m[1]:end], blank))})
 	}
 	return out
 }

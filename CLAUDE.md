@@ -1,0 +1,60 @@
+# Working on opt-chat
+
+Read [README.md](README.md) first, then the [design notes](docs/2026-10-12-design.md)
+for why the code does what it does. Dated docs in `docs/` record decisions
+as of their date; add a new dated file rather than rewriting history.
+
+## Build and test
+
+```sh
+go build -o opt-chat .
+go test ./...          # a few minutes
+go test -short ./...   # skips the fsync-heavy tests
+gofmt -l .             # must print nothing
+```
+
+The tests never call the real `claude`: the test binary plays it, speaking
+stream-json (see `fakeChat`, `fakeAgent` and `TestMain` in the tests).
+`TestMain` points `CLAUDE_CONFIG_DIR` at a temp dir, so subagent sessions
+land there. The web tests go through real HTTP and WebSocket connections.
+
+## Map
+
+| file | what it holds |
+|---|---|
+| `main.go` | flags, startup, the terminal |
+| `chat.go`, `view.go` | the log, the summary tree, the view and its merges |
+| `claude.go` | `claude -p` calls: turns, compactions, subagents |
+| `agents.go`, `subs.go`, `resume.go` | subagents, the page's agents rail, resuming saved sessions |
+| `mcp.go` | the `zoom`, `date`, `search`, `spawn` and `tell` tools over MCP |
+| `hub.go`, `web.go` | updates to pages and the terminal; the page's server and its guards |
+| `attach.go`, `mention.go` | attachments; the `@` path menu |
+| `import.go` | importing past chats |
+| `ccconfig.go`, `control.go`, `perms.go`, `limits.go` | the user's Claude Code setup, Claude Code's own lists, permission modes, usage limits |
+| `prompt.md` | the system prompt |
+| `web/` | the page: Preact and htm, no build step; `web/vendor/` is vendored as is |
+
+## Rules
+
+- The main chat never compacts, by any setting or means: the view is its
+  memory. Claude Code's own auto-compaction stays off in every call.
+  Subagents compact only when the user opts in, and only at rest, never
+  mid-step.
+- New behavior is off by default and behind a setting or flag.
+- Only subagent calls keep a Claude Code session on disk
+  (`--session-id`/`--resume`); turns, compactions and control calls run
+  with `--no-session-persistence`.
+- The page is light-theme only.
+- Never write the user's Claude Code settings (`~/.claude/settings*.json`);
+  opt-chat's own choices go in `<dir>/settings.json`.
+- To try a build against a real chat, copy the chat directory, delete
+  `web.json` and `lock` in the copy, and run it on another port with
+  `-open=false -dir <copy>`. Never point a test build at a live chat.
+- The branch is `master`.
+
+## Style
+
+Comments, docs and commit messages are plain English in the voice of the
+code around them: short sentences that say what a thing is or does, no
+marketing words. Keep README.md under about 100 lines; longer prose goes
+in the guide or a dated doc.

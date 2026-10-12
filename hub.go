@@ -125,6 +125,7 @@ type status struct {
 	Effort    string   `json:"effort"`
 	Mode      string   `json:"mode"` // the permission mode
 	Agents    []string `json:"agents"`
+	Subs      []sub    `json:"subs,omitzero"`   // the agents rail's
 	Limits    []window `json:"limits,omitzero"` // the plan's usage
 	Dir       string   `json:"dir"`
 	Cwd       string   `json:"cwd"` // where Opt's tools run
@@ -436,7 +437,7 @@ func watchStatus(c *Chat, a *Agent, h *hub, stop <-chan struct{}) {
 
 func currentStatus(c *Chat, a *Agent) status {
 	a.mu.Lock()
-	s := status{Model: a.model, Effort: a.effort, Mode: a.perm, Agents: sortedKeys(a.running), Cwd: a.cwd}
+	s := status{Model: a.model, Effort: a.effort, Mode: a.perm, Agents: sortedKeys(a.running), Subs: a.subsLocked(), Cwd: a.cwd}
 	a.mu.Unlock()
 	s.Limits = a.windows(time.Now())
 	c.mu.Lock()

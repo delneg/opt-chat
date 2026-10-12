@@ -91,6 +91,9 @@ The page works like Claude Code:
   their own name too): ↑/↓ choose, Tab completes, Enter runs the chosen
   one, Esc shuts the list. A line starting with any other `/word`, or with
   a skill turned off in `/skills`, is not sent: it comes back to the input.
+  A skill completes mid-text too, as in Claude Code: `/` and part of its
+  name after a space lists your skills, and Tab or Enter puts the name in
+  (Enter sends nothing there).
 - Shift+Tab cycles the permission mode, as in Claude Code: manual (only
   reads go ahead unasked), accept edits (file edits too), auto (whatever
   Claude Code's classifier deems safe). The switch reaches the turn and
@@ -103,10 +106,12 @@ The page works like Claude Code:
   questions show its name, and a no lets it go on. In the terminal (-repl),
   the next line answers: y, a, n, or anything else for no with that line
   sent to Opt as what to do instead.
-- The bar at the bottom shows the memory: messages, the view's size, what is
-  left to summarize, and the last turn's context (the tokens its biggest
-  request read: the view, the prompt and tools, your message, its steps) and
-  output; the spinner shows the context as the turn goes. It shows your
+- The bar at the bottom shows the memory: messages (all of the chat's, kept
+  for good), the view's size (what each turn reads instead of the whole
+  chat), what is left to summarize and the summary lines written since
+  opt-chat started, and the last turn's tokens: `in`, its context (what its
+  biggest request read: the view, the prompt and tools, your message, its
+  steps), and `out`, what Opt wrote. Hover over each for what it is. The spinner shows the context as the turn goes. It shows your
   plan's limits too, as Claude Code's status line can: `5h 10% · 7d 31%`,
   and any other window while it is in use (a model's weekly one, or
   credits), with when each resets on hover. Every call reports the two
@@ -322,6 +327,16 @@ work, a fix), and it reports again. After that its call ends, and a new
 subagent can read its steps with `zoom("Name")`.
 Subagents can't start or tell subagents. Quitting stops them, and each one's
 report then says it was stopped.
+
+The page shows this run's subagents in a rail right of the chat, when the
+window has room for it: each one's state (working and for how long, a
+question waiting on you, reported and resting, ended, failed), its model,
+effort and context, and the tool call it is in now, with how long it has
+run. Click one to see its steps as they come, from its log, as the chat
+shows its own: its task and Opt's tells, its text, its tool calls and their
+output; ← goes back to the list. × hides the rail, and Alt+A or the bar's
+agents show it again. In a narrow window the rail is a drawer that the
+bar's agents, or Alt+A, open; Esc closes it.
 
 A subagent worked through many steps (each a `tell` after a report) can
 outgrow its context. `/autocompact 250k` (saved in `<dir>/settings.json`;

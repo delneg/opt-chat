@@ -100,6 +100,7 @@ func (a *Agent) Spawn(name, task, effort, model string, window int) string {
 		name = fmt.Sprintf("%s-%d", base, n)
 	}
 	a.running[name] = nil // reserved until its call starts
+	a.subLocked(name, func(s *sub) { *s = sub{Name: name, Model: model, Effort: effort, State: "starting", Started: nowMs()} })
 	a.mu.Unlock()
 	go func() {
 		defer a.calls.Done() // after its report is in the chat
@@ -127,6 +128,7 @@ func (a *Agent) Tell(name, text string) string {
 	case !ok: // at work again; it reports again
 		delete(a.resting, name)
 		a.running[name], p = r.p, r.p
+		a.subLocked(name, func(s *sub) { s.State, s.Started, s.Until = "working", nowMs(), 0 })
 		a.chat.hub.notice("info", "[%s] back at work", name)
 	case p == nil:
 		return fmt.Sprintf("[%s] is starting: tell it again in a moment.", name)
@@ -158,6 +160,7 @@ func (a *Agent) agentWrite(name, kind, text string) {
 	if err := appendRaw(a.agentLog(name), []byte(kind+": "+text+"\n\n")); err != nil {
 		warn("[%s] log: %v", name, err)
 	}
+	a.chat.hub.send(stepUpdate{T: "step", Name: name, Step: step{Kind: kind, Text: text}})
 }
 
 func (a *Agent) runAgent(name, task, effort, model string, window int) {
@@ -176,6 +179,7 @@ func (a *Agent) runAgent(name, task, effort, model string, window int) {
 	report := func(text string) { // the end
 		a.mu.Lock()
 		delete(a.running, name)
+		a.subLocked(name, func(s *sub) { s.State = "failed" })
 		a.mu.Unlock()
 		send(text)
 	}
@@ -204,6 +208,7 @@ func (a *Agent) runAgent(name, task, effort, model string, window int) {
 	if window == 0 {
 		window = a.agentWindow
 	}
+	a.subLocked(name, func(s *sub) { s.Window = window })
 	a.mu.Unlock()
 	p, err := a.start(context.Background(), model, effort, roleAgent)
 	if err != nil {
@@ -220,11 +225,13 @@ func (a *Agent) runAgent(name, task, effort, model string, window int) {
 			a.agentWrite(name, "compacted", fmt.Sprintf("%d tokens to %d", e.Compact.Pre, e.Compact.Post))
 			a.chat.hub.notice("info", "[%s]'s context was compacted at rest, %s tokens to %s", name, k(e.Compact.Pre), k(e.Compact.Post))
 			size = e.Compact.Post
+			a.setSub(name, func(s *sub) { s.Context = size })
 			return
 		}
 		if e.Type == "assistant" {
 			if u := e.Message.Usage; u.Input+u.Read+u.Write > 0 {
 				size = u.Input + u.Read + u.Write
+				a.setSub(name, func(s *sub) { s.Context = size })
 			}
 		}
 		for _, b := range e.blocks() {
@@ -232,6 +239,7 @@ func (a *Agent) runAgent(name, task, effort, model string, window int) {
 			case e.Type == "assistant" && b.Type == "text" && !acking:
 				a.agentWrite(name, "agent", b.Text)
 			case e.Type == "assistant" && b.Type == "tool_use":
+				a.setSub(name, func(s *sub) { s.Step, s.StepAt = head(toolCall(b), 400), nowMs(); s.Steps++ })
 				a.agentWrite(name, "tool", toolCall(b))
 			case e.Type == "user" && b.Type == "tool_result":
 				out, _ := resultContent(b.Content)
@@ -251,6 +259,7 @@ func (a *Agent) runAgent(name, task, effort, model string, window int) {
 	a.mu.Lock()
 	p.send(second...)
 	a.running[name] = p
+	a.subLocked(name, func(s *sub) { s.State = "working" })
 	a.mu.Unlock()
 	for {
 		e, ok := p.next()
@@ -265,9 +274,11 @@ func (a *Agent) runAgent(name, task, effort, model string, window int) {
 		a.mu.Lock()
 		if r := a.resting[name]; r != nil && r.p == p && r.compacting { // the compaction's end, not a report
 			r.compacting, r.compacted = false, true
+			a.subLocked(name, func(s *sub) { s.State = "resting" })
 			if msgs := r.pending; len(msgs) > 0 { // tells that waited for it
 				delete(a.resting, name)
 				a.running[name] = p
+				a.subLocked(name, func(s *sub) { s.State, s.Started, s.Until = "working", nowMs(), 0 })
 				p.send(anchored(lines, name, task, msgs)...)
 			}
 			a.mu.Unlock()
@@ -285,10 +296,17 @@ func (a *Agent) runAgent(name, task, effort, model string, window int) {
 		delete(a.running, name)
 		r := &rest{p: p, until: time.Now().Add(agentRest), task: task, compacting: window > 0 && size > window}
 		a.resting[name] = r
+		a.subLocked(name, func(s *sub) {
+			s.State, s.Until = "resting", r.until.UnixMilli()
+			if r.compacting {
+				s.State = "compacting"
+			}
+		})
 		if len(a.resting) > restMax {
 			oldest := slices.MinFunc(slices.Collect(maps.Keys(a.resting)), func(x, y string) int { return a.resting[x].until.Compare(a.resting[y].until) })
 			a.resting[oldest].p.close()
 			delete(a.resting, oldest)
+			a.subLocked(oldest, func(s *sub) { s.State = "ended" })
 		}
 		a.mu.Unlock()
 		send(final)
@@ -300,6 +318,7 @@ func (a *Agent) runAgent(name, task, effort, model string, window int) {
 			defer a.mu.Unlock()
 			if r, ok := a.resting[name]; ok && r.p == p && !time.Now().Before(r.until) {
 				delete(a.resting, name)
+				a.subLocked(name, func(s *sub) { s.State = "ended" })
 				p.close() // with its input closed, Claude Code exits
 			}
 		})
@@ -309,6 +328,11 @@ func (a *Agent) runAgent(name, task, effort, model string, window int) {
 		delete(a.resting, name)
 	}
 	working := a.running[name] == p // its task, or a tell's, left without a reply
+	a.subLocked(name, func(s *sub) {
+		if !working {
+			s.State = "ended"
+		}
+	})
 	a.mu.Unlock()
 	if err := p.wait(); working {
 		report(failed(fmt.Errorf("no reply: %v", err)))

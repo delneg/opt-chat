@@ -59,6 +59,7 @@ type Agent struct {
 	modelList   []modelInfo              // Claude Code's, once asked
 	limits      map[string]window        // the plan's usage limits, by name: see limits.go
 	usageAsked  time.Time                // when get_usage was last asked
+	subs        map[string]*sub          // this run's subagents, as the page's rail shows them: see subs.go
 	live        map[*proc]struct{}       // turns and subagents underway: a mode switch reaches them
 	asks        []*ask                   // tool calls waiting for the user's yes or no
 	askSeq      int

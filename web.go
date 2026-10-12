@@ -277,7 +277,7 @@ type request struct {
 	Allow  bool         `json:"allow"`  // answer: yes
 	Always bool         `json:"always"` // answer: yes, and don't ask again
 	Action string       `json:"action"` // mcp: on, off, reconnect, signin; skills: set; plugins: on, off; empty: list
-	Name   string       `json:"name"`   // mcp, skills: which
+	Name   string       `json:"name"`   // mcp, skills: which; steps: the subagent's
 	State  string       `json:"state"`  // skills: on, off, name-only, user-invocable-only
 }
 
@@ -507,6 +507,13 @@ func (w *webServer) serve(req request) any {
 		defer c.mu.Unlock()
 		before := min(max(req.Before, 0), len(c.msgs))
 		return historyReply{T: "history", Msgs: c.msgs[c.whole(max(0, before-page)):before]}
+	case "steps": // the agents rail opens one: its log, then each step as it comes
+		name := agentName(req.Name)
+		steps, cut, err := h.agent.steps(name)
+		if err != nil {
+			return noticeUpdate{T: "notice", Level: "warn", S: fmt.Sprintf("No log for [%s]: %v", name, err)}
+		}
+		return stepsReply{T: "steps", Name: name, Steps: steps, Cut: cut}
 	case "paths":
 		found := []foundPath{}
 		for _, p := range filePaths(req.Text) {

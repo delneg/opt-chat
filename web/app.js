@@ -49,6 +49,10 @@ const S = {
   picker: null, // the model picker, open: { sel, effort }
   models: null, // Claude Code's, once asked
   modelsError: '',
+  wide: false, // room for the agents rail beside the chat
+  railOff: (() => { try { return !!localStorage.getItem('railOff'); } catch { return false; } })(), // hidden by the user
+  drawer: false, // no room: the rail as a drawer, open
+  agent: null, // the subagent the rail shows: { name, steps, off, cut, loading }
 };
 
 // set changes the state and renders it once per frame; in a tab in the
@@ -142,6 +146,7 @@ function onUpdate(u) {
       if (S.panel) { set({ panel: { ...S.panel, busy: true, acting: false } }); send({ t: S.panel.kind }); } // a reply lost with the connection
       if (S.picker && (!S.models || S.modelsError)) send({ t: 'models' });
       if (S.panel?.kind !== 'skills') send({ t: 'skills' }); // for the / menu
+      if (S.agent) openAgent(S.agent.name); // its steps meanwhile
       send({ t: 'usage' }); // the plan's limits, for the bar
       break;
     }
@@ -174,6 +179,8 @@ function onUpdate(u) {
     }
     case 'thought': set({ thinking: '' }); break;
     case 'status': set({ status: u.status }); break;
+    case 'steps': if (S.agent?.name === u.name) set({ agent: { name: u.name, steps: u.steps.slice(-agentStepsMax), off: 0, cut: u.cut || u.steps.length > agentStepsMax, loading: false } }); break;
+    case 'step': addStep(u.name, u.step); break;
     case 'end': set({ last: u.end }); send({ t: 'usage' }); break;
     case 'notice': notice(u.level, u.s); break;
     case 'history': { // asked before a reconnect's hello reset the log: not the page before it now
@@ -392,14 +399,25 @@ const commands = [
 
 // The / menu: the commands and the user's skills (Claude Code runs a
 // skill's /name sent to Opt) that the input starts, a plugin's skills by
-// their own name too; none once it names one alone, or was shut.
-function suggestions(text) {
-  if (!/^\/[\w:.-]*$/.test(text) || text === S.cmdShut) return [];
-  const t = text.toLowerCase();
+// their own name too; none once it names one alone, or was shut. A skill
+// completes mid-text too, as in Claude Code: "/" and part of its name after
+// a space, at the caret.
+function slashWord(el) {
+  const text = el.value, at = el.selectionStart;
+  if (/^\/[\w:.-]*$/.test(text)) return { start: 0, word: text, cmds: true };
+  const m = el.selectionStart === el.selectionEnd && text.slice(0, at).match(/\s(\/[\w:.-]+)$/);
+  if (!m || /^[\w:.\/-]/.test(text.slice(at))) return null; // the caret in a word, or a path
+  return { start: at - m[1].length, word: m[1], cmds: false };
+}
+
+function suggestions(el) {
+  const w = slashWord(el);
+  if (!w || el.value === S.cmdShut) return [];
+  const t = w.word.toLowerCase();
   const skills = (S.skills || []).filter(s => s.state !== 'off' && !commands.some(([c]) => c === '/' + s.name))
     .map(s => ['/' + s.name, s.description]).sort(([a], [b]) => a.localeCompare(b));
-  const all = commands.concat(skills).filter(([c]) => c.toLowerCase().startsWith(t) || c.toLowerCase().includes(':' + t.slice(1)));
-  const exact = all.findIndex(([c]) => c === text);
+  const all = (w.cmds ? commands : []).concat(skills).filter(([c]) => c.toLowerCase().startsWith(t) || c.toLowerCase().includes(':' + t.slice(1)));
+  const exact = all.findIndex(([c]) => c === w.word);
   if (exact >= 0) all.unshift(...all.splice(exact, 1)); // what it names, first: Enter runs it
   return all.length === 1 && exact >= 0 ? [] : all;
 }
@@ -410,6 +428,15 @@ function isCommand(text) { // one of Opt's own, not a skill's
 }
 
 function takeCmd(c, run) {
+  const w = slashWord(inputEl);
+  if (w && !w.cmds) { // mid-text: the name goes in, nothing is sent
+    const text = c + (/^\s/.test(inputEl.value.slice(inputEl.selectionStart)) ? '' : ' ');
+    inputEl.setSelectionRange(w.start, inputEl.selectionStart);
+    if (!document.execCommand('insertText', false, text)) inputEl.setRangeText(text, w.start, inputEl.selectionEnd, 'end');
+    autosize();
+    set({ cmdSel: 0 });
+    return;
+  }
   setInput(run ? c : c + ' ');
   set({ cmdSel: 0 });
   if (run) submit(false);
@@ -468,6 +495,7 @@ async function submit(now) {
 
 function escape() {
   if (S.lightbox) { set({ lightbox: null }); return; }
+  if (S.drawer) { set({ drawer: false }); return; }
   if (S.picker) { closePicker(); return; }
   if (S.panel) { closePanel(); return; }
   if (S.help) { set({ help: false }); return; } // one Esc, one thing: never a stop by surprise
@@ -503,7 +531,7 @@ function onKey(e) {
   if (e.isComposing || e.keyCode === 229) return;
   if (e.key === 'Enter' && e.timeStamp - composedAt < 100) { e.preventDefault(); return; }
   if (e.key === '?' && !el.value) { e.preventDefault(); set({ help: !S.help }); return; }
-  const sugg = suggestions(el.value);
+  const sugg = suggestions(el);
   if (sugg.length && !e.shiftKey && !e.altKey && !e.metaKey && !e.ctrlKey) {
     const sel = Math.min(S.cmdSel, sugg.length - 1);
     switch (e.key) {
@@ -1548,14 +1576,16 @@ function Footer() {
   const right = [];
   if (s) {
     right.push(html`<button title="choose the model and effort (Alt+P)" onClick=${openPicker}>${s.model} · ${s.effort}</button>`);
-    right.push(count(s.msgs, 'message'), `view ${count(s.viewLines, 'line')}, ${Math.round(s.viewBytes / 1000)} KB`);
+    right.push(html`<span title="every message in the chat, kept for good">${count(s.msgs, 'message')}</span>`,
+      html`<span title="the view: what each turn reads instead of the whole chat, every message summarized in a tree of about this size">view ${count(s.viewLines, 'line')}, ${Math.round(s.viewBytes / 1000)} KB</span>`);
     if (s.backlog || s.merges) right.push(html`<span class="busy" title=${count(s.running, 'compaction') + ' running'}>summarizing ${[s.backlog && count(s.backlog, 'message'), s.merges && count(s.merges, 'merge')].filter(Boolean).join(' + ')}</span>`);
-    if (s.written) right.push(`${count(s.written, 'line')} written`);
+    if (s.written) right.push(html`<span title="summary lines the view's compactions wrote since opt-chat started">${count(s.written, 'summary line')} written</span>`);
     if (s.failing) right.push(html`<span class="conn bad">${s.failing} failing, retrying</span>`);
-    if (s.agents?.length) right.push(`agents: ${s.agents.map(a => '[' + a + ']').join(' ')}`);
+    if (s.agents?.length) right.push(html`agents: ${s.agents.map((a, j) => html`${j > 0 && ' '}<button title="see what it does now (Alt+A: the agents)" onClick=${() => toggleRail(a)}>[${a}]</button>`)}`);
+    else if (s.subs?.length && !railShown()) right.push(html`<button title="this run's subagents (Alt+A)" onClick=${() => toggleRail()}>agents</button>`);
   }
   if (s?.limits?.length) right.push(html`<${Limits} windows=${s.limits}/>`);
-  if (l) right.push(html`<span title="the turn's biggest request: the view, the prompt, your message and its steps; and what it wrote">last turn ${l.context ? k(l.context) + ' context, ' : ''}↓${k(l.turn.output_tokens)}</span>`);
+  if (l) right.push(html`<span title="tokens. in: the turn's biggest request, its context: the view, the prompt and tools, your message, its steps. out: what Opt wrote, its thinking too">last turn: ${l.context ? k(l.context) + ' in, ' : ''}${k(l.turn.output_tokens)} out</span>`);
   const conn = { open: ['ok', '● connected'], connecting: ['', '○ connecting'], closed: ['bad', '● reconnecting'], denied: ['bad', '● no key'] }[S.conn];
   const mode = s?.mode;
   return html`<div class="footer"><div class="segs">
@@ -1589,7 +1619,8 @@ function Help() {
     ['Alt+P · /model', 'choose the model, ←/→ its effort'],
     ['Shift+Tab', 'permission mode: manual, accept edits, auto'],
     ['/mcp · /skills · /plugins', 'your Claude Code MCP servers, skills and plugins: on or off'],
-    ['/agents /help', 'subagents at work; the commands'],
+    ['Alt+A · /agents', 'the subagents: what each does now, and its steps'],
+    ['/help', 'the commands'],
   ];
   return html`<div class="help">${rows.map(([a, b]) => html`<kbd>${a}</kbd><span>${b}</span>`)}</div>`;
 }
@@ -1605,7 +1636,7 @@ function Input() {
     try { d = localStorage.getItem('draft') || ''; } catch {}
     if (d && !inputEl.value) setInput(histText(d)); // as ↑ recalls: its attachments stayed behind
   }, []);
-  const sugg = inputEl ? suggestions(inputEl.value) : [];
+  const sugg = inputEl ? suggestions(inputEl) : [];
   return html`
     <${Mention}/>
     ${sugg.length > 0 && html`<${Cmds} sugg=${sugg}/>`}
@@ -1614,8 +1645,8 @@ function Input() {
       <span class="gt" aria-hidden="true">▸</span>
       <textarea ref=${ref} rows="1" spellcheck="false" aria-label="Message Opt" placeholder=${S.turn.phase ? 'Queue a message for Opt…' : 'Message Opt'}
         onInput=${() => { histPos = -1; keepDraft(); if (S.cmdSel || S.cmdShut !== null) set({ cmdSel: 0, cmdShut: null }); autosize(); placesGone(); lookForPaths(); lookForMention(); tick(n => n + 1); }}
-        onKeyUp=${e => { if (e.key.startsWith('Arrow') || e.key === 'Home' || e.key === 'End') lookForMention(); }}
-        onClick=${lookForMention}
+        onKeyUp=${e => { if (e.key.startsWith('Arrow') || e.key === 'Home' || e.key === 'End') { lookForMention(); tick(n => n + 1); } }}
+        onClick=${() => { lookForMention(); tick(n => n + 1); }}
         onBlur=${() => S.mention && set({ mention: null })}
         onKeyDown=${onKey}
         onCompositionEnd=${e => { composedAt = e.timeStamp; }}
@@ -1628,6 +1659,155 @@ function Input() {
 }
 
 let toEnd = false; // scroll to the end at the next render
+
+// ---------------------------------------------------------------- agents rail
+
+// The agents rail: in the free space right of the chat, this run's
+// subagents, what each does now, and, one opened, its steps as they come,
+// from its log. Where there is no room, it is a drawer: the bar's agents, or
+// Alt+A, open it.
+let chPx = 0; // a character's width
+function roomy() {
+  if (!chPx) {
+    const p = document.body.appendChild(document.createElement('span'));
+    p.style.cssText = 'position:absolute;visibility:hidden;white-space:pre';
+    p.textContent = '0'.repeat(100);
+    chPx = p.getBoundingClientRect().width / 100 || 8;
+    p.remove();
+  }
+  return innerWidth >= 178 * chPx; // the column's 132ch, and 46 for the rail
+}
+addEventListener('resize', () => { if (roomy() !== S.wide) set({ wide: roomy(), drawer: false }); });
+
+function railShown() {
+  return S.wide ? !!S.status?.subs?.length && !S.railOff : S.drawer;
+}
+
+function toggleRail(name) {
+  if (name) openAgent(name);
+  if (S.wide) {
+    const off = !name && railShown();
+    try { localStorage.setItem('railOff', off ? '1' : ''); } catch {}
+    set({ railOff: off });
+  } else set({ drawer: !!name || !S.drawer });
+}
+
+function openAgent(name) {
+  set({ agent: { name, steps: [], cut: false, loading: true } });
+  send({ t: 'steps', name });
+}
+
+function closeAgent() { set({ agent: null }); }
+
+const agentStepsMax = 3000; // the oldest go, as the chat's own messages do
+
+function addStep(name, s) {
+  const a = S.agent;
+  if (a?.name !== name || a.loading) return; // a step that came before its log is in the log
+  const steps = a.steps.concat([s]);
+  const cut = steps.length > agentStepsMax;
+  set({ agent: { ...a, steps: cut ? steps.slice(-agentStepsMax) : steps, off: a.off + (cut ? 1 : 0), cut: a.cut || cut } });
+}
+
+// what is one sub's state, as the rail says it: a question waiting on the
+// user comes first.
+function subState(s, now) {
+  if (S.asks.some(q => q.who === s.name)) return ['ask', 'waits for your answer'];
+  switch (s.state) {
+    case 'working': return ['work', 'working · ' + elapsed(now - s.started)];
+    case 'starting': return ['work', 'starting'];
+    case 'compacting': return ['rest', 'compacting at rest'];
+    case 'resting': return ['rest', s.until > now ? `reported · rests ${Math.ceil((s.until - now) / 60000)}m more` : 'reported'];
+    case 'failed': return ['bad', 'failed'];
+    default: return ['done', 'ended'];
+  }
+}
+
+function subMeta(s) {
+  return [s.model, s.effort, s.context && `${k(s.context)} context${s.window ? ` of ${k(s.window)} before it compacts` : ''}`, s.steps && count(s.steps, 'step')].filter(Boolean).join(' · ');
+}
+
+// useClock re-renders each second while on.
+function useClock(on) {
+  const [, tick] = useState(0);
+  useEffect(() => {
+    if (!on) return;
+    const t = setInterval(() => tick(n => n + 1), 1000);
+    return () => clearInterval(t);
+  }, [on]);
+  return Date.now();
+}
+
+function Rail() {
+  const subs = S.status?.subs || [];
+  const now = useClock(subs.some(s => s.state === 'working' || s.state === 'resting'));
+  const open = S.agent && subs.find(s => s.name === S.agent.name);
+  const working = subs.filter(s => s.state === 'working' || s.state === 'starting').length;
+  return html`<aside class=${'rail' + (S.wide ? '' : ' drawer')} aria-label="subagents">
+    ${S.agent
+      ? html`<${AgentView} a=${S.agent} s=${open} now=${now}/>`
+      : html`<div class="rail-head">
+          <span class="title">Agents</span>
+          <span class="dim">${working ? `${working} at work` : subs.length ? 'none at work' : ''}</span>
+          <button class="x" title=${S.wide ? 'hide (Alt+A shows it again)' : 'close (Esc)'} onClick=${() => toggleRail()}>×</button>
+        </div>
+        <div class="cards">
+          ${subs.map(s => html`<${AgentCard} key=${s.name} s=${s} now=${now}/>`)}
+          ${!subs.length && html`<div class="empty">No subagent has run yet. When Opt starts one, it shows here.</div>`}
+        </div>`}
+  </aside>`;
+}
+
+function AgentCard({ s, now }) {
+  const [cls, label] = subState(s, now);
+  const ask = S.asks.find(q => q.who === s.name);
+  const step = ask ? ask.tool + ' ' + JSON.stringify(ask.input ?? '') : s.step;
+  const tool = step && parseTool(step);
+  return html`<button class=${'card ' + cls} onClick=${() => openAgent(s.name)} title="open its steps">
+    <div class="top"><span class="dot" aria-hidden="true">●</span><span class="name">[${s.name}]</span><span class="state">${label}</span></div>
+    <div class="meta">${subMeta(s)}</div>
+    ${tool && cls !== 'done' && html`<div class="now"><span class="el" aria-hidden="true">⎿</span><span class="tname">${tool.name}</span><span class="args">(${toolArgs(tool.name, tool.input, tool.raw)})</span>${cls === 'work' && s.stepAt ? html`<span class="dim">· ${elapsed(now - s.stepAt)}</span>` : ''}</div>`}
+  </button>`;
+}
+
+// stepMsgs are a subagent's steps as the chat's messages: its task and Opt's
+// tells as the user's, its text as Opt's, its tool calls and their output.
+function stepMsgs(name, steps, off) {
+  const out = [];
+  steps.forEach((s, j) => {
+    const i = `${name}:${off + j}`;
+    switch (s.kind) {
+      case 'task': case 'opt': out.push({ kind: 'user', text: s.text, i }); break;
+      case 'agent': out.push({ kind: 'opt', text: s.text, i }); break;
+      case 'tool': case 'echo': out.push({ kind: s.kind, text: s.text, i }); break;
+      case 'compacted': out.push({ kind: 'note', text: 'Its context was compacted at rest: ' + s.text.replace(/(\d+) tokens to (\d+)/, (_, x, y) => `${k(+x)} tokens to ${k(+y)}`), i }); break;
+    }
+  });
+  return out;
+}
+
+function AgentView({ a, s, now }) {
+  const ref = useRef(), stick = useRef(true);
+  const busy = s && (s.state === 'working' || s.state === 'starting');
+  const list = useMemo(() => items(stepMsgs(a.name, a.steps, a.off || 0)).map(it => ({ ...it, state: it.m.kind !== 'tool' ? '' : it.echo ? 'done' : busy ? 'run' : 'cut' })), [a.steps, busy]);
+  const toBottom = () => { const el = ref.current; if (el) el.scrollTop = el.scrollHeight; };
+  const onResize = useMemo(() => () => { if (stick.current) toBottom(); }, []);
+  useLayoutEffect(() => { if (stick.current) toBottom(); });
+  useEffect(() => { stick.current = true; toBottom(); }, [a.name]);
+  const [cls, label] = s ? subState(s, now) : ['done', 'not in this run'];
+  return html`<div class="rail-head">
+      <button class="back" title="all agents (Esc)" onClick=${closeAgent}>←</button>
+      <span class=${'agent-name ' + cls}><span class="dot" aria-hidden="true">●</span>[${a.name}]</span>
+      <span class=${'state ' + cls}>${label}</span>
+      <button class="x" title=${S.wide ? 'hide (Alt+A shows it again)' : 'close (Esc)'} onClick=${() => toggleRail()}>×</button>
+    </div>
+    ${s && html`<div class="rail-meta">${subMeta(s)}</div>`}
+    <div class="rail-log" ref=${ref} onScroll=${() => { const el = ref.current; stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60; }}>
+      ${a.cut && html`<div class="edge">Its earlier steps: zoom("${a.name}") in the chat, or agents/${a.name}.log</div>`}
+      ${a.loading ? html`<div class="edge">Loading its steps…</div>` : !list.length && html`<div class="edge">No steps yet.</div>`}
+      <${Virtualizer} data=${list} scrollRef=${ref} bufferSize=${800} onResize=${onResize}>${row}</${Virtualizer}>
+    </div>`;
+}
 
 function Scroller() {
   const ref = useRef(), inner = useRef(), edge = useRef();
@@ -1679,7 +1859,8 @@ function App() {
   useEffect(() => {
     document.title = (S.asks.length ? '? ' : S.turn.phase ? '✻ ' : S.unseen ? '● ' : '') + 'opt-chat'; // ?: waiting on the user's yes or no
   });
-  return html`<div class="shell">
+  useEffect(() => { set({ wide: roomy() }); }, []);
+  return html`<div class="shell"><div class="main">
     ${S.conn === 'denied' && html`<div class="banner">This page has no key to the chat: open the address opt-chat printed in the terminal.</div>`}
     ${S.conn === 'closed' && html`<div class="banner">Lost opt-chat: reconnecting…</div>`}
     <${Scroller}/>
@@ -1693,6 +1874,9 @@ function App() {
       ${S.help && html`<${Help}/>`}
       <${Footer}/>
     </div></div>
+    </div>
+    ${railShown() && !S.wide && html`<div class="scrim" onClick=${() => set({ drawer: false })}/>`}
+    ${railShown() && html`<${Rail}/>`}
     ${S.dragging && html`<div class="drop"><div>Drop to attach</div></div>`}
     ${S.lightbox && html`<div class="lightbox" role="dialog" aria-label="image; Esc or a click closes it" onClick=${() => set({ lightbox: null })}><img src=${S.lightbox} alt=""/></div>`}
   </div>`;
@@ -1713,9 +1897,20 @@ addEventListener('drop', e => {
 addEventListener('keydown', e => {
   if (e.isComposing || e.keyCode === 229) return; // the keys that pick an input method's candidates are its own
   if (e.target === inputEl && e.key.length === 1) typedAt = performance.now();
-  if (e.key === 'Tab' && !e.shiftKey && e.target === inputEl && S.asks.length && !S.picker && !S.mention?.items.length && !suggestions(inputEl.value).length) {
+  if (e.key === 'Tab' && !e.shiftKey && e.target === inputEl && S.asks.length && !S.picker && !S.mention?.items.length && !suggestions(inputEl).length) {
     e.preventDefault(); // to the question
     document.querySelector('.ask')?.focus();
+    return;
+  }
+  if (e.altKey && e.code === 'KeyA' && !e.metaKey && !e.ctrlKey) { // the agents rail
+    e.preventDefault();
+    e.stopPropagation();
+    toggleRail();
+    return;
+  }
+  if (e.key === 'Escape' && (e.target.closest?.('.rail') || (S.drawer && e.target !== inputEl))) {
+    e.preventDefault();
+    if (S.agent) closeAgent(); else if (S.drawer) set({ drawer: false });
     return;
   }
   if (e.altKey && e.code === 'KeyP' && !e.metaKey && !e.ctrlKey) { // Option+P types π on a Mac: the code is the key

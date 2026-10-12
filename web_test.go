@@ -456,3 +456,33 @@ func TestWebUsage(t *testing.T) {
 		t.Fatalf("limits: %v", ls)
 	}
 }
+
+// The agents rail opens a subagent: its log comes as steps, then each step
+// as it is written.
+func TestWebSteps(t *testing.T) {
+	wt := startWeb(t)
+	a := wt.h.agent
+	if err := os.MkdirAll(filepath.Join(wt.c.dir, "agents"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	a.agentWrite("Scout", "task", "look around")
+	ws, err := wt.dial(-1, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws.next("hello", typ("hello"))
+	ws.send(map[string]any{"t": "steps", "name": "[Scout]"})
+	u := ws.next("steps", typ("steps"))
+	if s := u["steps"].([]any); u["name"] != "Scout" || len(s) != 1 || s[0].(map[string]any)["text"] != "look around" {
+		t.Fatalf("steps: %v", u)
+	}
+	a.agentWrite("Scout", "tool", `Bash {"command":"ls"}`)
+	u = ws.next("a step", typ("step"))
+	if s := u["step"].(map[string]any); u["name"] != "Scout" || s["kind"] != "tool" {
+		t.Fatalf("step: %v", u)
+	}
+	ws.send(map[string]any{"t": "steps", "name": "Nobody"})
+	ws.next("no log", func(u map[string]any) bool {
+		return u["t"] == "notice" && strings.HasPrefix(u["s"].(string), "No log for [Nobody]")
+	})
+}

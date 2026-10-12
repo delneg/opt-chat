@@ -748,8 +748,16 @@ func TestTellResumes(t *testing.T) {
 			return ""
 		}
 	}
+	state := func() string { // as the agents rail shows it
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		return a.subsLocked()[0].State
+	}
 	a.Spawn("Rest", "first", "", "", 0)
 	report()
+	if got := state(); got != "resting" {
+		t.Fatalf("after its report: %s", got)
+	}
 	if got := a.Tell("Rest", "now the second"); !strings.HasPrefix(got, "Sent: [Rest] is at work on it") {
 		t.Fatal(got)
 	}
@@ -767,6 +775,15 @@ func TestTellResumes(t *testing.T) {
 	})
 	if got := a.Tell("Rest", "third"); !strings.HasPrefix(got, "No subagent [Rest] is taking messages.") {
 		t.Fatal(got)
+	}
+	waitFor(t, "it to show ended", func() bool { return state() == "ended" })
+	steps, cut, err := a.steps("Rest")
+	var kinds []string
+	for _, s := range steps {
+		kinds = append(kinds, s.Kind)
+	}
+	if err != nil || cut || kinds[0] != "task" || steps[0].Text != "first" || !slices.Contains(kinds, "opt") {
+		t.Fatalf("its steps: %q %v %v", kinds, cut, err)
 	}
 	if out, _, _ := command(a, "/agents"); out != "No subagent is at work." {
 		t.Fatal(out)

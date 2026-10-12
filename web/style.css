@@ -33,7 +33,8 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
 a { color: var(--blue); }
 
 #app { height: 100%; }
-.shell { height: 100%; display: flex; flex-direction: column; }
+.shell { height: 100%; display: flex; }
+.main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .scroll { flex: 1; overflow-y: auto; overflow-anchor: none; }
 .column { max-width: 128ch; padding: 0 2ch; } /* left, as in a terminal */
 .log { padding-top: 1.5em; padding-bottom: 1em; }
@@ -247,3 +248,51 @@ a { color: var(--blue); }
 .lightbox img { max-width: 95vw; max-height: 95vh; }
 /* the input's copy that tells which row its caret is on (caretRow) */
 .mirror { position: fixed; top: 0; left: -9999px; visibility: hidden; white-space: pre-wrap; overflow-wrap: break-word; }
+
+/* the agents rail: right of the chat where there is room, else a drawer */
+.rail {
+  --rail: #f3f1ea;
+  flex: none; width: clamp(46ch, calc(100vw - 134ch), 84ch); height: 100%;
+  display: flex; flex-direction: column; min-height: 0;
+  background: var(--rail); border-left: 1px solid var(--border); font-size: .92em;
+}
+.rail.drawer {
+  position: fixed; top: 0; right: 0; bottom: 0; width: min(84ch, 94vw); z-index: 30;
+  box-shadow: -12px 0 32px rgba(31, 30, 27, .12); animation: rail-in .16s ease-out;
+}
+@keyframes rail-in { from { transform: translateX(24px); opacity: 0; } }
+.scrim { position: fixed; inset: 0; z-index: 29; background: rgba(31, 30, 27, .1); }
+.rail-head { display: flex; align-items: baseline; gap: 1.2ch; padding: .9em 1.5ch .6em; border-bottom: 1px solid var(--border); white-space: nowrap; min-width: 0; }
+.rail-head .title { color: var(--dim); text-transform: uppercase; letter-spacing: .12em; font-size: .85em; }
+.rail-head .dim { color: var(--faint); }
+.rail-head .x { margin-left: auto; color: var(--faint); padding: 0 .5ch; }
+.rail-head .back { color: var(--faint); padding: 0 .5ch 0 0; }
+.rail-head .x:hover, .rail-head .back:hover { color: var(--fg); }
+.rail-head .agent-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; }
+.rail-head .state { color: var(--dim); overflow: hidden; text-overflow: ellipsis; }
+.rail-meta { color: var(--faint); padding: .45em 1.5ch; border-bottom: 1px solid var(--border); }
+.cards { overflow-y: auto; padding: .7em 1ch; display: flex; flex-direction: column; gap: .35em; }
+.card { display: block; width: 100%; text-align: left; padding: .55em 1.2ch .6em; border-radius: 6px; min-width: 0; }
+.card:hover, .card:focus-visible { background: var(--bg); outline: none; box-shadow: 0 0 0 1px var(--border); }
+.card .top { display: flex; align-items: baseline; gap: 1ch; min-width: 0; }
+.card .name { font-weight: 600; }
+.card .state { margin-left: auto; color: var(--dim); white-space: nowrap; font-size: .92em; }
+.card .meta { color: var(--faint); padding-left: 2ch; font-size: .92em; }
+.card .now { display: flex; padding-left: 2ch; color: var(--dim); white-space: nowrap; margin-top: .15em; }
+.card .now .tname { color: var(--fg); font-weight: 600; }
+.card .now .args { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.card .now .dim { color: var(--faint); flex: none; padding-left: 1ch; }
+.rail .dot { margin-right: 1ch; color: var(--faint); }
+.rail .work .dot { color: var(--accent); animation: blink 1s steps(2, start) infinite; }
+.rail .rest .dot { color: var(--blue); }
+.rail .ask .dot, .rail .state.ask, .card.ask .state { color: var(--yellow); }
+.rail .bad .dot, .rail .state.bad, .card.bad .state { color: var(--red); }
+.card.done { opacity: .7; }
+.rail .empty { color: var(--faint); padding: .5em 1.2ch; }
+.rail-log { flex: 1; min-height: 0; overflow-y: auto; overflow-anchor: none; padding: .9em 1.5ch 1em; }
+.rail-log .edge { padding: 0 0 1em; }
+@media (prefers-reduced-motion: reduce) {
+  .rail.drawer { animation: none; }
+  .rail .work .dot { animation: none; }
+}
+.card .now .el { flex: none; padding-right: 1ch; }

@@ -23,7 +23,14 @@ func TestMain(m *testing.M) {
 		fakeClaude()
 		os.Exit(0)
 	}
-	os.Exit(m.Run())
+	dir, err := os.MkdirTemp("", "claude-config") // the fake's saved sessions: never the user's
+	if err != nil {
+		panic(err)
+	}
+	os.Setenv("CLAUDE_CONFIG_DIR", dir)
+	code := m.Run()
+	os.RemoveAll(dir)
+	os.Exit(code)
 }
 
 const pngHead = "\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
@@ -38,6 +45,11 @@ func fakeClaude() {
 	}
 	b, _ := json.Marshal(os.Args[1:])
 	appendRaw(base, append(b, '\n'))
+	if id := flagOf(os.Args, "--session-id"); id != "" { // saved, as Claude Code saves a session
+		dir := filepath.Join(os.Getenv("CLAUDE_CONFIG_DIR"), "projects", "-fake")
+		os.MkdirAll(dir, 0o700)
+		os.WriteFile(filepath.Join(dir, id+".jsonl"), nil, 0o600)
+	}
 	var env []string
 	for _, kv := range os.Environ() {
 		if strings.HasPrefix(kv, "CLAUDE") || strings.HasPrefix(kv, "ENABLE_TOOL_SEARCH") {
@@ -510,7 +522,7 @@ func TestSubagentsAndQuit(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("quit hung")
 	}
-	if last := c.msgs[len(c.msgs)-1]; last.Text != "[Sleeper] stopped: opt-chat quit before this subagent finished.\n\nRan on mid. Full chat: zoom(\"Sleeper\")" {
+	if last := c.msgs[len(c.msgs)-1]; last.Text != "[Sleeper] stopped: opt-chat quit before this subagent finished. "+resumeHint("Sleeper")+"\n\nRan on mid. Full chat: zoom(\"Sleeper\")" {
 		t.Fatalf("last message: %q", last.Text)
 	}
 	if !strings.Contains(c.ZoomAgent("Sleeper"), "opt: hurry") {
@@ -773,9 +785,6 @@ func TestTellResumes(t *testing.T) {
 		_, ok := a.resting["Rest"]
 		return !ok
 	})
-	if got := a.Tell("Rest", "third"); !strings.HasPrefix(got, "No subagent [Rest] is taking messages.") {
-		t.Fatal(got)
-	}
 	waitFor(t, "it to show ended", func() bool { return state() == "ended" })
 	steps, cut, err := a.steps("Rest")
 	var kinds []string
@@ -787,5 +796,87 @@ func TestTellResumes(t *testing.T) {
 	}
 	if out, _, _ := command(a, "/agents"); out != "No subagent is at work." {
 		t.Fatal(out)
+	}
+	if got := a.Tell("Rest", "third"); !strings.HasPrefix(got, "Resuming [Rest]") { // its call ended: its saved session goes on
+		t.Fatal(got)
+	}
+	if got := report(); !strings.Contains(got, "third") {
+		t.Fatalf("third report: %q", got)
+	}
+	if all := calls(); len(all) != 2 || flagOf(all[1], "--resume") != flagOf(all[0], "--session-id") {
+		t.Fatalf("calls: %q", all)
+	}
+	a.quit() // before agentRest is set back
+}
+
+// A subagent stopped by a quit, or by a crash, goes on where it stopped
+// when told, its Claude Code session resumed; one whose session is gone
+// can't be.
+func TestResumeAgent(t *testing.T) {
+	c, _ := fakeChat(t, t.TempDir(), 100)
+	a, calls := fakeAgent(t, c)
+	a.Spawn("Long", "wait-for-stop", "", "", 0)
+	waitFor(t, "Long at work", func() bool { return strings.Contains(c.ZoomAgent("Long"), "agent: working") })
+	a.quit()
+	rec, err := a.loadRecord("Long")
+	session := flagOf(calls()[0], "--session-id")
+	if err != nil || rec.State != "stopped" || rec.Session == "" || rec.Session != session || rec.Task != "wait-for-stop" || rec.Model != "mid" {
+		t.Fatalf("its record: %+v, %v; session %q", rec, err, session)
+	}
+
+	b, calls := fakeAgent(t, c) // opt-chat again
+	if msgs := b.recoverAgents(); len(msgs) != 0 {
+		t.Fatalf("after a quit: %v", msgs)
+	}
+	b.mu.Lock()
+	listed := b.subsLocked()
+	b.mu.Unlock()
+	if len(listed) != 1 || listed[0].State != "stopped" {
+		t.Fatalf("the rail: %+v", listed)
+	}
+	reported := make(chan string, 1)
+	b.report = func(text string) { reported <- text }
+	if got := b.Tell("Long", "go on"); !strings.HasPrefix(got, "Resuming [Long]") {
+		t.Fatal(got)
+	}
+	select {
+	case got := <-reported:
+		if !strings.Contains(got, fmt.Sprintf("answer to %q", resumeNote+"go on")) {
+			t.Fatalf("report: %q", got)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("no report")
+	}
+	if args := calls()[0]; flagOf(args, "--resume") != session || slices.Contains(args, "--session-id") || slices.Contains(args, "--no-session-persistence") {
+		t.Fatalf("resumed with %q", args)
+	}
+
+	b.note("Long", func(r *agentRecord) { r.State = "working" }) // as a crash leaves it
+	b.subs = nil
+	if msgs := b.recoverAgents(); len(msgs) != 1 || !strings.HasPrefix(msgs[0].text, "[Long] stopped: opt-chat ended without quitting") {
+		t.Fatalf("after a crash: %v", msgs)
+	}
+	if rec, _ := b.loadRecord("Long"); rec.State != "stopped" {
+		t.Fatalf("after a crash: %s", rec.State)
+	}
+	waitFor(t, "Long at rest", func() bool {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		return b.resting["Long"] != nil
+	})
+	b.mu.Lock()
+	b.resting["Long"].p.close()
+	b.mu.Unlock()
+	waitFor(t, "its call to end", func() bool {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		return b.resting["Long"] == nil
+	})
+	os.RemoveAll(filepath.Join(os.Getenv("CLAUDE_CONFIG_DIR"), "projects"))
+	if got := b.Tell("Long", "again"); !strings.Contains(got, "saved session is gone") {
+		t.Fatal(got)
+	}
+	if got := b.Tell("Nobody", "hi"); !strings.Contains(got, "none was saved to resume") {
+		t.Fatal(got)
 	}
 }

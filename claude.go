@@ -60,6 +60,7 @@ type Agent struct {
 	limits      map[string]window        // the plan's usage limits, by name: see limits.go
 	usageAsked  time.Time                // when get_usage was last asked
 	subs        map[string]*sub          // this run's subagents, as the page's rail shows them: see subs.go
+	recMu       sync.Mutex               // agents/<Name>.json: see resume.go
 	live        map[*proc]struct{}       // turns and subagents underway: a mode switch reaches them
 	asks        []*ask                   // tool calls waiting for the user's yes or no
 	askSeq      int
@@ -274,7 +275,8 @@ const noTools = `{"autoCompactEnabled":false,"hooks":{"PreToolUse":[{"matcher":"
 // start starts a call. Claude Code never compacts one, whatever the user's
 // settings: the chat never ends, and its view never needs it; a subagent is
 // compacted only at rest, between its steps (see runAgent).
-func (a *Agent) start(ctx context.Context, model, effort string, r role) (p *proc, err error) {
+// extra are a subagent's session flags.
+func (a *Agent) start(ctx context.Context, model, effort string, r role, extra ...string) (p *proc, err error) {
 	if !a.begin() {
 		return nil, errors.New("opt-chat is quitting")
 	}
@@ -307,7 +309,12 @@ func (a *Agent) start(ctx context.Context, model, effort string, r role) (p *pro
 	}
 	args := []string{"-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
 		"--model", model, "--system-prompt", a.system, "--tools", tools, "--mcp-config", mcp,
-		"--permission-mode", perm, "--allowedTools", strings.Join(allowed, ","), "--no-session-persistence"}
+		"--permission-mode", perm, "--allowedTools", strings.Join(allowed, ",")}
+	if r == roleAgent { // saved, so it can be resumed: see resume.go
+		args = append(args, extra...)
+	} else {
+		args = append(args, "--no-session-persistence")
+	}
 	if own {
 		// The user's skills, plugins, MCP servers and settings, as Claude Code
 		// run in cwd has them; never their hooks, CLAUDE.md or memory (env),

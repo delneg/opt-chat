@@ -221,6 +221,7 @@ more often tried a tool or wrote about itself in a line.
   files/<hash>.<ext>      attachments and tool results' images, named by their content
   web.json                the page's key and port
   agents/<Name>.log       each subagent's own steps
+  agents/<Name>.json      what resuming it takes: its Claude Code session, model, effort, task
   AGENTS.md               your instructions (optional)
   lock                    one process per chat
 ```
@@ -323,14 +324,26 @@ does, so Opt never starts the same task twice (the line is not logged).
 `tell(name, message)` reaches a running subagent between its tool calls. A
 subagent that has reported keeps its call open for 30 minutes: a `tell`
 then sets it to work again with everything it knew (a review of its own
-work, a fix), and it reports again. After that its call ends, and a new
-subagent can read its steps with `zoom("Name")`.
+work, a fix), and it reports again. After that its call ends, but a `tell`
+still sets it to work again where it stopped: a subagent's call is a Claude
+Code session saved to disk (in Claude Code's own, `~/.claude/projects`;
+the chat's own calls are never saved), and the tell resumes it, with all it
+knew. So does a tell to one that opt-chat's quit or a crash stopped
+mid-task: its report says so, and the tell's message to it starts by
+saying its call was resumed, and that a tool call underway then was cut
+short. `agents/<Name>.json` keeps what a resume takes: its session, model,
+effort and task. A crash leaves no report: as opt-chat starts again, it
+puts one in the chat for each subagent the crash stopped, without starting
+a turn. A subagent whose session Claude Code no longer has (it deletes old
+ones, 30 days by default) can't be resumed; a new one can read its steps
+with `zoom("Name")`.
 Subagents can't start or tell subagents. Quitting stops them, and each one's
 report then says it was stopped.
 
 The page shows this run's subagents in a rail right of the chat, when the
 window has room for it: each one's state (working and for how long, a
-question waiting on you, reported and resting, ended, failed), its model,
+question waiting on you, reported and resting, ended, failed, or stopped
+by a restart), its model,
 effort and context, and the tool call it is in now, with how long it has
 run. Click one to see its steps as they come, from its log, as the chat
 shows its own: its task and Opt's tells, its text, its tool calls and their

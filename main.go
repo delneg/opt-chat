@@ -102,6 +102,7 @@ func main() {
 		running: map[string]*proc{}, writing: map[string]chan struct{}{}, report: func(text string) { h.input(message{kind: "work", text: text}) }}
 	a.life, a.stop = context.WithCancel(context.Background())
 	h.agent = a
+	logAll(c, a.recoverAgents()) // in the chat, for the next turn: none starts now
 	if a.mcpConfig, a.agentMCP, err = serveMCP(a); err != nil {
 		fatal("mcp: %v", err)
 	}

@@ -38,8 +38,9 @@ Tools:
   with the view's line that holds it
 - spawn(name, task, effort, model, autocompact) starts a subagent on a task, in the background
 - tell(name, message) sends a subagent a message: a running one gets it between
-  its tool calls; one that reported in the last 30 minutes goes on with it,
-  with all it knew, and reports again
+  its tool calls; any other goes on with it where it stopped (after its
+  report, or stopped by a restart of opt-chat), with all it knew, and
+  reports again
 
 # Turns
 

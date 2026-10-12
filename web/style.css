@@ -285,7 +285,7 @@ a { color: var(--blue); }
 .rail .dot { margin-right: 1ch; color: var(--faint); }
 .rail .work .dot { color: var(--accent); animation: blink 1s steps(2, start) infinite; }
 .rail .rest .dot { color: var(--blue); }
-.rail .ask .dot, .rail .state.ask, .card.ask .state { color: var(--yellow); }
+.rail .ask .dot, .rail .state.ask, .card.ask .state, .rail .stop .dot { color: var(--yellow); }
 .rail .bad .dot, .rail .state.bad, .card.bad .state { color: var(--red); }
 .card.done { opacity: .7; }
 .rail .empty { color: var(--faint); padding: .5em 1.2ch; }

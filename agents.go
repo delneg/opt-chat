@@ -104,7 +104,7 @@ func (a *Agent) Spawn(name, task, effort, model string, window int) string {
 	a.mu.Unlock()
 	go func() {
 		defer a.calls.Done() // after its report is in the chat
-		a.runAgent(name, task, effort, model, window)
+		a.runAgent(name, agentRecord{Session: newSession(), Model: model, Effort: effort, Window: window, Task: task}, "")
 	}()
 	return fmt.Sprintf("Started [%s] in the background, on %s. Its report will come as a message starting \"[%s]\".", name, model, name)
 }
@@ -120,7 +120,7 @@ func (a *Agent) Tell(name, text string) string {
 	r, resting := a.resting[name]
 	switch {
 	case !ok && !resting:
-		return fmt.Sprintf("No subagent [%s] is taking messages. One ends %s after its report; a new one can read its chat with zoom(%q).", name, agentRest.Round(time.Second), name)
+		return a.resume(name, text)
 	case !ok && r.compacting:
 		a.agentWrite(name, "opt", text)
 		r.pending = append(r.pending, text)
@@ -129,6 +129,7 @@ func (a *Agent) Tell(name, text string) string {
 		delete(a.resting, name)
 		a.running[name], p = r.p, r.p
 		a.subLocked(name, func(s *sub) { s.State, s.Started, s.Until = "working", nowMs(), 0 })
+		a.note(name, func(r *agentRecord) { r.State = "working" })
 		a.chat.hub.notice("info", "[%s] back at work", name)
 	case p == nil:
 		return fmt.Sprintf("[%s] is starting: tell it again in a moment.", name)
@@ -137,6 +138,7 @@ func (a *Agent) Tell(name, text string) string {
 	msg := []block{textBlock(text)}
 	if resting && r.compacted {
 		msg = anchored(lines, name, r.task, []string{text})
+		a.note(name, func(r *agentRecord) { r.Compacted = false })
 	}
 	if !p.send(msg...) {
 		delete(a.running, name)
@@ -163,7 +165,36 @@ func (a *Agent) agentWrite(name, kind, text string) {
 	a.chat.hub.send(stepUpdate{T: "step", Name: name, Step: step{Kind: kind, Text: text}})
 }
 
-func (a *Agent) runAgent(name, task, effort, model string, window int) {
+// resume sets a subagent whose call has ended to work again: its saved
+// session, with all it knew, and text. a.mu held.
+func (a *Agent) resume(name, text string) string {
+	rec, err := a.loadRecord(name)
+	switch {
+	case err != nil || rec.Session == "":
+		return fmt.Sprintf("No subagent [%s] is taking messages, and none was saved to resume. A new one can read its chat with zoom(%q).", name, name)
+	case !saved(rec.Session):
+		return fmt.Sprintf("[%s]'s saved session is gone from Claude Code's, so it can't be resumed. A new one can read its chat with zoom(%q).", name, name)
+	case a.life.Err() != nil:
+		return "opt-chat is quitting."
+	}
+	a.calls.Add(1) // as begin, a.mu held
+	a.running[name] = nil
+	a.subLocked(name, func(s *sub) {
+		*s = sub{Name: name, Model: rec.Model, Effort: rec.Effort, Window: rec.Window, State: "starting", Started: nowMs()}
+	})
+	a.agentWrite(name, "opt", text)
+	go func() {
+		defer a.calls.Done()
+		a.runAgent(name, rec, text)
+	}()
+	return fmt.Sprintf("Resuming [%s] where it stopped, from its saved session: it goes on with all it knew, and your message, and will report again.", name)
+}
+
+// runAgent runs a subagent's call: rec's session anew, its task first, or,
+// with a message, resumed.
+func (a *Agent) runAgent(name string, rec agentRecord, msg string) {
+	task, effort, model, window := rec.Task, rec.Effort, rec.Model, rec.Window
+	resumed := msg != ""
 	size := 0 // its context: the tokens its latest request read
 	send := func(text string) {
 		a.chat.hub.notice("info", "[%s] done", name)
@@ -177,46 +208,63 @@ func (a *Agent) runAgent(name, task, effort, model string, window int) {
 		a.report(fmt.Sprintf("%s\n\nRan on %s. Full chat: zoom(%q)", text, on, name)) // as UniiChat ends a report
 	}
 	report := func(text string) { // the end
+		state := "failed"
+		if a.life.Err() != nil {
+			state = "stopped"
+		}
 		a.mu.Lock()
 		delete(a.running, name)
-		a.subLocked(name, func(s *sub) { s.State = "failed" })
+		a.subLocked(name, func(s *sub) { s.State = state })
 		a.mu.Unlock()
+		a.note(name, func(r *agentRecord) { r.State = state })
 		send(text)
 	}
 	if err := os.MkdirAll(filepath.Join(a.chat.dir, "agents"), 0o700); err != nil {
 		report("failed: " + err.Error())
 		return
 	}
-	a.agentWrite(name, "task", task)
-	a.chat.hub.notice("info", "[%s] started on %s", name, strings.TrimSpace(model+" "+effort))
-	a.agentWrite(name, "on", strings.TrimSpace(model+" "+effort))
 	c := a.chat
 	failed := func(err error) string {
 		if a.life.Err() != nil {
-			return "stopped: opt-chat quit before this subagent finished."
+			return "stopped: opt-chat quit before this subagent finished. " + resumeHint(name)
 		}
 		return "failed: " + err.Error()
 	}
-	if err := c.settle(a.life, func(int, int) {}); err != nil {
-		report(failed(err))
-		return
+	var lines []string
+	if resumed {
+		a.chat.hub.notice("info", "[%s] resumed on %s", name, strings.TrimSpace(model+" "+effort))
+	} else {
+		a.agentWrite(name, "task", task)
+		a.chat.hub.notice("info", "[%s] started on %s", name, strings.TrimSpace(model+" "+effort))
+		a.agentWrite(name, "on", strings.TrimSpace(model+" "+effort))
+		if err := c.settle(a.life, func(int, int) {}); err != nil {
+			report(failed(err))
+			return
+		}
+		c.mu.Lock()
+		lines = c.callView()
+		c.mu.Unlock()
+		a.mu.Lock()
+		if window == 0 {
+			window = a.agentWindow
+		}
+		a.subLocked(name, func(s *sub) { s.Window = window })
+		a.mu.Unlock()
+		rec.Window = window
 	}
-	c.mu.Lock()
-	lines := c.callView()
-	c.mu.Unlock()
-	a.mu.Lock()
-	if window == 0 {
-		window = a.agentWindow
+	rec.State = "working"
+	a.note(name, func(r *agentRecord) { *r = rec })
+	flags := []string{"--session-id", rec.Session}
+	if resumed {
+		flags = []string{"--resume", rec.Session}
 	}
-	a.subLocked(name, func(s *sub) { s.Window = window })
-	a.mu.Unlock()
-	p, err := a.start(context.Background(), model, effort, roleAgent)
+	p, err := a.start(context.Background(), model, effort, roleAgent, flags...)
 	if err != nil {
 		report(failed(err))
 		return
 	}
 	p.who = name // before its first message: its questions say who asks
-	acking := true
+	acking := !resumed
 	each := func(e event) {
 		if e.Parent != nil {
 			return
@@ -250,11 +298,21 @@ func (a *Agent) runAgent(name, task, effort, model string, window int) {
 	}
 	var u usage
 	a.mcpSettle(p)
-	first, second := viewMessages(lines, []block{textBlock(fmt.Sprintf("You are subagent [%s]. Your task:\n%s", name, task))})
-	if err := a.ack(p, first, &u, each); err != nil {
-		p.wait()
-		report(failed(err))
-		return
+	var second []block
+	switch {
+	case resumed && rec.Compacted: // its view and task again, as a tell after a compaction brings them
+		second = anchored(c.viewNow(), name, task, []string{resumeNote + msg})
+		a.note(name, func(r *agentRecord) { r.Compacted = false })
+	case resumed:
+		second = []block{textBlock(resumeNote + msg)}
+	default:
+		var first []block
+		first, second = viewMessages(lines, []block{textBlock(fmt.Sprintf("You are subagent [%s]. Your task:\n%s", name, task))})
+		if err := a.ack(p, first, &u, each); err != nil {
+			p.wait()
+			report(failed(err))
+			return
+		}
 	}
 	acking = false
 	a.mu.Lock()
@@ -276,10 +334,12 @@ func (a *Agent) runAgent(name, task, effort, model string, window int) {
 		if r := a.resting[name]; r != nil && r.p == p && r.compacting { // the compaction's end, not a report
 			r.compacting, r.compacted = false, true
 			a.subLocked(name, func(s *sub) { s.State = "resting" })
+			a.note(name, func(r *agentRecord) { r.Compacted = true })
 			if msgs := r.pending; len(msgs) > 0 { // tells that waited for it
 				delete(a.resting, name)
 				a.running[name] = p
 				a.subLocked(name, func(s *sub) { s.State, s.Started, s.Until = "working", nowMs(), 0 })
+				a.note(name, func(r *agentRecord) { r.State, r.Compacted = "working", false })
 				p.send(anchored(lines, name, task, msgs)...)
 			}
 			a.mu.Unlock()
@@ -310,6 +370,7 @@ func (a *Agent) runAgent(name, task, effort, model string, window int) {
 			a.subLocked(oldest, func(s *sub) { s.State = "ended" })
 		}
 		a.mu.Unlock()
+		a.note(name, func(r *agentRecord) { r.State = "resting" })
 		send(final)
 		if r.compacting {
 			p.send(textBlock("/compact Keep what is needed to go on with your task: what was asked, what is done and how, what is left, the decisions and why, the files and commands."))
@@ -335,6 +396,9 @@ func (a *Agent) runAgent(name, task, effort, model string, window int) {
 		}
 	})
 	a.mu.Unlock()
+	if !working {
+		a.note(name, func(r *agentRecord) { r.State = "ended" })
+	}
 	if err := p.wait(); working {
 		report(failed(fmt.Errorf("no reply: %v", err)))
 	}

@@ -77,8 +77,8 @@ var (
 			"autocompact: for a long task, a context size in tokens: once the subagent has reported past it, opt-chat compacts it at rest, never mid-step, and its next message (a tell) brings the view and its task again; leave it out for the user's setting (/autocompact).",
 			schema([]string{"name", "task"}, map[string]any{"name": str, "task": str, "effort": map[string]any{"type": "string", "enum": efforts}, "model": str,
 				"autocompact": map[string]any{"type": "integer", "minimum": windowMin, "maximum": windowMax}})),
-		tool("tell", "Send a subagent a message. A running one gets it between its tool calls; one that reported in the last 30 minutes goes on with it, "+
-			"with all it knew, and reports again.",
+		tool("tell", "Send a subagent a message. A running one gets it between its tool calls; any other goes on with it where it stopped "+
+			"(after its report, or stopped by a restart of opt-chat), with all it knew, and reports again.",
 			schema([]string{"name", "message"}, map[string]any{"name": str, "message": str})),
 	}
 )

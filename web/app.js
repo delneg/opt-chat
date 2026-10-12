@@ -1719,6 +1719,7 @@ function subState(s, now) {
     case 'compacting': return ['rest', 'compacting at rest'];
     case 'resting': return ['rest', s.until > now ? `reported · rests ${Math.ceil((s.until - now) / 60000)}m more` : 'reported'];
     case 'failed': return ['bad', 'failed'];
+    case 'stopped': return ['stop', 'stopped by a restart · a tell resumes it'];
     default: return ['done', 'ended'];
   }
 }

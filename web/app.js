@@ -1721,6 +1721,8 @@ function subState(s, now) {
     case 'compacting': return ['rest', 'compacting at rest'];
     case 'resting': return ['rest', s.until > now ? `reported · rests ${Math.ceil((s.until - now) / 60000)}m more` : 'reported'];
     case 'failed': return ['bad', 'failed'];
+    case 'stopping': return ['stop', 'stopping'];
+    case 'halted': return ['stop', 'stopped by you · a tell resumes it'];
     case 'stopped': return ['stop', 'stopped by a restart · a tell resumes it'];
     default: return ['done', 'ended'];
   }
@@ -1766,11 +1768,27 @@ function AgentCard({ s, now }) {
   const ask = S.asks.find(q => q.who === s.name);
   const step = ask ? ask.tool + ' ' + JSON.stringify(ask.input ?? '') : s.step;
   const tool = step && parseTool(step);
-  return html`<button class=${'card ' + cls} onClick=${() => openAgent(s.name)} title="open its steps">
-    <div class="top"><span class="dot" aria-hidden="true">●</span><span class="name">[${s.name}]</span><span class="state">${label}</span></div>
+  const open = e => { if (e.type === 'click' || e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openAgent(s.name); } };
+  return html`<div class=${'card ' + cls} role="button" tabindex="0" onClick=${open} onKeyDown=${e => e.target === e.currentTarget && open(e)} title="open its steps">
+    <div class="top"><span class="dot" aria-hidden="true">●</span><span class="name">[${s.name}]</span><span class="state">${label}</span><${SubAction} s=${s}/></div>
     <div class="meta">${subMeta(s)}</div>
     ${tool && cls !== 'done' && html`<div class="now"><span class="el" aria-hidden="true">⎿</span><span class="tname">${tool.name}</span><span class="args">(${toolArgs(tool.name, tool.input, tool.raw)})</span>${cls === 'work' && s.stepAt ? html`<span class="dim">· ${elapsed(now - s.stepAt)}</span>` : ''}</div>`}
-  </button>`;
+  </div>`;
+}
+
+// SubAction stops a subagent whose call is underway, at work or at rest; one
+// stopped or ended, it clears from the rail: press it once to stop, again
+// to clear, as in Claude Code. Its log stays, for zoom.
+function SubAction({ s }) {
+  if (s.state === 'stopping') return null;
+  const live = ['starting', 'working', 'compacting', 'resting'].includes(s.state);
+  const act = e => {
+    e.stopPropagation();
+    send({ t: live ? 'stopAgent' : 'clearAgent', name: s.name });
+    if (!live && S.agent?.name === s.name) closeAgent();
+  };
+  return html`<button class=${'act' + (live ? ' stop' : '')} onClick=${act} onKeyDown=${e => e.stopPropagation()}
+    title=${live ? (s.state === 'resting' ? 'end its call: it has reported' : 'stop it now') : 'clear it from this list (its log stays)'}>${live ? 'stop' : 'clear'}</button>`;
 }
 
 // stepMsgs are a subagent's steps as the chat's messages: its task and Opt's
@@ -1802,6 +1820,7 @@ function AgentView({ a, s, now }) {
       <button class="back" title="all agents (Esc)" onClick=${closeAgent}>←</button>
       <span class=${'agent-name ' + cls}><span class="dot" aria-hidden="true">●</span>[${a.name}]</span>
       <span class=${'state ' + cls}>${label}</span>
+      ${s && html`<${SubAction} s=${s}/>`}
       <button class="x" title=${S.wide ? 'hide until a new subagent starts (Alt+A or the bar\'s agents show it again)' : 'close (Esc)'} onClick=${() => toggleRail()}>×</button>
     </div>
     ${s && html`<div class="rail-meta">${subMeta(s)}</div>`}

@@ -44,9 +44,9 @@ file rarely: every change starts the prompt cache over.
 - Your Claude Code skills, plugins and MCP servers come along, but never
   your hooks, CLAUDE.md or memory. `/skills`, `/mcp` and `/plugins` switch
   them for Opt alone.
-- Subagents run in the background and show in a rail beside the chat. One
-  that stopped (after its report, at quit, or in a crash) resumes from its
-  saved Claude Code session when Opt tells it something.
+- Subagents run in the background and show in a rail beside the chat,
+  where a button stops each one, then clears it. One that stopped resumes
+  from its saved Claude Code session when Opt tells it something.
 - `-import` brings in past chats from Claude Code, Codex, or a Claude or
   ChatGPT export.
 - The bar shows how big the memory is, the last turn's tokens and your

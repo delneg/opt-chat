@@ -81,12 +81,15 @@ func resumeNote(state string) string {
 	if state == "ended" || state == "resting" { // resting: its call ended before the record said so
 		return "Your call had ended after your report; opt-chat resumed it from its saved session. Opt's message:\n"
 	}
+	if state == "halted" {
+		return "The user stopped you while you worked, and opt-chat has now resumed your call from its saved session: a tool call underway then was cut short. Opt's message:\n"
+	}
 	return "opt-chat stopped while you worked, and resumed your call from its saved session: a tool call underway then was cut short. Opt's message:\n"
 }
 
 // recoverAgents, as opt-chat starts, marks the subagents a crash stopped
 // mid-task, and returns a report for each, for the chat; those stopped in
-// the last day, by a crash or a quit, show in the rail.
+// the last day, by a crash, a quit or the user, show in the rail.
 func (a *Agent) recoverAgents() []message {
 	files, _ := filepath.Glob(filepath.Join(a.chat.dir, "agents", "*.json"))
 	var out []message
@@ -106,9 +109,9 @@ func (a *Agent) recoverAgents() []message {
 			out = append(out, message{kind: "work", text: fmt.Sprintf("[%s] stopped: opt-chat ended without quitting (a crash?) before this subagent finished. %s\n\nRan on %s. Full chat: zoom(%q)",
 				name, resumeHint(name), strings.TrimSpace(r.Model+" "+r.Effort), name)})
 		}
-		if r.State == "stopped" && time.Since(fi.ModTime()) < 24*time.Hour {
+		if (r.State == "stopped" || r.State == "halted") && time.Since(fi.ModTime()) < 24*time.Hour {
 			a.setSub(name, func(s *sub) {
-				*s = sub{Name: name, Model: r.Model, Effort: r.Effort, Window: r.Window, State: "stopped", Started: fi.ModTime().UnixMilli()}
+				*s = sub{Name: name, Model: r.Model, Effort: r.Effort, Window: r.Window, State: r.State, Started: fi.ModTime().UnixMilli()}
 			})
 		}
 	}

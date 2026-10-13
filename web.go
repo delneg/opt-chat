@@ -514,6 +514,13 @@ func (w *webServer) serve(req request) any {
 			return noticeUpdate{T: "notice", Level: "warn", S: fmt.Sprintf("No log for [%s]: %v", name, err)}
 		}
 		return stepsReply{T: "steps", Name: name, Steps: steps, Cut: cut}
+	case "stopAgent", "clearAgent": // the rail's stop, then clear
+		if req.T == "stopAgent" {
+			h.agent.StopAgent(agentName(req.Name))
+		} else {
+			h.agent.ClearAgent(agentName(req.Name))
+		}
+		c.hub.setStatus(currentStatus(c, h.agent))
 	case "paths":
 		found := []foundPath{}
 		for _, p := range filePaths(req.Text) {

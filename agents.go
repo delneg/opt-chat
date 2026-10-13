@@ -101,10 +101,11 @@ func (a *Agent) Spawn(name, task, effort, model string, window int) string {
 	}
 	a.running[name] = nil // reserved until its call starts
 	a.subLocked(name, func(s *sub) { *s = sub{Name: name, Model: model, Effort: effort, State: "starting", Started: nowMs()} })
+	h := a.haltLocked(name)
 	a.mu.Unlock()
 	go func() {
 		defer a.calls.Done() // after its report is in the chat
-		a.runAgent(name, agentRecord{Session: newSession(), Model: model, Effort: effort, Window: window, Task: task}, "")
+		a.runAgent(name, h, agentRecord{Session: newSession(), Model: model, Effort: effort, Window: window, Task: task}, "")
 	}()
 	return fmt.Sprintf("Started [%s] in the background, on %s. Its report will come as a message starting \"[%s]\".", name, model, name)
 }
@@ -183,16 +184,77 @@ func (a *Agent) resume(name, text string) string {
 		*s = sub{Name: name, Model: rec.Model, Effort: rec.Effort, Window: rec.Window, State: "starting", Started: nowMs()}
 	})
 	a.agentWrite(name, "opt", text)
+	h := a.haltLocked(name)
 	go func() {
 		defer a.calls.Done()
-		a.runAgent(name, rec, text)
+		a.runAgent(name, h, rec, text)
 	}()
 	return fmt.Sprintf("Resuming [%s] where it stopped, from its saved session: it goes on with all it knew, and your message, and will report again.", name)
 }
 
+// halt stops one subagent's call: see StopAgent.
+type halt struct {
+	ctx    context.Context
+	cancel context.CancelFunc
+	byUser bool // stopped from the page; under a.mu
+}
+
+// haltLocked makes the halt of the subagent name's call about to run; a.mu held.
+func (a *Agent) haltLocked(name string) *halt {
+	ctx, cancel := context.WithCancel(a.life)
+	h := &halt{ctx: ctx, cancel: cancel}
+	if a.halts == nil {
+		a.halts = map[string]*halt{}
+	}
+	a.halts[name] = h
+	return h
+}
+
+// StopAgent ends the subagent name's call, as the page's stop asks. One at
+// work stops mid-step, and the chat gets a note saying so, not a report:
+// the user knows, so no turn starts. One at rest has reported: its call
+// just ends. False when it has no call underway.
+func (a *Agent) StopAgent(name string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	h := a.halts[name]
+	if h == nil {
+		return false
+	}
+	_, working := a.running[name]
+	h.byUser = working
+	if r := a.resting[name]; r != nil && !r.compacting {
+		r.p.close() // with its input closed, Claude Code exits at once; a SIGTERM takes seconds
+	} else {
+		h.cancel()
+	}
+	a.subLocked(name, func(s *sub) { s.State = "stopping" }) // until its call has ended
+	return true
+}
+
+// ClearAgent drops a subagent whose call has ended from the rail; its log
+// stays, for zoom. False when its call is still underway.
+func (a *Agent) ClearAgent(name string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if _, on := a.halts[name]; on || a.subs[name] == nil {
+		return false
+	}
+	delete(a.subs, name)
+	return true
+}
+
 // runAgent runs a subagent's call: rec's session anew, its task first, or,
-// with a message, resumed.
-func (a *Agent) runAgent(name string, rec agentRecord, msg string) {
+// with a message, resumed. h stops it.
+func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg string) {
+	defer func() {
+		a.mu.Lock()
+		if a.halts[name] == h {
+			delete(a.halts, name)
+		}
+		a.mu.Unlock()
+		h.cancel()
+	}()
 	task, effort, model, window := rec.Task, rec.Effort, rec.Model, rec.Window
 	resumed, note := msg != "", resumeNote(rec.State)+msg
 	size := 0 // its context: the tokens its latest request read
@@ -213,10 +275,20 @@ func (a *Agent) runAgent(name string, rec agentRecord, msg string) {
 			state = "stopped"
 		}
 		a.mu.Lock()
+		byUser := h.byUser && a.life.Err() == nil
+		if byUser {
+			state = "halted"
+		}
 		delete(a.running, name)
 		a.subLocked(name, func(s *sub) { s.State = state })
 		a.mu.Unlock()
 		a.note(name, func(r *agentRecord) { r.State = state })
+		if byUser {
+			a.chat.hub.notice("info", "[%s] stopped", name)
+			a.chat.Log("work", fmt.Sprintf("[%s] stopped: the user stopped it from the page before it finished, so it sends no report. %s\n\nRan on %s. Full chat: zoom(%q)",
+				name, resumeHint(name), strings.TrimSpace(model+" "+effort), name))
+			return
+		}
 		send(text)
 	}
 	if err := os.MkdirAll(filepath.Join(a.chat.dir, "agents"), 0o700); err != nil {
@@ -237,7 +309,7 @@ func (a *Agent) runAgent(name string, rec agentRecord, msg string) {
 		a.agentWrite(name, "task", task)
 		a.chat.hub.notice("info", "[%s] started on %s", name, strings.TrimSpace(model+" "+effort))
 		a.agentWrite(name, "on", strings.TrimSpace(model+" "+effort))
-		if err := c.settle(a.life, func(int, int) {}); err != nil {
+		if err := c.settle(h.ctx, func(int, int) {}); err != nil {
 			report(failed(err))
 			return
 		}
@@ -258,7 +330,7 @@ func (a *Agent) runAgent(name string, rec agentRecord, msg string) {
 	if resumed {
 		flags = []string{"--resume", rec.Session}
 	}
-	p, err := a.start(context.Background(), model, effort, roleAgent, flags...)
+	p, err := a.start(h.ctx, model, effort, roleAgent, flags...)
 	if err != nil {
 		report(failed(err))
 		return

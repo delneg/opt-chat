@@ -18,7 +18,7 @@ type sub struct {
 	Name    string `json:"name"`
 	Model   string `json:"model"`
 	Effort  string `json:"effort"`
-	State   string `json:"state"`            // starting, working, compacting, resting, ended, failed
+	State   string `json:"state"`            // starting, working, compacting, resting, stopping, ended, failed, stopped (by a quit or crash), halted (by the user)
 	Context int    `json:"context,omitzero"` // tokens its latest request read
 	Window  int    `json:"window,omitzero"`  // compacted at rest past this; 0: never
 	Started int64  `json:"started"`          // unix ms: its task, or the tell that set it to work again
@@ -50,7 +50,7 @@ func (a *Agent) setSub(name string, f func(*sub)) {
 	a.subLocked(name, f)
 }
 
-func done(s *sub) bool { return s.State == "ended" || s.State == "failed" }
+func done(s *sub) bool { return s.State == "ended" || s.State == "failed" || s.State == "halted" }
 
 // subsLocked lists them, the newest first, the ended ones past subsKept
 // forgotten; a.mu held.

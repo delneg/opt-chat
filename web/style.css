@@ -272,7 +272,12 @@ a { color: var(--blue); }
 .rail-head .state { color: var(--dim); overflow: hidden; text-overflow: ellipsis; }
 .rail-meta { color: var(--faint); padding: .45em 1.5ch; border-bottom: 1px solid var(--border); }
 .cards { overflow-y: auto; padding: .7em 1ch; display: flex; flex-direction: column; gap: .35em; }
-.card { display: block; width: 100%; text-align: left; padding: .55em 1.2ch .6em; border-radius: 6px; min-width: 0; }
+.card { display: block; width: 100%; text-align: left; padding: .55em 1.2ch .6em; border-radius: 6px; min-width: 0; cursor: pointer; }
+.rail .act { flex: none; color: var(--faint); font-size: .92em; padding: 0 .6ch; border-radius: 4px; box-shadow: 0 0 0 1px var(--border); }
+.rail .act:hover, .rail .act:focus-visible { color: var(--fg); background: var(--bg); }
+.rail .act.stop:hover, .rail .act.stop:focus-visible { color: var(--red); }
+.rail-head .act { margin-left: auto; }
+.rail-head .act + .x { margin-left: 0; }
 .card:hover, .card:focus-visible { background: var(--bg); outline: none; box-shadow: 0 0 0 1px var(--border); }
 .card .top { display: flex; align-items: baseline; gap: 1ch; min-width: 0; }
 .card .name { font-weight: 600; }

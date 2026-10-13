@@ -533,6 +533,66 @@ func TestSubagentsAndQuit(t *testing.T) {
 	}
 }
 
+// The rail's stop: one at work stops mid-step, with a note in the chat and
+// no report; one at rest just ends. Each then clears from the rail.
+func TestStopAgent(t *testing.T) {
+	c, _ := fakeChat(t, t.TempDir(), 100)
+	a, _ := fakeAgent(t, c)
+	reported := make(chan string, 4)
+	a.report = func(text string) { c.Log("work", text); reported <- text }
+	state := func(name string) string {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		if s := a.subs[name]; s != nil {
+			return s.State
+		}
+		return ""
+	}
+	waitState := func(name, want string) {
+		t.Helper()
+		for deadline := time.Now().Add(10 * time.Second); state(name) != want; time.Sleep(10 * time.Millisecond) {
+			if time.Now().After(deadline) {
+				t.Fatalf("[%s] is %q, never %q", name, state(name), want)
+			}
+		}
+	}
+
+	a.Spawn("Scout", "look around", "", "", 0)
+	<-reported
+	waitState("Scout", "resting")
+	if a.ClearAgent("Scout") {
+		t.Fatal("cleared at rest")
+	}
+	if !a.StopAgent("Scout") {
+		t.Fatal("no stop at rest")
+	}
+	waitState("Scout", "ended")
+	if !a.ClearAgent("Scout") || state("Scout") != "" {
+		t.Fatal("Scout not cleared")
+	}
+
+	a.Spawn("Sleeper", "wait-for-stop", "", "", 0)
+	waitState("Sleeper", "working")
+	if !a.StopAgent("Sleeper") {
+		t.Fatal("no stop at work")
+	}
+	waitState("Sleeper", "halted")
+	select {
+	case got := <-reported:
+		t.Fatalf("a report: %q", got)
+	case <-time.After(100 * time.Millisecond):
+	}
+	if last := c.msgs[len(c.msgs)-1]; last.Kind != "work" || !strings.HasPrefix(last.Text, "[Sleeper] stopped: the user stopped it from the page") {
+		t.Fatalf("last message: %q", last.Text)
+	}
+	if r, _ := a.loadRecord("Sleeper"); r.State != "halted" {
+		t.Fatalf("record: %q", r.State)
+	}
+	if a.StopAgent("Sleeper") || !a.ClearAgent("Sleeper") {
+		t.Fatal("Sleeper stopped twice, or not cleared")
+	}
+}
+
 // Calls drop the launching Claude Code session's variables and run without
 // background shells.
 func TestChildEnv(t *testing.T) {

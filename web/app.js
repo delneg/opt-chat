@@ -1951,6 +1951,46 @@ document.addEventListener('click', e => {
   const code = b.parentElement.querySelector('code');
   navigator.clipboard.writeText(code ? code.textContent : '').then(() => { b.textContent = 'copied'; setTimeout(() => (b.textContent = 'copy'), 1200); });
 });
+// A copy keeps a reply's list numbers and bullets, as a copy from the
+// terminal does: the browser leaves them out, since it draws them. Each list
+// item the copy starts before gets its marker as text, in a copy of the
+// selection laid out where the selection is, so it reads as the page does.
+const indent = '\uE000'; // a nested item's, which innerText would trim if a space
+document.addEventListener('copy', e => {
+  const sel = getSelection();
+  if (!sel.rangeCount || sel.isCollapsed || e.target.closest?.('textarea, input')) return;
+  const r = sel.getRangeAt(0);
+  const items = [...document.querySelectorAll('.md li')].filter(li => r.comparePoint(li, 0) === 0);
+  if (!items.length) return;
+  for (const li of items) {
+    const list = li.parentElement;
+    li.dataset.mark = indent.repeat([...ancestors(li, 'li')].length) +
+      (list.tagName === 'OL' ? `${list.start + [...list.children].indexOf(li)}. ` : '- ');
+  }
+  const box = document.createElement('div');
+  box.style.cssText = 'position:absolute;left:-99999px;top:0';
+  box.append(r.cloneContents());
+  for (const li of items) delete li.dataset.mark;
+  const at = r.commonAncestorContainer;
+  (at.nodeType === 1 ? at : at.parentElement).append(box);
+  for (const el of box.querySelectorAll('*')) if (getComputedStyle(el).userSelect === 'none') el.remove();
+  const marked = [...box.querySelectorAll('li[data-mark]')].map(li => [li, li.dataset.mark]);
+  for (const [li] of marked) delete li.dataset.mark;
+  const page = box.innerHTML;
+  for (const [li, mark] of marked) { // in a loose list's first paragraph, not on a line of its own
+    const p = li.firstChild?.nodeName === 'P' ? li.firstChild : li;
+    p.prepend(mark);
+  }
+  const text = box.innerText.replaceAll(indent, '  ');
+  box.remove();
+  e.clipboardData.setData('text/plain', text);
+  e.clipboardData.setData('text/html', page);
+  e.preventDefault();
+});
+// ancestors yields el's ancestors that match sel, nearest first.
+function* ancestors(el, sel) {
+  for (let a = el.parentElement?.closest(sel); a; a = a.parentElement?.closest(sel)) yield a;
+}
 
 render(html`<${App}/>`, document.getElementById('app'));
 connect();

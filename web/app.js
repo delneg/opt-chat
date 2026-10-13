@@ -50,7 +50,7 @@ const S = {
   models: null, // Claude Code's, once asked
   modelsError: '',
   wide: false, // room for the agents rail beside the chat
-  railOff: (() => { try { return !!localStorage.getItem('railOff'); } catch { return false; } })(), // hidden by the user
+  railOff: (() => { try { const v = JSON.parse(localStorage.getItem('railOff')); return Array.isArray(v) ? v : null; } catch { return null; } })(), // hidden by the user: the subagents it had then
   drawer: false, // no room: the rail as a drawer, open
   agent: null, // the subagent the rail shows: { name, steps, off, cut, loading }
 };
@@ -1679,15 +1679,17 @@ function roomy() {
 }
 addEventListener('resize', () => { if (roomy() !== S.wide) set({ wide: roomy(), drawer: false }); });
 
+// A rail the user hid stays hidden until a subagent it didn't have then starts.
 function railShown() {
-  return S.wide ? !!S.status?.subs?.length && !S.railOff : S.drawer;
+  const subs = S.status?.subs || [];
+  return S.wide ? !!subs.length && (!S.railOff || subs.some(s => !S.railOff.includes(s.name))) : S.drawer;
 }
 
 function toggleRail(name) {
   if (name) openAgent(name);
   if (S.wide) {
-    const off = !name && railShown();
-    try { localStorage.setItem('railOff', off ? '1' : ''); } catch {}
+    const off = !name && railShown() ? (S.status?.subs || []).map(s => s.name) : null;
+    try { localStorage.setItem('railOff', off ? JSON.stringify(off) : ''); } catch {}
     set({ railOff: off });
   } else set({ drawer: !!name || !S.drawer });
 }
@@ -1750,7 +1752,7 @@ function Rail() {
       : html`<div class="rail-head">
           <span class="title">Agents</span>
           <span class="dim">${working ? `${working} at work` : subs.length ? 'none at work' : ''}</span>
-          <button class="x" title=${S.wide ? 'hide (Alt+A shows it again)' : 'close (Esc)'} onClick=${() => toggleRail()}>×</button>
+          <button class="x" title=${S.wide ? 'hide until a new subagent starts (Alt+A or the bar\'s agents show it again)' : 'close (Esc)'} onClick=${() => toggleRail()}>×</button>
         </div>
         <div class="cards">
           ${subs.map(s => html`<${AgentCard} key=${s.name} s=${s} now=${now}/>`)}
@@ -1800,7 +1802,7 @@ function AgentView({ a, s, now }) {
       <button class="back" title="all agents (Esc)" onClick=${closeAgent}>←</button>
       <span class=${'agent-name ' + cls}><span class="dot" aria-hidden="true">●</span>[${a.name}]</span>
       <span class=${'state ' + cls}>${label}</span>
-      <button class="x" title=${S.wide ? 'hide (Alt+A shows it again)' : 'close (Esc)'} onClick=${() => toggleRail()}>×</button>
+      <button class="x" title=${S.wide ? 'hide until a new subagent starts (Alt+A or the bar\'s agents show it again)' : 'close (Esc)'} onClick=${() => toggleRail()}>×</button>
     </div>
     ${s && html`<div class="rail-meta">${subMeta(s)}</div>`}
     <div class="rail-log" ref=${ref} onScroll=${() => { const el = ref.current; stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60; }}>

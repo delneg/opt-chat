@@ -72,6 +72,10 @@ type (
 		T string `json:"t"` // thought: a whole thinking block
 		S string `json:"s"`
 	}
+	asideUpdate struct {
+		T     string `json:"t"` // aside: asked, then answered
+		Aside Aside  `json:"aside"`
+	}
 	endUpdate struct {
 		T   string  `json:"t"` // end: a turn's usage
 		End turnEnd `json:"end"`
@@ -87,6 +91,7 @@ type (
 		Status status      `json:"status"`
 		Last   *turnEnd    `json:"last"`
 		Inputs []string    `json:"inputs"` // the user's last messages, for Up
+		Asides []Aside     `json:"asides"` // those after the last page's first message
 	}
 )
 
@@ -223,7 +228,8 @@ func (h *hub) join(c *Chat, after, page int) *client {
 		from = c.whole(max(0, len(c.msgs)-page))
 	}
 	hello := helloUpdate{T: "hello", Msgs: c.msgs[from:], Total: len(c.msgs), Reset: reset, Turn: h.turn,
-		Queue: h.queue, Asks: h.asks, Status: h.status, Last: h.last, Inputs: c.recentInputs(100)}
+		Queue: h.queue, Asks: h.asks, Status: h.status, Last: h.last, Inputs: c.recentInputs(100),
+		Asides: c.asidesIn(c.whole(max(0, len(c.msgs)-page)), len(c.msgs))}
 	if hello.Queue == nil {
 		hello.Queue = []queueItem{}
 	}
@@ -241,6 +247,18 @@ func (h *hub) join(c *Chat, after, page int) *client {
 	cl.out <- b
 	h.clients[cl] = true
 	return cl
+}
+
+// asidesIn are the side questions asked between messages from and to:
+// those that a page holding them shows. Call with c.mu held.
+func (c *Chat) asidesIn(from, to int) []Aside {
+	out := []Aside{}
+	for _, s := range c.asides {
+		if s.After >= from-1 && (s.After < to-1 || to == len(c.msgs)) {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // whole moves i back to the first part of its message, so that a page of

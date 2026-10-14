@@ -239,6 +239,9 @@ type queued struct {
 }
 
 func (h *harness) input(m message) {
+	if h.aside(m) {
+		return
+	}
 	// A report joins the turn underway at once, and so does the user's
 	// message while a tool call runs: the model gets it with the result.
 	// It is sent without h.mu, as everything sent to a call is: a write to
@@ -260,6 +263,9 @@ func (h *harness) input(m message) {
 // inputNow queues m and stops the turn underway, or the wait before it, so
 // that m goes at once: send now.
 func (h *harness) inputNow(m message) {
+	if h.aside(m) {
+		return
+	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if !h.enqueue(m) {
@@ -493,7 +499,7 @@ func (h *harness) loop() {
 var (
 	commandWord = regexp.MustCompile(`(?s)^\s*/([A-Za-z][\w:.-]*)(?:\s+(.*?))?\s*$`) // "/word args", never a path like /Users/me/shot.png
 	modelName   = regexp.MustCompile(`^[\w.:\[\]-]+$`)
-	commands    = []string{"model", "effort", "mode", "autocompact", "mcp", "skills", "plugins", "agents", "help"}
+	commands    = []string{"model", "effort", "mode", "autocompact", "mcp", "skills", "plugins", "agents", "btw", "help"}
 )
 
 // command runs a line that starts with /word, and says what it did; false
@@ -512,6 +518,12 @@ func command(a *Agent, line string) (string, bool, error) {
 			return "", true, fmt.Errorf("/%s is no command; nothing was sent. /help lists the commands", m[1])
 		case "off":
 			return "", true, fmt.Errorf("/%s is a skill turned off for Opt; nothing was sent. /skills turns it on", m[1])
+		}
+		return "", false, nil
+	}
+	if word == "btw" { // a message, which the harness answers aside
+		if arg == "" {
+			return "", true, errors.New("/btw takes a question, as /btw what was that port again")
 		}
 		return "", false, nil
 	}
@@ -560,6 +572,7 @@ func command(a *Agent, line string) (string, bool, error) {
 			"/skills [on|off name] your Claude Code skills: list them, or turn one on or off for Opt\n" +
 			"/plugins [on|off id] your Claude Code plugins (skills and MCP servers together), as name@marketplace\n" +
 			"/agents             list the subagents at work\n" +
+			"/btw question       a side question: answered beside the chat, which never sees it\n" +
 			"/<skill> [args]     run one of your skills, as in Claude Code\n" +
 			"Ctrl-C stops the turn; Ctrl-C when idle, or Ctrl-D, quits.", true, nil
 	}
@@ -676,6 +689,12 @@ func replPrinter() func(any) {
 				case "echo":
 					dim("  " + oneLine(m.Text, 160))
 				}
+			}
+		case asideUpdate:
+			if a := u.Aside; a.Err != "" {
+				warn("[btw: %s]", a.Err)
+			} else if a.A != "" {
+				dim("[btw] " + a.A)
 			}
 		case thoughtUpdate:
 			dim(u.S)

@@ -292,8 +292,9 @@ type request struct {
 
 type (
 	historyReply struct {
-		T    string `json:"t"` // history
-		Msgs []Msg  `json:"msgs"`
+		T      string  `json:"t"` // history
+		Msgs   []Msg   `json:"msgs"`
+		Asides []Aside `json:"asides"`
 	}
 	pathsReply struct {
 		T     string      `json:"t"` // paths
@@ -515,7 +516,8 @@ func (w *webServer) serve(req request) any {
 		c.mu.Lock()
 		defer c.mu.Unlock()
 		before := min(max(req.Before, 0), len(c.msgs))
-		return historyReply{T: "history", Msgs: c.msgs[c.whole(max(0, before-page)):before]}
+		from := c.whole(max(0, before-page))
+		return historyReply{T: "history", Msgs: c.msgs[from:before], Asides: c.asidesIn(from, before)}
 	case "steps": // the agents rail opens one: its log, then each step as it comes
 		name := agentName(req.Name)
 		steps, cut, err := h.agent.steps(name)

@@ -83,6 +83,7 @@ type Chat struct {
 	lock    *os.File // held for the life of the process: if collected, its finalizer would unlock
 	mu      sync.Mutex
 	msgs    []Msg
+	asides  []Aside // side questions: never in msgs, see btw.go
 	tree    map[key]string
 	view    view             // what turns see
 	cview   view             // what compactions see
@@ -100,7 +101,7 @@ type Chat struct {
 }
 
 func openChat(dir string) (*Chat, error) {
-	for _, d := range []string{"main", "tree", "files"} {
+	for _, d := range []string{"main", "tree", "files", "btw"} {
 		if err := os.MkdirAll(filepath.Join(dir, d), 0o700); err != nil {
 			return nil, err
 		}
@@ -132,6 +133,10 @@ func openChat(dir string) (*Chat, error) {
 		}
 		c.msgs = append(c.msgs, m)
 	}
+	if err := load(filepath.Join(dir, "btw"), func(s Aside) { c.asides = append(c.asides, s) }); err != nil {
+		return nil, err
+	}
+	slices.SortStableFunc(c.asides, func(a, b Aside) int { return a.Date.Compare(b.Date) }) // kept as answered
 	if err := load(filepath.Join(dir, "tree"), func(n Node) { c.tree[key{n.L, n.I}] = n.Text }); err != nil {
 		return nil, err
 	}

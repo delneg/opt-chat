@@ -138,6 +138,10 @@ a { color: var(--blue); }
 .thinking { color: var(--dim); font-style: italic; white-space: pre-wrap; max-height: 9em; overflow: hidden; display: flex; flex-direction: column-reverse; margin: 0 0 1em 2ch; border-left: 2px solid var(--border); padding-left: 1.5ch; }
 .notice { color: var(--dim); margin: 0 0 1em; white-space: pre-wrap; display: grid; grid-template-columns: 2ch 1fr; }
 .notice.warn { color: var(--yellow); }
+/* a side question (/btw): set apart from the chat, which never sees it */
+.aside { margin: 0 0 1em; padding: 0.5em 0 0 1.5ch; border-left: 2px dashed var(--border); }
+.aside > .aside-tag { color: var(--faint); font-size: 0.85em; margin-bottom: 0.5em; }
+.aside > :last-child { margin-bottom: 0.5em; }
 
 /* bottom */
 .dock { flex: none; border-top: 1px solid transparent; padding-bottom: .4em; }

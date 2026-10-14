@@ -216,6 +216,23 @@ func fakeClaude() {
 			emit(map[string]any{"type": "assistant", "message": map[string]any{"content": []map[string]any{{"type": "text", "text": "working"}},
 				"usage": map[string]any{"input_tokens": 10, "cache_read_input_tokens": 300000}}})
 			result("did the big one")
+		case strings.Contains(in, "side-fail"):
+			emit(map[string]any{"type": "result", "is_error": true, "result": "overloaded"})
+		case strings.Contains(in, "side-ask"): // a side question's call asks, and gets the answer at once
+			emit(map[string]any{"type": "control_request", "request_id": "perm-b", "request": map[string]any{
+				"subtype": "can_use_tool", "tool_name": "mcp__opt__spawn", "input": map[string]any{"name": "X"}}})
+			for l := range lines {
+				var r struct {
+					Response struct {
+						RequestID string         `json:"request_id"`
+						Response  jsontext.Value `json:"response"`
+					} `json:"response"`
+				}
+				if json.Unmarshal([]byte(l), &r); r.Response.RequestID == "perm-b" {
+					result(fmt.Sprintf("answered %s to %q", r.Response.Response, in))
+					break
+				}
+			}
 		case strings.Contains(in, "ask-then-cancel"):
 			// Claude Code asks, then takes the question back.
 			emit(map[string]any{"type": "control_request", "request_id": "perm-9", "request": map[string]any{

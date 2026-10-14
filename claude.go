@@ -242,6 +242,7 @@ const (
 	roleCompact role = iota
 	roleTurn
 	roleAgent
+	roleBtw     // a side question: a turn's call that changes nothing (see btw.go)
 	roleControl // takes control requests only: see control
 )
 
@@ -298,6 +299,8 @@ func (a *Agent) start(ctx context.Context, model, effort string, r role, extra .
 	switch r {
 	case roleAgent:
 		mcp = a.agentMCP
+	case roleBtw: // the rest asks, and is refused (below); allow rules are no part of the cached prompt
+		allowed = []string{"mcp__opt__zoom", "mcp__opt__date", "mcp__opt__search"}
 	case roleCompact:
 		// The mode only adds reminders after the system prompt. Auto mode,
 		// where a model lacks it, adds a random "Exited Auto Mode: ask
@@ -393,6 +396,13 @@ func (a *Agent) start(ctx context.Context, model, effort string, r role, extra .
 			p.control(id, map[string]any{"subtype": "set_permission_mode", "mode": now})
 		}
 		a.modeMu.Unlock()
+	}
+	if r == roleBtw {
+		p.onRequest = func(e event) {
+			if e.Type == "control_request" {
+				p.reply(e.RequestID, map[string]any{"behavior": "deny", "message": "A side question changes nothing: this call is refused. Answer with what you have."}, "")
+			}
+		}
 	}
 	if own && r == roleControl { // a turn's or subagent's waits for its servers: see mcpSettle
 		go a.mcpApply(p)
@@ -797,6 +807,17 @@ func (t *Turn) detach() []message {
 	return left
 }
 
+// atWork names the subagents at work, so that Opt knows, with no zoom,
+// what is underway; nil when none is.
+func (a *Agent) atWork() []block {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if names := slices.Sorted(maps.Keys(a.running)); len(names) > 0 {
+		return []block{textBlock("[opt-chat] Subagents at work now: [" + strings.Join(names, "], [") + "].\n\n")}
+	}
+	return nil
+}
+
 func (t *Turn) Run(ctx context.Context, msgs []message) error {
 	a, c := t.agent, t.agent.chat
 	h := c.hub
@@ -807,12 +828,7 @@ func (t *Turn) Run(ctx context.Context, msgs []message) error {
 	h.setTurn(func(lt *liveTurn) {
 		lt.Phase, lt.Partial, lt.From, lt.Backlog, lt.Written, lt.Tool, lt.Context = "reading", partial, from, 0, 0, "", 0
 	})
-	var input []block
-	a.mu.Lock()
-	if names := slices.Sorted(maps.Keys(a.running)); len(names) > 0 { // so Opt knows, with no zoom, what is underway
-		input = append(input, textBlock("[opt-chat] Subagents at work now: ["+strings.Join(names, "], [")+"].\n\n"))
-	}
-	a.mu.Unlock()
+	input := a.atWork()
 	// Recall reads the log while the call starts. It looks before the
 	// messages of this turn: one logged already (by a call that died) would
 	// find itself.

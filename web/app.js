@@ -29,6 +29,7 @@ const S = {
   last: null,
   inputs: [], // the user's past messages, for Up
   notices: [],
+  asides: [], // side questions (/btw), each after the message it followed
   atts: [], // attachments in the input
   voice: null, // a voice message underway: starting, rec or sending
   paths: [], // files the input names by path
@@ -142,6 +143,7 @@ function onUpdate(u) {
       set({
         conn: 'open', msgs, total: u.total, turn: u.turn, turnChars: 0, live: u.turn.text || '', thinking: u.turn.thinking || '', input: u.turn.input || '',
         queue: u.queue, asks: u.asks || [], status: u.status, last: u.last, inputs: mergeInputs(S.inputs, u.inputs), older: false,
+        asides: mergeAsides(u.reset ? [] : S.asides, u.asides || []),
       });
       for (const s of sending.values()) send(s.payload); // the connection may have dropped it: the key makes it once
       if (S.panel) { set({ panel: { ...S.panel, busy: true, acting: false } }); send({ t: S.panel.kind }); } // a reply lost with the connection
@@ -184,9 +186,10 @@ function onUpdate(u) {
     case 'step': addStep(u.name, u.step); break;
     case 'end': set({ last: u.end }); send({ t: 'usage' }); break;
     case 'notice': notice(u.level, u.s); break;
+    case 'aside': set({ asides: mergeAsides(S.asides, [u.aside]), unseen: S.unseen || (!!u.aside.a && document.hidden) }); break;
     case 'history': { // asked before a reconnect's hello reset the log: not the page before it now
       const fits = u.msgs.length && u.msgs[u.msgs.length - 1].i + 1 === S.msgs[0]?.i;
-      set({ msgs: fits ? u.msgs.concat(S.msgs) : S.msgs, older: false });
+      set({ msgs: fits ? u.msgs.concat(S.msgs) : S.msgs, asides: fits ? mergeAsides(u.asides || [], S.asides) : S.asides, older: false });
       break;
     }
     case 'paths': {
@@ -230,6 +233,14 @@ function notice(level, s) {
 // don't come back with it, nor their placeholders.
 function histText(s) {
   return s.replace(MARK, ' ').replace(PLACE, ' ').replace(/[ \t]{2,}/g, ' ').replace(/ +\n/g, '\n').trim();
+}
+
+// mergeAsides is a and b, each side question once (by when it was asked,
+// b's copy winning: it is newer), in the order they were asked.
+function mergeAsides(a, b) {
+  const by = new Map(a.map(x => [x.date, x]));
+  for (const x of b) by.set(x.date, x);
+  return [...by.values()].sort((x, y) => Date.parse(x.date) - Date.parse(y.date));
 }
 
 function mergeInputs(a, b) {
@@ -395,6 +406,7 @@ const commands = [
   ['/skills', 'your Claude Code skills: on or off'],
   ['/plugins', 'your Claude Code plugins, their skills and MCP servers at once: on or off'],
   ['/agents', 'list the subagents at work'],
+  ['/btw', 'a side question: answered beside the chat, which never sees it'],
   ['/help', 'list the commands'],
 ];
 
@@ -907,12 +919,15 @@ function items(msgs) {
 // the notices, each after the message it followed. A tool call with no
 // result is running when the turn underway made it (from on), else it was
 // cut short.
-function rows(msgs, phase, from, notices) {
-  const notes = notices.slice().sort((a, b) => a.after - b.after);
+function rows(msgs, phase, from, notices, asides) {
+  const first = msgs.length ? msgs[0].i : 0; // asides before the page's messages wait for theirs
+  const notes = notices.map(n => ({ note: n, after: n.after, key: 'n' + n.id }))
+    .concat(asides.filter(a => a.after >= first - 1).map(a => ({ aside: a, after: a.after, key: 'b' + a.date })))
+    .sort((a, b) => a.after - b.after);
   const out = [];
   let j = 0;
   const flush = before => {
-    for (; j < notes.length && notes[j].after < before; j++) out.push({ note: notes[j], key: 'n' + notes[j].id });
+    for (; j < notes.length && notes[j].after < before; j++) out.push(notes[j]);
   };
   for (const it of items(msgs)) {
     flush(it.sep ? it.i : it.m.i);
@@ -926,6 +941,7 @@ function rows(msgs, phase, from, notices) {
 
 function row(it) {
   if (it.note) return html`<${Notice} key=${it.key} n=${it.note}/>`;
+  if (it.aside) return html`<${AsideView} key=${it.key} a=${it.aside}/>`;
   if (it.sep) return html`<div class="sep" key=${it.key}><span class="lbl">${it.sep}</span></div>`;
   return html`<${MsgView} key=${it.key} m=${it.m} echo=${it.echo} state=${it.state}/>`;
 }
@@ -939,6 +955,19 @@ const Log = memo(function Log({ list, shift, margin, scroller, onResize }) {
 
 function Notice({ n }) {
   return html`<div class=${'notice ' + n.level}><span>${n.level === 'warn' ? '!' : '·'}</span><span>${n.s}</span></div>`;
+}
+
+// AsideView is a side question (/btw) and its answer, set apart: the chat
+// never sees them.
+function AsideView({ a }) {
+  const q = useMemo(() => ({ i: 'btw' + a.date, kind: 'user', text: a.q, images: a.images, date: a.date }), [a.q, a.date, a.images]);
+  return html`<div class="aside">
+    <div class="aside-tag">btw · beside the chat, which never sees it</div>
+    <${UserMsg} m=${q}/>
+    ${a.a ? html`<div class="msg opt" title=${when(a.date)}><span class="mark" aria-hidden="true">●</span><div class="body"><${Markdown} text=${a.a}/></div></div>`
+      : a.err ? html`<div class="notice warn"><span>!</span><span>No answer: ${a.err}</span></div>`
+      : html`<div class="notice"><span>·</span><span>Answering…</span></div>`}
+  </div>`;
 }
 
 const MsgView = memo(({ m, echo, state }) => {
@@ -2070,7 +2099,7 @@ function Scroller() {
   const toBottom = () => { const el = ref.current; if (el) el.scrollTop = el.scrollHeight; };
   const first = S.msgs.length ? S.msgs[0].i : -1, last = lastI;
   const shift = was.current.first >= 0 && first >= 0 && first !== was.current.first; // older came in above, or the oldest went
-  const list = useMemo(() => rows(S.msgs, S.turn.phase, S.turn.from || 0, S.notices), [S.msgs, S.turn.phase, S.turn.from, S.notices]);
+  const list = useMemo(() => rows(S.msgs, S.turn.phase, S.turn.from || 0, S.notices, S.asides), [S.msgs, S.turn.phase, S.turn.from, S.notices, S.asides]);
   const onResize = useMemo(() => () => { if (stick.current) toBottom(); }, []);
   useLayoutEffect(() => {
     const el = ref.current;

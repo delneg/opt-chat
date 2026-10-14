@@ -436,6 +436,45 @@ func TestLoadOrder(t *testing.T) {
 	}
 }
 
+// A batch cut short for want of parents goes on after a restart, as it
+// would have without one; a view.json from before it was saved reads too.
+func TestViewKeepsBatch(t *testing.T) {
+	open := func(view string) *Chat {
+		dir := t.TempDir()
+		var msgs, nodes []any
+		var keys [][2]int
+		for i := range 140 { // 140 built lines of 480 bytes: past viewLo, under viewHi, with no parents
+			text := fmt.Sprintf("%03d %s", i, strings.Repeat("x", 470))
+			msgs = append(msgs, Msg{I: i, Kind: "user", Text: text, Size: 6 + len(text), Date: time.Now()})
+			nodes = append(nodes, Node{L: 0, I: i, Text: "user: " + text, Size: 6 + len(text)})
+			keys = append(keys, [2]int{0, i})
+		}
+		c := &Chat{dir: dir}
+		os.MkdirAll(filepath.Join(dir, "main"), 0o700)
+		os.MkdirAll(filepath.Join(dir, "tree"), 0o700)
+		c.appendDay("main", msgs...)
+		c.appendDay("tree", nodes...)
+		b, _ := json.Marshal(savedView{Keys: keys, Shrinking: true})
+		if view == "old" {
+			b, _ = json.Marshal(keys)
+		}
+		os.WriteFile(filepath.Join(dir, "view.json"), b, 0o600)
+		c, err := openChat(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+	c := open("cut short")
+	b, _ := os.ReadFile(filepath.Join(c.dir, "view.json"))
+	if v, err := readView(b); !c.view.shrinking || c.view.size() <= viewLo || err != nil || !v.Shrinking || len(v.Keys) != 140 {
+		t.Fatalf("the batch: %v, %d bytes; saved %s", c.view.shrinking, c.view.size(), b[:40])
+	}
+	if c := open("old"); c.view.shrinking || len(c.view.keys) != 140 {
+		t.Fatalf("an old view.json: %v, %d lines", c.view.shrinking, len(c.view.keys))
+	}
+}
+
 // An import's placeholders weigh nothing in the view: built, the lines from
 // before it stay as fine as without one (lines of 64 messages here), never
 // merged further for want of the space the placeholders took.

@@ -136,15 +136,15 @@ func openChat(dir string) (*Chat, error) {
 	}
 	// The view is kept, never rebuilt: a rebuilt view differs and kills every cache entry.
 	if b, err := os.ReadFile(filepath.Join(dir, "view.json")); err == nil {
-		var pairs [][2]int
-		err := json.Unmarshal(b, &pairs)
-		if err == nil && !tiles(pairs, len(c.msgs)) {
+		saved, err := readView(b)
+		if err == nil && !tiles(saved.Keys, len(c.msgs)) {
 			err = errors.New("its lines don't tile the chat")
 		}
 		if err != nil {
 			warn("view.json: %v; the view starts over from the log", err)
 		} else {
-			c.view.keys = lo.Map(pairs, func(p [2]int, _ int) key { return key{p[0], p[1]} })
+			c.view.keys = lo.Map(saved.Keys, func(p [2]int, _ int) key { return key{p[0], p[1]} })
+			c.view.shrinking = saved.Shrinking
 			c.view.recount(c)
 		}
 	}
@@ -354,8 +354,30 @@ func (c *Chat) fileBlocks(names []string) []block {
 	})
 }
 
+// savedView is view.json: the view's keys as (l, i) pairs, written as a bare
+// list unless a batch is cut short, so that a restart goes on with it as an
+// unbroken run would. (After https://github.com/jonaslsaa/pi-optchat/pull/180.)
+type savedView struct {
+	Keys      [][2]int `json:"keys"`
+	Shrinking bool     `json:"shrinking"`
+}
+
+func readView(b []byte) (savedView, error) {
+	var v savedView
+	if json.Unmarshal(b, &v.Keys) == nil {
+		return v, nil
+	}
+	return v, json.Unmarshal(b, &v)
+}
+
 func (c *Chat) saveView() {
-	b, _ := json.Marshal(lo.Map(c.view.keys, func(k key, _ int) [2]int { return [2]int{k.L, k.I} }))
+	v := savedView{Keys: lo.Map(c.view.keys, func(k key, _ int) [2]int { return [2]int{k.L, k.I} }), Shrinking: c.view.shrinking}
+	var b []byte
+	if v.Shrinking {
+		b, _ = json.Marshal(v)
+	} else {
+		b, _ = json.Marshal(v.Keys)
+	}
 	tmp := filepath.Join(c.dir, "view.json.tmp")
 	os.Remove(tmp)
 	if err := appendRaw(tmp, b); err != nil { // written and synced before it replaces the old one
@@ -549,11 +571,15 @@ func (c *Chat) build(k key, compact func(context.Context, []string, []block) (st
 // refit measures the views again once lines are built: a line's real size
 // shows only then, and so do the parents a batch was waiting for.
 func (c *Chat) refit() {
+	was := c.view.shrinking
 	if c.view.check(c) {
 		c.resetCview()
 		c.saveView()
-	} else {
-		c.cview.check(c)
+		return
+	}
+	c.cview.check(c)
+	if c.view.shrinking != was {
+		c.saveView()
 	}
 }
 

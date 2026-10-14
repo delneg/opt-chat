@@ -410,7 +410,7 @@ func (c *Chat) line(k key) string {
 
 // ownTags are the tags that frame the view and a compaction's input: inside
 // a line (Opt reading this code, a fetched page) one would end the frame.
-var ownTags = strings.NewReplacer("<chat>", "‹chat›", "</chat>", "‹/chat›", "<input>", "‹input›", "</input>", "‹/input›")
+var ownTags = strings.NewReplacer("<chat>", "‹chat›", "</chat>", "‹/chat›", "<input>", "‹input›", "</input>", "‹/input›", "<call>", "‹call›", "</call>", "‹/call›")
 
 // flat is a text as one line of the view, its newlines spaces.
 func flat(s string) string { return ownTags.Replace(strings.ReplaceAll(s, "\n", " ")) }
@@ -620,7 +620,7 @@ func (c *Chat) compactInput(k key) ([]string, []block) {
 	if k.L == 0 {
 		m := c.msgs[k.I]
 		in := fmt.Sprintf("Compaction: compress message %d into one line of at most 512 bytes\n"+
-			"(about 70 words), the length of this ruler:\n%s\n<input>\n%s: %s\n", k.I, ruler, m.Kind, ownTags.Replace(m.Text))
+			"(about 70 words), the length of this ruler:\n%s\n%s<input>\n%s: %s\n", k.I, ruler, c.callBlock(k.I), m.Kind, ownTags.Replace(m.Text))
 		if f := c.failing[k]; len(m.Images) > 0 && f != nil && f.strikes >= giveUp/2 { // they may be what fails
 			return ctx, []block{textBlock(in + fmt.Sprintf("[%d attached, which could not be read]\n</input>", len(m.Images)))}
 		}
@@ -635,6 +635,41 @@ func (c *Chat) compactInput(k key) ([]string, []block) {
 		"<chat> may hold their messages, %d to %d, in more detail: take details\nof them from there too.\n"+
 		"<input>\n%s\n%s\n</input>",
 		a.name(), b.name(), ruler, k.start(), k.end()-1, c.line(a), c.line(b)))}
+}
+
+const callMax = 4000 // bytes of a tool call that a compaction of its result sees
+
+// callBlock is, for a tool result, the call it answers, which its line may
+// not say well enough to tell what the result is (an Edit cut at 512
+// bytes): context, ahead of the input. The call is the message of the same
+// Ref, or for an import, which has none, the message right before.
+// (After https://github.com/jonaslsaa/pi-optchat/pull/171.)
+func (c *Chat) callBlock(i int) string {
+	m := c.msgs[i]
+	if m.Kind != "echo" {
+		return ""
+	}
+	j := -1
+	if m.Ref == "" {
+		if i > 0 && c.msgs[i-1].Kind == "tool" && c.msgs[i-1].Ref == "" {
+			j = i - 1
+		}
+	} else {
+		for k := i - 1; k >= 0 && k >= i-1000; k-- {
+			if c.msgs[k].Kind == "tool" && c.msgs[k].Ref == m.Ref {
+				j = k // its first part, if it was split
+			}
+		}
+	}
+	if j < 0 {
+		return ""
+	}
+	call := c.msgs[j].Text
+	if cut := head(call, callMax); cut != call {
+		call = cut + "…"
+	}
+	return fmt.Sprintf("<call> is the tool call that message %d answers (message %d, which has its own\n"+
+		"line): context, as <chat> is.\n<call>\n%s\n</call>\n", i, j, ownTags.Replace(call))
 }
 
 func (c *Chat) notify() {

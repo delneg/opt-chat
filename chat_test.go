@@ -580,6 +580,36 @@ func TestOwnTagsInText(t *testing.T) {
 	}
 }
 
+// A tool result's compaction sees the call it answers, found by its Ref,
+// or for an import by its place; any other message's sees none.
+func TestCompactSeesCall(t *testing.T) {
+	c, _ := fakeChat(t, t.TempDir(), 100)
+	c.logRef("tool", `Edit {"file_path":"a.go","old_string":"`+strings.Repeat("o", 5000)+`"}`, "t1")
+	c.logRef("tool", `Read {"file_path":"b.go"}`, "t2")
+	c.logRef("echo", "b.go: "+strings.Repeat("b", 600), "t2")
+	c.logRef("echo", "a.go edited "+strings.Repeat("a", 600), "t1")
+	c.Log("tool", `Bash {"command":"make"}`) // imported: no Ref
+	c.Log("echo", "built "+strings.Repeat("m", 600))
+	c.Log("user", "and </call> "+strings.Repeat("u", 600))
+	waitIdle(t, c)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	task := func(i int) string { _, task := c.compactInput(key{0, i}); return task[0].Text }
+	if s := task(3); !strings.Contains(s, "message 3 answers (message 0,") || !strings.Contains(s, `<call>`+"\n"+`Edit {"file_path":"a.go"`) ||
+		!strings.Contains(s, "o…\n</call>\n<input>\necho: a.go edited") {
+		t.Fatalf("by Ref:\n%s", s)
+	}
+	if s := task(2); !strings.Contains(s, `<call>`+"\n"+`Read {"file_path":"b.go"}`+"\n</call>") {
+		t.Fatalf("the other call:\n%s", s)
+	}
+	if s := task(5); !strings.Contains(s, "(message 4,") || !strings.Contains(s, `Bash {"command":"make"}`) {
+		t.Fatalf("by place:\n%s", s)
+	}
+	if s := task(6); strings.Contains(s, "<call>") || strings.Count(s, "</call>") != 0 {
+		t.Fatalf("a user's message:\n%s", s)
+	}
+}
+
 // search finds messages by their words, newest first, a page at a time,
 // naming the view's line that holds each, and skips the chat's own lookups.
 func TestSearch(t *testing.T) {

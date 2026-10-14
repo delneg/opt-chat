@@ -171,6 +171,34 @@ a { color: var(--blue); }
 .box .tools { display: flex; gap: 1ch; color: var(--dim); padding-left: 1ch; }
 .box .tools button:hover { color: var(--fg); }
 .box .atts { grid-column: 2 / 4; margin: 0 0 .4em; }
+/* a voice message being recorded: above the input, in its place */
+.rec {
+  border: 1px solid var(--border); border-radius: 6px; padding: .45em 1ch; margin-bottom: .4em; background: var(--bg);
+  display: flex; align-items: center; gap: 1.5ch; flex-wrap: wrap;
+}
+.rec .dot { color: var(--red); animation: pulse 1.2s ease-in-out infinite; }
+.rec.starting .dot, .rec.sending .dot { color: var(--faint); animation: none; }
+.rec .time { font-variant-numeric: tabular-nums; min-width: 5ch; }
+.rec canvas { flex: 1 1 20ch; min-width: 12ch; height: 2em; color: var(--dim); }
+.rec.sending canvas { color: var(--border); }
+.rec .keys { display: flex; gap: 2ch; color: var(--faint); font-size: .9em; }
+.rec .keys button:hover { color: var(--fg); }
+.rec kbd { font-family: inherit; background: var(--chip); border-radius: 3px; padding: 0 .5ch; color: var(--dim); }
+.rec .quiet { flex-basis: 100%; color: var(--yellow); font-size: .85em; }
+@keyframes pulse { 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) { .rec .dot { animation: none; } }
+/* a voice message in the chat: it plays, and its words follow */
+.voice .player { display: flex; align-items: center; gap: 1ch; color: var(--dim); font-size: .9em; }
+.voice .play { width: 3ch; color: var(--accent); }
+.voice .play:hover { color: var(--fg); }
+.voice progress { flex: 0 1 28ch; height: .35em; appearance: none; border: 0; border-radius: 2px; background: var(--border); }
+.voice progress::-webkit-progress-bar { background: var(--border); border-radius: 2px; }
+.voice progress::-webkit-progress-value { background: var(--accent); border-radius: 2px; }
+.voice progress::-moz-progress-bar { background: var(--accent); border-radius: 2px; }
+.voice .len { font-variant-numeric: tabular-nums; }
+.voice .words { white-space: pre-wrap; margin-top: .2em; }
+.voice + .voice { margin-top: .5em; }
+.text + .voice { margin-top: .4em; }
 /* one line of segments, wrapping whole; the dot before a line's first is clipped */
 .footer { color: var(--faint); font-size: .85em; padding: .3em 1ch 0; overflow: hidden; }
 .footer .segs { display: flex; flex-wrap: wrap; margin-left: -3ch; }

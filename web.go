@@ -42,6 +42,8 @@ type webServer struct {
 	hosts []string // the Host headers it answers: 127.0.0.1:port, localhost:port
 	url   string
 
+	speech *transcriber // voice messages' words; nil: off
+
 	mu   sync.Mutex
 	keys map[string]bool // the last sends' keys: a page sends again what a dropped connection may have lost
 	seen []string
@@ -98,7 +100,7 @@ func serveWeb(h *harness, addr string) (*webServer, error) {
 	}
 	port := strconv.Itoa(st.Port)
 	w := &webServer{h: h, c: c, token: st.Token, hosts: []string{"127.0.0.1:" + port, "localhost:" + port}, keys: map[string]bool{},
-		url: "http://127.0.0.1:" + port + "/?t=" + st.Token}
+		url: "http://127.0.0.1:" + port + "/?t=" + st.Token, speech: newTranscriber()}
 	go (&http.Server{Handler: w.routes(), ReadHeaderTimeout: 10 * time.Second}).Serve(ln)
 	return w, nil
 }
@@ -138,6 +140,8 @@ func (w *webServer) routes() http.Handler {
 	})))
 	mux.HandleFunc("GET /files/{name}", w.file)
 	mux.HandleFunc("POST /upload", w.upload)
+	mux.HandleFunc("GET /voice", w.voice)
+	mux.HandleFunc("POST /voice", w.voice)
 	mux.HandleFunc("GET /ws", w.ws)
 	return w.guard(mux)
 }
@@ -202,7 +206,7 @@ func (w *webServer) ownOrigin(origin string) bool {
 	return err == nil && u.Scheme == "http" && w.ownHost(u.Host)
 }
 
-// file serves an attachment. Only images and PDFs show in the page; any
+// file serves an attachment. Only images, PDFs and audio show in the page; any
 // other file downloads, and nothing served from files/ runs a script.
 func (w *webServer) file(rw http.ResponseWriter, r *http.Request) {
 	name := "files/" + r.PathValue("name")
@@ -218,6 +222,11 @@ func (w *webServer) file(rw http.ResponseWriter, r *http.Request) {
 		hd.Set("Content-Type", "image/"+strings.Replace(ext, "jpg", "jpeg", 1))
 	case "pdf":
 		hd.Set("Content-Type", "application/pdf")
+	case "webm", "ogg", "oga", "opus", "m4a", "mp4", "mp3", "wav", "flac": // a voice message plays in the page
+		hd.Set("Content-Type", map[string]string{"oga": "audio/ogg", "opus": "audio/ogg", "m4a": "audio/mp4", "mp3": "audio/mpeg"}[ext])
+		if hd.Get("Content-Type") == "" {
+			hd.Set("Content-Type", "audio/"+ext)
+		}
 	default:
 		hd.Set("Content-Type", "application/octet-stream")
 		hd.Set("Content-Disposition", "attachment")

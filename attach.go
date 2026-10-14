@@ -421,7 +421,11 @@ func (c *Chat) compose(text string, atts []attachment) message {
 				mark += "/>"
 			}
 		default:
-			mark += "/>"
+			if words, ok := transcript(path); ok { // a voice message: its words
+				mark += ">\n" + words + "\n</attachment>"
+			} else {
+				mark += "/>"
+			}
 		}
 		switch {
 		case at.At != "":

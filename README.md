@@ -41,12 +41,13 @@ file rarely: every change starts the prompt cache over.
   tool calls, or starts the next turn.
 - You attach files by dropping, pasting or typing a path. Images and PDFs go
   to the model as they are, text files inline, anything else as a path.
+- Alt+K records a voice message, transcribed by Whisper on Groq when
+  `GROQ_API_KEY` is set. It plays in the chat; Opt reads its words.
 - Your Claude Code skills, plugins and MCP servers come along, but never
   your hooks, CLAUDE.md or memory. `/skills`, `/mcp` and `/plugins` switch
   them for Opt alone.
-- Subagents run in the background and show in a rail beside the chat,
-  where a button stops each one, then clears it. One that stopped resumes
-  from its saved Claude Code session when Opt tells it something.
+- Subagents run in the background, in a rail beside the chat that stops
+  and clears each. A stopped one resumes when Opt tells it something.
 - `-import` brings in past chats from Claude Code, Codex, or a Claude or
   ChatGPT export.
 - The bar shows how big the memory is, the last turn's tokens and your

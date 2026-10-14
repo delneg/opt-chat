@@ -30,6 +30,7 @@ const S = {
   inputs: [], // the user's past messages, for Up
   notices: [],
   atts: [], // attachments in the input
+  voice: null, // a voice message underway: starting, rec or sending
   paths: [], // files the input names by path
   skipped: new Set(), // of those, the ones not to attach
   chosen: new Set(), // and the hidden ones the user attached
@@ -993,7 +994,8 @@ function UserMsg({ m }) {
       <div class="body">
         <div class="text">${parts.map((p, j) => typeof p === 'string' ? p : html`<${MarkView} mk=${p} images=${m.images} inline=${true} onOpen=${() => setShown(shown === j ? -1 : j)} open=${shown === j}/>`)}${rest.body}</div>
         ${shown >= 0 && parts[shown]?.content !== undefined && html`<div class="attach-text"><pre>${parts[shown].content}</pre></div>`}
-        <${Attached} id=${m.i} marks=${rest.marks} images=${(m.images || []).filter(n => !inline.some(p => n.endsWith('/' + p.path.split('/').pop())))}/>
+        ${rest.marks.filter(isVoice).map(mk => html`<${Voice} mk=${mk}/>`)}
+        <${Attached} id=${m.i} marks=${rest.marks.filter(mk => !isVoice(mk))} images=${(m.images || []).filter(n => !inline.some(p => n.endsWith('/' + p.path.split('/').pop())))}/>
       </div>
     </div>`;
   }
@@ -1002,7 +1004,8 @@ function UserMsg({ m }) {
     <div class="body">
       ${body && html`<div class="text">${long && !open ? head : body}</div>`}
       ${long && html`<button class="more" onClick=${() => setOpen(!open)}>${open ? '▴ fold' : `… +${hidden ? count(hidden, 'line') : count(body.length - head.length, 'character')} (click to expand)`}</button>`}
-      <${Attached} id=${m.i} marks=${marks} images=${m.images}/>
+      ${marks.filter(isVoice).map(mk => html`<${Voice} mk=${mk}/>`)}
+      <${Attached} id=${m.i} marks=${marks.filter(mk => !isVoice(mk))} images=${m.images}/>
     </div>
   </div>`;
 }
@@ -1620,6 +1623,7 @@ function Help() {
     ['Shift+Tab', 'permission mode: manual, accept edits, auto'],
     ['/mcp · /skills · /plugins', 'your Claude Code MCP servers, skills and plugins: on or off'],
     ['Alt+A · /agents', 'the subagents: what each does now, and its steps'],
+    ['Alt+K', 'record a voice message; Alt+K or Enter sends it, Esc drops it'],
     ['/help', 'the commands'],
   ];
   return html`<div class="help">${rows.map(([a, b]) => html`<kbd>${a}</kbd><span>${b}</span>`)}</div>`;
@@ -1652,11 +1656,182 @@ function Input() {
         onCompositionEnd=${e => { composedAt = e.timeStamp; }}
         onPaste=${onPaste}/>
       <span class="tools">
+        <button title="record a voice message (Alt+K)" onClick=${voiceKey}>🎙</button>
         <button title="attach files" onClick=${() => pick.current.click()}>📎</button>
         <input type="file" multiple hidden ref=${pick} onChange=${e => { addFiles([...e.target.files]); e.target.value = ''; inputEl.focus(); }}/>
       </span>
     </div>`;
 }
+
+// ---------------------------------------------------------------- voice messages
+
+// Alt+K records a voice message; Alt+K or Enter sends it, Esc drops it.
+// opt-chat has its words transcribed (Whisper, on Groq), and it goes as a
+// message: the audio, which plays in the chat, with its words for Opt.
+// S.voice is where it is: starting, rec or sending.
+const VOICE_MAX = 10 * 60e3; // ms: a longer one is sent at ten minutes
+const AUDIO = /\.(webm|ogg|oga|opus|m4a|mp4|mp3|wav|flac)$/i;
+let rec = null; // the recording underway
+
+function clock(ms) {
+  const s = Math.floor(ms / 1000);
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+}
+
+function voiceKey() {
+  if (S.voice === 'rec') stopVoice(true);
+  else if (!S.voice) startVoice();
+}
+
+async function startVoice() {
+  if (S.conn !== 'open') { notice('warn', 'Not connected: a voice message waits until opt-chat is back.'); return; }
+  set({ voice: 'starting' });
+  let stream;
+  try {
+    const on = await (await fetch('/voice')).json();
+    if (!on.on) throw new Error(on.why);
+    if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) throw new Error('This browser can\'t record here.');
+    stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+  } catch (err) {
+    set({ voice: null });
+    notice('warn', err.name === 'NotAllowedError' ? 'No microphone: the browser was told no. Allow it for this page in the site settings, then Alt+K again.'
+      : err.name === 'NotFoundError' ? 'No microphone found.' : err.message);
+    return;
+  }
+  if (S.voice !== 'starting') { stream.getTracks().forEach(t => t.stop()); return; } // dropped meanwhile
+  const type = ['audio/webm;codecs=opus', 'audio/ogg;codecs=opus', 'audio/mp4'].find(t => MediaRecorder.isTypeSupported(t));
+  const recorder = new MediaRecorder(stream, type ? { mimeType: type } : {});
+  const chunks = [];
+  recorder.ondataavailable = e => e.data.size && chunks.push(e.data);
+  const ctx = new AudioContext();
+  const analyser = ctx.createAnalyser();
+  analyser.fftSize = 2048;
+  ctx.createMediaStreamSource(stream).connect(analyser);
+  const now = performance.now();
+  rec = { stream, recorder, chunks, ctx, analyser, since: now, loud: now, levels: [] };
+  rec.cap = setTimeout(() => stopVoice(true), VOICE_MAX);
+  recorder.start(1000);
+  set({ voice: 'rec' });
+}
+
+// stopVoice ends the recording, and sends it if keep.
+async function stopVoice(keep) {
+  const r = rec;
+  rec = null;
+  if (!r) { if (S.voice === 'starting') set({ voice: null }); return; }
+  clearTimeout(r.cap);
+  const ms = performance.now() - r.since;
+  const stopped = new Promise(res => { r.recorder.onstop = res; });
+  r.recorder.stop();
+  r.stream.getTracks().forEach(t => t.stop()); // the browser's recording light goes off
+  r.ctx.close();
+  if (!keep) { set({ voice: null }); return; }
+  if (ms < 700) { set({ voice: null }); notice('info', 'Too short: nothing sent.'); return; }
+  set({ voice: 'sending' });
+  await stopped;
+  const type = r.recorder.mimeType || 'audio/webm';
+  const name = `voice ${clock(ms)}.${/mp4/.test(type) ? 'm4a' : /ogg/.test(type) ? 'ogg' : 'webm'}`;
+  let at;
+  try {
+    const res = await fetch('/voice', { method: 'POST', headers: { 'X-Name': encodeURIComponent(name) }, body: new Blob(r.chunks, { type }) });
+    if (!res.ok) throw new Error((await res.text()).trim() || `opt-chat answered ${res.status}`);
+    at = await res.json();
+  } catch (err) {
+    set({ voice: null });
+    notice('warn', `Voice message not sent: ${err.message}`);
+    return;
+  }
+  set({ voice: null });
+  const file = { name: at.name, orig: at.orig, kind: at.kind, size: at.size };
+  if (at.error) {
+    restore('', [file]);
+    notice('warn', `Voice message not transcribed (${at.error}): it is in the input as a file, to send as one or take off (×).`);
+    return;
+  }
+  const seq = ++sendSeq;
+  const payload = { t: 'send', text: '', files: [file], paths: [], skip: [], chosen: [], seq, key: pageKey + ':' + seq };
+  if (!send(payload)) { restore('', [file]); notice('warn', 'Not connected: your voice message is in the input until opt-chat is back.'); return; }
+  toEnd = true;
+  sending.set(seq, { payload, text: '', files: [file] });
+}
+
+// paintLevels draws the microphone's levels, the latest on the right, and
+// a dotted line where the recording goes on.
+function paintLevels(c, levels) {
+  const dpr = devicePixelRatio || 1, w = c.clientWidth, h = c.clientHeight;
+  if (c.width !== Math.round(w * dpr) || c.height !== Math.round(h * dpr)) { c.width = Math.round(w * dpr); c.height = Math.round(h * dpr); }
+  const g = c.getContext('2d');
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, w, h);
+  g.fillStyle = getComputedStyle(c).color;
+  const step = 4, n = Math.min(levels.length, Math.floor(w / step));
+  for (let i = 0; i < n; i++) {
+    const bar = Math.max(1, Math.min(h, Math.sqrt(levels[levels.length - 1 - i]) * h * 1.8));
+    g.fillRect(w - (i + 1) * step, (h - bar) / 2, 2, bar);
+  }
+  for (let x = w - (n + 1) * step; x >= 0; x -= step) g.fillRect(x, h / 2 - .5, 2, 1);
+}
+
+// Recorder is the recording underway: how long, the microphone's level as
+// it goes, and its keys.
+function Recorder() {
+  const canvas = useRef(), timer = useRef(), quiet = useRef();
+  useEffect(() => {
+    let raf, last = 0;
+    const buf = new Float32Array(2048);
+    const draw = now => {
+      raf = requestAnimationFrame(draw);
+      const r = rec;
+      if (!r || !canvas.current || now - last < 50) return; // 20 levels a second
+      last = now;
+      r.analyser.getFloatTimeDomainData(buf);
+      let sum = 0;
+      for (const v of buf) sum += v * v;
+      const level = Math.sqrt(sum / buf.length);
+      r.levels.push(level);
+      if (r.levels.length > 2000) r.levels.splice(0, 1000);
+      if (level > .004) r.loud = now;
+      timer.current.textContent = clock(now - r.since);
+      quiet.current.hidden = now - r.loud < 2500;
+      paintLevels(canvas.current, r.levels);
+    };
+    raf = requestAnimationFrame(draw);
+    return () => cancelAnimationFrame(raf);
+  }, []);
+  const v = S.voice;
+  return html`<div class=${'rec ' + v} role="status">
+    <span class="dot" aria-hidden="true">●</span>
+    <span class="time" ref=${timer}>0:00</span>
+    <canvas ref=${canvas} aria-label="the microphone's level"/>
+    <span class="keys">${v === 'sending' ? 'transcribing…' : v === 'starting' ? 'waiting for the microphone…' : html`
+      <button onClick=${() => stopVoice(true)}><kbd>Alt+K</kbd> send</button>
+      <button onClick=${() => stopVoice(false)}><kbd>Esc</kbd> cancel</button>`}</span>
+    <div class="quiet" ref=${quiet} hidden>No sound comes in: is the right microphone on and unmuted?</div>
+  </div>`;
+}
+
+// Voice is a voice message in the chat: it plays, and its words show.
+function Voice({ mk }) {
+  const audio = useRef();
+  const [at, setAt] = useState(0);
+  const [playing, setPlaying] = useState(false);
+  const len = mk.name.match(/(\d+):(\d\d)/);
+  const total = len ? +len[1] * 60 + +len[2] : 0; // a recording's own length can be unknown until played through
+  const toggle = () => { const a = audio.current; if (a.paused) a.play().catch(e => notice('warn', `Can't play it: ${e.message}`)); else a.pause(); };
+  return html`<div class="voice">
+    <div class="player">
+      <button class="play" onClick=${toggle} title=${playing ? 'pause' : 'play'} aria-label=${playing ? 'pause' : 'play the voice message'}>${playing ? '❚❚' : '▶'}</button>
+      <progress max=${total || 1} value=${Math.min(at, total || 1)}/>
+      <span class="len">${playing || at ? clock(at * 1000) + ' / ' : ''}${len ? len[0] : ''}</span>
+      <audio ref=${audio} src=${fileURL(mk.path)} preload="none"
+        onTimeUpdate=${e => setAt(e.target.currentTime)} onPlay=${() => setPlaying(true)} onPause=${() => setPlaying(false)}
+        onEnded=${() => { setPlaying(false); setAt(0); }}/>
+    </div>
+    <div class="words">${mk.content}</div>
+  </div>`;
+}
+
+const isVoice = mk => mk.content !== undefined && AUDIO.test(mk.path);
 
 let toEnd = false; // scroll to the end at the next render
 
@@ -1892,6 +2067,7 @@ function App() {
       ${S.asks.length > 0 && !S.picker && html`<${Ask} q=${S.asks[0]}/>`}
       ${S.picker && html`<${Picker}/>`}
       ${S.panel && !S.picker && html`<${Panel}/>`}
+      ${S.voice && html`<${Recorder}/>`}
       <${Input}/>
       ${S.help && html`<${Help}/>`}
       <${Footer}/>
@@ -1922,6 +2098,18 @@ addEventListener('keydown', e => {
   if (e.key === 'Tab' && !e.shiftKey && e.target === inputEl && S.asks.length && !S.picker && !S.mention?.items.length && !suggestions(inputEl).length) {
     e.preventDefault(); // to the question
     document.querySelector('.ask')?.focus();
+    return;
+  }
+  if (e.altKey && e.code === 'KeyK' && !e.metaKey && !e.ctrlKey) { // a voice message
+    e.preventDefault();
+    e.stopPropagation();
+    voiceKey();
+    return;
+  }
+  if (S.voice && (e.key === 'Enter' || e.key === 'Escape')) { // the recording's, not the input's
+    e.preventDefault();
+    e.stopPropagation();
+    if (S.voice !== 'sending') stopVoice(e.key === 'Enter');
     return;
   }
   if (e.altKey && e.code === 'KeyA' && !e.metaKey && !e.ctrlKey) { // the agents rail

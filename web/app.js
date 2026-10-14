@@ -1915,12 +1915,51 @@ function useClock(on) {
   return Date.now();
 }
 
+// The rail's width is the user's to drag, by its left edge; kept per browser.
+// --rail-w, set on the root element, overrides the stylesheet's width.
+function railWidth(px) {
+  const root = document.documentElement.style;
+  if (!px) { root.removeProperty('--rail-w'); return; }
+  root.setProperty('--rail-w', Math.round(Math.max(30 * chPx, Math.min(px, innerWidth - 40 * chPx))) + 'px');
+}
+try { const w = +localStorage.getItem('railW'); if (w) addEventListener('load', () => { roomy(); railWidth(w); }); } catch {}
+function keepRailWidth() {
+  const w = parseFloat(document.documentElement.style.getPropertyValue('--rail-w')) || 0;
+  try { if (w) localStorage.setItem('railW', w); else localStorage.removeItem('railW'); } catch {}
+}
+
+function Grip() {
+  const down = e => {
+    if (e.button) return;
+    e.preventDefault();
+    const el = e.currentTarget;
+    el.setPointerCapture(e.pointerId);
+    document.documentElement.classList.add('resizing');
+    el.onpointermove = m => railWidth(innerWidth - m.clientX);
+    el.onpointerup = el.onpointercancel = () => {
+      el.onpointermove = el.onpointerup = el.onpointercancel = null;
+      document.documentElement.classList.remove('resizing');
+      keepRailWidth();
+    };
+  };
+  const key = e => {
+    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+    e.preventDefault();
+    railWidth(e.currentTarget.parentElement.getBoundingClientRect().width + (e.key === 'ArrowLeft' ? 4 : -4) * chPx);
+    keepRailWidth();
+  };
+  return html`<div class="grip" role="separator" aria-orientation="vertical" aria-label="the rail's width" tabindex="0"
+    title="drag to widen or narrow; a double-click sets it back" onPointerDown=${down} onKeyDown=${key}
+    onDblClick=${() => { railWidth(0); keepRailWidth(); }}/>`;
+}
+
 function Rail() {
   const subs = S.status?.subs || [];
   const now = useClock(subs.some(s => s.state === 'working' || s.state === 'resting'));
   const open = S.agent && subs.find(s => s.name === S.agent.name);
   const working = subs.filter(s => s.state === 'working' || s.state === 'starting').length;
   return html`<aside class=${'rail' + (S.wide ? '' : ' drawer')} aria-label="subagents">
+    <${Grip}/>
     ${S.agent
       ? html`<${AgentView} a=${S.agent} s=${open} now=${now}/>`
       : html`<div class="rail-head">

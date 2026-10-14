@@ -282,14 +282,20 @@ a { color: var(--blue); }
 /* the agents rail: right of the chat where there is room, else a drawer */
 .rail {
   --rail: #f3f1ea;
-  flex: none; width: clamp(46ch, calc(100vw - 134ch), 84ch); height: 100%;
-  display: flex; flex-direction: column; min-height: 0;
+  flex: none; width: min(var(--rail-w, clamp(46ch, calc(100vw - 134ch), 84ch)), calc(100vw - 40ch)); height: 100%;
+  display: flex; flex-direction: column; min-height: 0; position: relative;
   background: var(--rail); border-left: 1px solid var(--border); font-size: .92em;
 }
 .rail.drawer {
-  position: fixed; top: 0; right: 0; bottom: 0; width: min(84ch, 94vw); z-index: 30;
+  position: fixed; top: 0; right: 0; bottom: 0; width: min(var(--rail-w, 84ch), 94vw); z-index: 30;
   box-shadow: -12px 0 32px rgba(31, 30, 27, .12); animation: rail-in .16s ease-out;
 }
+/* its left edge, dragged to set its width (Grip) */
+.grip { position: absolute; top: 0; bottom: 0; left: -4px; width: 8px; z-index: 1; cursor: col-resize; touch-action: none; }
+.grip::after { content: ''; position: absolute; top: 0; bottom: 0; left: 3px; width: 2px; background: transparent; transition: background .12s; }
+.grip:hover::after, .grip:focus-visible::after, .resizing .grip::after { background: var(--accent); }
+.grip:focus-visible { outline: none; }
+.resizing, .resizing * { cursor: col-resize !important; user-select: none; }
 @keyframes rail-in { from { transform: translateX(24px); opacity: 0; } }
 .scrim { position: fixed; inset: 0; z-index: 29; background: rgba(31, 30, 27, .1); }
 .rail-head { display: flex; align-items: baseline; gap: 1.2ch; padding: .9em 1.5ch .6em; border-bottom: 1px solid var(--border); white-space: nowrap; min-width: 0; }

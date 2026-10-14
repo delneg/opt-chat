@@ -939,13 +939,13 @@ func (c *Chat) Recall(text string, before, limit int) string {
 		norm := (k1 + 1) / (1 + k1*(1-lenB+lenB*float64(len(msgs[h.i].Text))/avg))
 		hits[j].score = norm * lo.SumBy(h.terms, func(t int) float64 { return weight[t] })
 	}
-	hits = slices.DeleteFunc(hits, func(h hit) bool { return h.score <= 0 })
 	slices.SortStableFunc(hits, func(a, b hit) int { return cmp.Or(cmp.Compare(b.score, a.score), cmp.Compare(b.i, a.i)) })
-	if len(hits) == 0 {
+	if len(hits) == 0 || hits[0].score <= 0 {
 		return ""
 	}
 	// Far behind the best, a hit shares only middling words: noise.
-	hits = slices.DeleteFunc(hits, func(h hit) bool { return h.score < hits[0].score/4 })
+	top := hits[0].score
+	hits = slices.DeleteFunc(hits, func(h hit) bool { return h.score < top/4 })
 	var b strings.Builder
 	fmt.Fprintf(&b, "[opt-chat] Recall: messages from the log that share this message's rarest words,\n"+
 		"found by words alone, so some may be beside the point; each cut to %d bytes\n"+

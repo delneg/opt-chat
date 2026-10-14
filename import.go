@@ -264,7 +264,7 @@ func readSessionFile(path string, keep func(*session, pastMsg) bool) (session, e
 		case j.Type == "attachment" && at.Type == "queued_command" && (at.CommandMode == "" || at.CommandMode == "prompt") &&
 			!at.IsMeta && (at.Origin == nil || at.Origin.Kind == "human"):
 			queued = append(queued, withID(j.UUID, blocksMsgs("user", contentBlocks(at.Prompt), date, claudeSkip))...)
-		case kind == "user" && interrupted(j.Message.Content):
+		case kind == "user" && !j.IsSidechain && interrupted(j.Message.Content):
 			queued = nil
 		case kind != "" && !j.IsMeta && !j.IsSidechain && !j.IsCompactSummary:
 			if kind == "opt" {

@@ -41,6 +41,7 @@ type Agent struct {
 	pluginsSet      map[string]bool   // and plugins turned on or off here, by name@marketplace
 	skillsListed    []skill           // the skills Claude Code listed last, in its own states
 	agentWindow     int               // subagents' auto-compaction window, in tokens; 0: off
+	recall          int               // messages a turn gets that share the user's words: see Chat.Recall; 0: none
 	resting         map[string]*rest  // subagents that have reported, still able to go on: see Tell
 	mcpUp           []string          // the servers connected when the last call sent its view: see mcpSettle
 	mcpSeen         []string          // and those listed then
@@ -807,7 +808,17 @@ func (t *Turn) Run(ctx context.Context, msgs []message) error {
 	if names := slices.Sorted(maps.Keys(a.running)); len(names) > 0 { // so Opt knows, with no zoom, what is underway
 		input = append(input, textBlock("[opt-chat] Subagents at work now: ["+strings.Join(names, "], [")+"].\n\n"))
 	}
+	recall := a.recall
 	a.mu.Unlock()
+	var asked []string
+	for _, m := range msgs {
+		if m.kind == "user" {
+			asked = append(asked, m.text)
+		}
+	}
+	if r := c.Recall(strings.Join(asked, "\n"), from, recall); r != "" {
+		input = append(input, textBlock(r))
+	}
 	for _, m := range msgs {
 		if !m.logged {
 			c.Log(m.kind, m.full(), m.images...)

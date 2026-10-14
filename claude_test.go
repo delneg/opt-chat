@@ -784,6 +784,29 @@ func TestAgentAutocompact(t *testing.T) {
 	}
 }
 
+// A turn's input holds the messages recall finds for the user's words,
+// ahead of the user's message, and the log holds only that message.
+func TestTurnRecalls(t *testing.T) {
+	c, _ := fakeChat(t, t.TempDir(), 100)
+	a, _ := fakeAgent(t, c)
+	c.Log("opt", "The vault key is in Zanzibar. "+strings.Repeat("pad ", 200))
+	for i := range 5 { // a word in half the messages or more weighs nothing
+		c.Log("note", fmt.Sprint("other ", i))
+	}
+	waitIdle(t, c)
+	a.recall = 8
+	if err := (&Turn{agent: a}).Run(context.Background(), []message{{kind: "user", text: "where is the Zanzibar key?"}}); err != nil {
+		t.Fatal(err)
+	}
+	last := c.msgs[len(c.msgs)-1]
+	if !strings.Contains(last.Text, `<recall>\n0+1|opt, `) || !strings.Contains(last.Text, `</recall>\n\nwhere is the Zanzibar key?`) {
+		t.Fatalf("reply: %q", last.Text)
+	}
+	if user := c.msgs[6]; user.Text != "where is the Zanzibar key?" {
+		t.Fatalf("logged: %q", user.Text)
+	}
+}
+
 // A turn's input names the subagents at work, so Opt never starts one again.
 func TestTurnNamesRunning(t *testing.T) {
 	c, _ := fakeChat(t, t.TempDir(), 100)

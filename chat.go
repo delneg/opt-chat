@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"math/bits"
 	"net/http"
 	"os"
@@ -805,12 +806,7 @@ func (c *Chat) Search(text string, before int) string {
 		before = len(msgs)
 	}
 	re := regexp.MustCompile("(?i)" + regexp.QuoteMeta(text))
-	lookups := map[string]bool{}
-	for _, m := range msgs {
-		if w, _, _ := strings.Cut(m.Text, " "); m.Kind == "tool" && m.Ref != "" && (w == "zoom" || w == "search" || w == "date") {
-			lookups[m.Ref] = true
-		}
-	}
+	lookups := lookupRefs(msgs)
 	var hits []int
 	total := 0
 	for i := before - 1; i >= 0; i-- {
@@ -854,6 +850,125 @@ func (c *Chat) Search(text string, before int) string {
 		fmt.Fprintf(&b, "More: search(%q, %d).", text, hits[len(hits)-1])
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+// lookupRefs are the Refs of the chat's own zoom, search and date calls,
+// whose results only repeat what they found.
+func lookupRefs(msgs []Msg) map[string]bool {
+	refs := map[string]bool{}
+	for _, m := range msgs {
+		if w, _, _ := strings.Cut(m.Text, " "); m.Kind == "tool" && m.Ref != "" && (w == "zoom" || w == "search" || w == "date") {
+			refs[m.Ref] = true
+		}
+	}
+	return refs
+}
+
+const recallCut = 1200 // bytes of a message that recall shows
+
+var (
+	nonWord   = regexp.MustCompile(`[^\p{L}\p{N}]+`)
+	recallTag = strings.NewReplacer("<recall>", "‹recall›", "</recall>", "‹/recall›")
+)
+
+// Recall finds the limit messages before message before that best share
+// the words of text, rare words weighing most, with no model call, as a
+// block for a turn's input; "" when none does. A summary line keeps only
+// so much of a message, so a turn gets these raw: names, numbers, paths.
+// Each word of three characters or more weighs its BM25 inverse document
+// frequency, none when half the messages or more hold it; a message scores
+// the sum of the weights of the words it holds, ties going to the newer.
+// The chat's own lookups are left out, and so are messages the view shows
+// whole. (After https://github.com/ericjuta/omp-optchat/releases/tag/v0.9.0,
+// whose recall tool takes such messages as candidates.)
+func (c *Chat) Recall(text string, before, limit int) string {
+	var terms []string
+	for _, w := range nonWord.Split(strings.ToLower(text), -1) {
+		if utf8.RuneCountInString(w) >= 3 && !slices.Contains(terms, w) && len(terms) < 64 {
+			terms = append(terms, w)
+		}
+	}
+	if len(terms) == 0 || limit <= 0 {
+		return ""
+	}
+	c.mu.Lock()
+	msgs := c.msgs // logged messages never change: read outside c.mu
+	c.mu.Unlock()
+	before = min(before, len(msgs))
+	lookups := lookupRefs(msgs[:before])
+	df := make([]int, len(terms))
+	type hit struct {
+		i     int
+		terms []int
+		score float64
+	}
+	var hits []hit
+	n := 0
+	for i := range before {
+		m := msgs[i]
+		if lookups[m.Ref] {
+			continue
+		}
+		n++
+		lower := strings.ToLower(m.Text)
+		var found []int
+		for t, term := range terms {
+			if strings.Contains(lower, term) {
+				df[t]++
+				found = append(found, t)
+			}
+		}
+		if found != nil {
+			hits = append(hits, hit{i: i, terms: found})
+		}
+	}
+	weight := lo.Map(df, func(d, _ int) float64 { return max(0, math.Log((float64(n-d)+0.5)/(float64(d)+0.5))) })
+	c.mu.Lock()
+	hits = slices.DeleteFunc(hits, func(h hit) bool {
+		k := c.viewLine(h.i) // shown whole: a message's own line, written with no model call
+		return k.L == 0 && msgs[h.i].Size <= nodeMax && len(msgs[h.i].Images) == 0
+	})
+	c.mu.Unlock()
+	for j := range hits {
+		hits[j].score = lo.SumBy(hits[j].terms, func(t int) float64 { return weight[t] })
+	}
+	hits = slices.DeleteFunc(hits, func(h hit) bool { return h.score <= 0 })
+	slices.SortStableFunc(hits, func(a, b hit) int { return cmp.Or(cmp.Compare(b.score, a.score), cmp.Compare(b.i, a.i)) })
+	if len(hits) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "[opt-chat] Recall: messages from the log that share this message's rarest words,\n"+
+		"found by words alone, so some may be beside the point; each cut to %d bytes\n"+
+		"around its rarest word: zoom(id, 1) opens one whole.\n<recall>\n", recallCut)
+	for _, h := range hits[:min(limit, len(hits))] {
+		m := msgs[h.i]
+		rare := slices.MaxFunc(h.terms, func(a, b int) int { return cmp.Compare(weight[a], weight[b]) })
+		fmt.Fprintf(&b, "%d+1|%s, %s: %s\n", h.i, m.Kind, m.Date.Local().Format("2006-01-02"), recallTag.Replace(flat(excerpt(m.Text, terms[rare], recallCut))))
+	}
+	b.WriteString("</recall>\n\n")
+	return b.String()
+}
+
+// excerpt is up to n bytes of s around the first place it holds word, in
+// any case, marked … where cut.
+func excerpt(s, word string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	at := max(0, strings.Index(strings.ToLower(s), word)) // a byte offset in s when lowering kept the lengths
+	from := min(max(0, at-n/3), len(s)-n)
+	for from > 0 && !utf8.RuneStart(s[from]) {
+		from--
+	}
+	out := head(s[from:], n)
+	if from > 0 {
+		out = "…" + out
+	}
+	if from+len(out) < len(s) {
+		out += "…"
+	}
+	return out
 }
 
 // viewLine is the view's line holding message i. Caller holds c.mu.

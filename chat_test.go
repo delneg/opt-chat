@@ -610,6 +610,42 @@ func TestCompactSeesCall(t *testing.T) {
 	}
 }
 
+// Recall finds the messages that share the rarest words, raw, best first,
+// leaving out the chat's own lookups and messages the view shows whole.
+func TestRecall(t *testing.T) {
+	c, _ := fakeChat(t, t.TempDir(), 100)
+	pad := strings.Repeat("filler words here ", 40) // over nodeMax: summarized, so not shown whole
+	for i := range 20 {
+		c.Log("user", fmt.Sprintf("common talk %d about the project %s", i, pad))
+	}
+	c.Log("opt", "The staging host is 10.0.4.17, port 7443, the key in Zanzibar vault. "+pad) // 20
+	c.Log("note", "Zanzibar again, nothing else")                                             // 21: whole in the view
+	c.logRef("tool", `search {"text":"zanzibar"}`, "t1")                                      // 22
+	c.logRef("echo", "2 messages hold \"zanzibar\": the staging host "+pad, "t1")             // 23
+	c.Log("user", "Staging moved: the project's host is now 10.0.9.2. "+pad+" ZANZIBAR")      // 24
+	c.Log("user", "where is the Zanzibar staging key?")                                       // 25: the question, after before
+	waitIdle(t, c)
+	// 24 holds zanzibar and staging too, but only 20 holds "key" as well.
+	got := c.Recall("where is the Zanzibar staging key?", 25, 1)
+	if !strings.Contains(got, "\n20+1|opt, ") || strings.Contains(got, "24+1|") || !strings.HasSuffix(got, "</recall>\n\n") {
+		t.Fatalf("the best:\n%s", got)
+	}
+	got = c.Recall("where is the Zanzibar staging key?", 25, 8)
+	if !strings.Contains(got, "\n20+1|") || !strings.Contains(got, "\n24+1|") || strings.Contains(got, "21+1|") || strings.Contains(got, "23+1|") || strings.Contains(got, "\n0+1|") {
+		t.Fatalf("all:\n%s", got)
+	}
+	if strings.Index(got, "20+1|") > strings.Index(got, "24+1|") {
+		t.Fatalf("order:\n%s", got)
+	}
+	if got := c.Recall("is it so?", 25, 8); got != "" { // no word of three letters or more matches
+		t.Fatalf("nothing: %q", got)
+	}
+	if e := excerpt(strings.Repeat("a", 2000)+"Needle"+strings.Repeat("b", 2000), "needle", 100); !strings.HasPrefix(e, "…") ||
+		!strings.Contains(e, "Needle") || !strings.HasSuffix(e, "…") || len(e) > 100+2*len("…") {
+		t.Fatalf("excerpt: %q", e)
+	}
+}
+
 // search finds messages by their words, newest first, a page at a time,
 // naming the view's line that holds each, and skips the chat's own lookups.
 func TestSearch(t *testing.T) {

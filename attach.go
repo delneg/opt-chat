@@ -517,6 +517,12 @@ func place(text string, marks []placed) (string, []string) {
 // stripAttachments is a message's text without its attachments' marks.
 func stripAttachments(s string) string { return strings.TrimSpace(attMark.ReplaceAllString(s, "")) }
 
+var attFrame = regexp.MustCompile(`<attachment name="[^"]*" path="[^"]*" size="[^"]*"/?>|</attachment>`)
+
+// unframed is s with its attachments' marks taken off and what they hold
+// kept: a voice message's words, a text file inlined.
+func unframed(s string) string { return attFrame.ReplaceAllString(s, " ") }
+
 func attr(s string) string {
 	return strings.NewReplacer("\n", " ", "\r", " ").Replace(html.EscapeString(s))
 }

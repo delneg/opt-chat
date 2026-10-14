@@ -411,7 +411,7 @@ func (c *Chat) line(k key) string {
 
 // ownTags are the tags that frame the view and a compaction's input: inside
 // a line (Opt reading this code, a fetched page) one would end the frame.
-var ownTags = strings.NewReplacer("<chat>", "‹chat›", "</chat>", "‹/chat›", "<input>", "‹input›", "</input>", "‹/input›", "<call>", "‹call›", "</call>", "‹/call›")
+var ownTags = strings.NewReplacer("<chat>", "‹chat›", "</chat>", "‹/chat›", "<input>", "‹input›", "</input>", "‹/input›")
 
 // flat is a text as one line of the view, its newlines spaces.
 func flat(s string) string { return ownTags.Replace(strings.ReplaceAll(s, "\n", " ")) }
@@ -640,10 +640,12 @@ func (c *Chat) compactInput(k key) ([]string, []block) {
 
 const callMax = 4000 // bytes of a tool call that a compaction of its result sees
 
+var callTags = strings.NewReplacer("<call>", "‹call›", "</call>", "‹/call›")
+
 // callBlock is, for a tool result, the call it answers, which its line may
 // not say well enough to tell what the result is (an Edit cut at 512
 // bytes): context, ahead of the input. The call is the message of the same
-// Ref, or for an import, which has none, the message right before.
+// Ref, or with none (logged before Refs were kept), found by its place.
 // (After https://github.com/jonaslsaa/pi-optchat/pull/171.)
 func (c *Chat) callBlock(i int) string {
 	m := c.msgs[i]
@@ -652,9 +654,7 @@ func (c *Chat) callBlock(i int) string {
 	}
 	j := -1
 	if m.Ref == "" {
-		if i > 0 && c.msgs[i-1].Kind == "tool" && c.msgs[i-1].Ref == "" {
-			j = i - 1
-		}
+		j = c.callByPlace(i)
 	} else {
 		for k := i - 1; k >= 0 && k >= i-1000; k-- {
 			if c.msgs[k].Kind == "tool" && c.msgs[k].Ref == m.Ref {
@@ -670,7 +670,46 @@ func (c *Chat) callBlock(i int) string {
 		call = cut + "…"
 	}
 	return fmt.Sprintf("<call> is the tool call that message %d answers (message %d, which has its own\n"+
-		"line): context, as <chat> is.\n<call>\n%s\n</call>\n", i, j, ownTags.Replace(call))
+		"line): context, as <chat> is.\n<call>\n%s\n</call>\n", i, j, callTags.Replace(ownTags.Replace(call)))
+}
+
+// callByPlace finds the call a result with no Ref answers: calls made at
+// once come in a run, and their results in the next, in the same order, so
+// the kth result answers the kth call when both runs are as long. Runs are
+// counted in messages, not their parts. -1 when that does not hold.
+func (c *Chat) callByPlace(i int) int {
+	run := func(j int, kind string) bool {
+		return j >= 0 && j < len(c.msgs) && c.msgs[j].Kind == kind && c.msgs[j].Ref == ""
+	}
+	starts := func(from, to int) []int { // the messages from..to-1 start, as indexes
+		var s []int
+		for j := from; j < to; j++ {
+			if c.msgs[j].Part == 0 {
+				s = append(s, j)
+			}
+		}
+		return s
+	}
+	from, to := i, i+1
+	for run(from-1, "echo") {
+		from--
+	}
+	for run(to, "echo") {
+		to++
+	}
+	calls := from
+	for run(calls-1, "tool") {
+		calls--
+	}
+	results := starts(from, to)
+	k := slices.IndexFunc(results, func(j int) bool { return j > i }) // i's message is the one before
+	if k < 0 {
+		k = len(results)
+	}
+	if made := starts(calls, from); len(made) == len(results) && k > 0 {
+		return made[k-1]
+	}
+	return -1
 }
 
 func (c *Chat) notify() {
@@ -867,7 +906,7 @@ func lookupRefs(msgs []Msg) map[string]bool {
 const recallCut = 1200 // bytes of a message that recall shows
 
 var (
-	nonWord   = regexp.MustCompile(`[^\p{L}\p{N}]+`)
+	nonWord   = regexp.MustCompile(`[^\p{L}\p{M}\p{N}]+`)
 	recallTag = strings.NewReplacer("<recall>", "‹recall›", "</recall>", "‹/recall›")
 )
 
@@ -928,10 +967,13 @@ func (c *Chat) Recall(text string, before, limit int) string {
 	}
 	weight := lo.Map(df, func(d, _ int) float64 { w := max(0, math.Log((float64(n-d)+0.5)/(float64(d)+0.5))); return w * w })
 	c.mu.Lock()
-	hits = slices.DeleteFunc(hits, func(h hit) bool {
-		k := c.viewLine(h.i) // shown whole: a message's own line, written with no model call
-		return k.L == 0 && msgs[h.i].Size <= nodeMax && len(msgs[h.i].Images) == 0
-	})
+	// Shown whole: a message's own line, written with no model call. Behind
+	// a backlog, the call may see its parent instead (callView): kept then.
+	if !slices.ContainsFunc(c.view.keys, func(k key) bool { return !c.built(k) }) {
+		hits = slices.DeleteFunc(hits, func(h hit) bool {
+			return c.viewLine(h.i).L == 0 && msgs[h.i].Size <= nodeMax && len(msgs[h.i].Images) == 0
+		})
+	}
 	c.mu.Unlock()
 	const k1, lenB = 1.2, 0.75 // BM25's usual
 	avg := float64(total) / float64(max(n, 1))
@@ -965,17 +1007,20 @@ func excerpt(s, word string, n int) string {
 	if len(s) <= n {
 		return s
 	}
-	at := max(0, strings.Index(strings.ToLower(s), word)) // a byte offset in s when lowering kept the lengths
+	at := 0
+	if loc := regexp.MustCompile("(?i)" + regexp.QuoteMeta(word)).FindStringIndex(s); loc != nil {
+		at = loc[0]
+	}
 	from := min(max(0, at-n/3), len(s)-n)
 	for from > 0 && !utf8.RuneStart(s[from]) {
 		from--
 	}
 	out := head(s[from:], n)
-	if from > 0 {
-		out = "…" + out
-	}
 	if from+len(out) < len(s) {
 		out += "…"
+	}
+	if from > 0 {
+		out = "…" + out
 	}
 	return out
 }

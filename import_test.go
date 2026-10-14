@@ -229,8 +229,8 @@ func TestImportCodex(t *testing.T) {
 		obj{"type": "session_meta", "timestamp": "2026-09-01T08:00:00Z", "payload": obj{"id": "c1", "cwd": "/code", "source": "cli"}},
 		item("2026-09-01T08:00:01Z", obj{"type": "message", "role": "user", "content": []obj{{"type": "input_text", "text": "<environment_context>x</environment_context>"}}}),
 		item("2026-09-01T08:00:02Z", obj{"type": "message", "role": "user", "content": []obj{{"type": "input_text", "text": "list files"}}}),
-		item("2026-09-01T08:00:03Z", obj{"type": "function_call", "name": "shell", "arguments": `{"command":["ls"]}`}),
-		item("2026-09-01T08:00:04Z", obj{"type": "function_call_output", "output": "a b"}),
+		item("2026-09-01T08:00:03Z", obj{"type": "function_call", "name": "shell", "arguments": `{"command":["ls"]}`, "call_id": "call_1"}),
+		item("2026-09-01T08:00:04Z", obj{"type": "function_call_output", "output": "a b", "call_id": "call_1"}),
 		item("2026-09-01T08:00:05Z", obj{"type": "message", "role": "assistant", "content": []obj{{"type": "output_text", "text": "Two files."}}}),
 		item("2026-09-01T08:00:06Z", obj{"type": "reasoning", "summary": []obj{}}),
 	)
@@ -249,6 +249,54 @@ func TestImportCodex(t *testing.T) {
 	}
 	if got := logged(c); !slices.Equal(got, want) {
 		t.Fatalf("logged %q\nwant %q", got, want)
+	}
+	if c.msgs[2].Ref != "call_1" || c.msgs[3].Ref != "call_1" { // a result's compaction finds its call
+		t.Fatalf("refs %q, %q", c.msgs[2].Ref, c.msgs[3].Ref)
+	}
+}
+
+// Claude Code's calls made at once and their results keep their ids, so
+// each result's compaction finds its call. A message typed mid-turn and
+// handed back by an Esc is imported once: dropped when the next prompt
+// sends it again, kept when it does not.
+func TestImportQueuedAndRefs(t *testing.T) {
+	home := t.TempDir()
+	queued := func(at, text string) obj {
+		return obj{"type": "attachment", "timestamp": at, "attachment": obj{"type": "queued_command", "commandMode": "prompt", "prompt": text, "origin": obj{"kind": "human"}}}
+	}
+	esc := func(at string) obj {
+		return claudeLine("user", at, []obj{{"type": "text", "text": "[Request interrupted by user]"}})
+	}
+	jsonl(t, filepath.Join(home, ".claude", "projects", "-work", "q.jsonl"),
+		claudeLine("user", "2026-09-01T10:00:00Z", "Read both"),
+		claudeLine("assistant", "2026-09-01T10:00:01Z", []obj{
+			{"type": "tool_use", "id": "ta", "name": "Read", "input": obj{"file_path": "a"}},
+			{"type": "tool_use", "id": "tb", "name": "Read", "input": obj{"file_path": "b"}},
+		}),
+		claudeLine("user", "2026-09-01T10:00:02Z", []obj{{"type": "tool_result", "tool_use_id": "ta", "content": "A"}, {"type": "tool_result", "tool_use_id": "tb", "content": "B"}}),
+		queued("2026-09-01T10:00:03Z", "use the staging db"),
+		queued("2026-09-01T10:00:03Z", "and be quick"),
+		esc("2026-09-01T10:00:04Z"),
+		claudeLine("user", "2026-09-01T10:00:05Z", "and be quick, please"), // sends the second again, not the first
+		claudeLine("assistant", "2026-09-01T10:00:06Z", "Using staging."),
+	)
+	c, _ := fakeChat(t, t.TempDir(), 100)
+	importInto(t, c, filepath.Join(home, ".claude"), importOpts{tools: true}, "y\n")
+	want := []string{
+		"user: Read both",
+		`tool: Read {"file_path":"a"}`,
+		`tool: Read {"file_path":"b"}`,
+		"echo: A",
+		"echo: B",
+		"user: use the staging db",
+		"user: and be quick, please",
+		"opt: Using staging.",
+	}
+	if got := logged(c)[1:]; !slices.Equal(got, want) {
+		t.Fatalf("logged %q\nwant %q", got, want)
+	}
+	if refs := []string{c.msgs[2].Ref, c.msgs[3].Ref, c.msgs[4].Ref, c.msgs[5].Ref}; !slices.Equal(refs, []string{"ta", "tb", "ta", "tb"}) {
+		t.Fatalf("refs %q", refs)
 	}
 }
 

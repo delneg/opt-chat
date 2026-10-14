@@ -41,7 +41,7 @@ type Agent struct {
 	pluginsSet      map[string]bool   // and plugins turned on or off here, by name@marketplace
 	skillsListed    []skill           // the skills Claude Code listed last, in its own states
 	agentWindow     int               // subagents' auto-compaction window, in tokens; 0: off
-	recall          int               // messages a turn gets that share the user's words: see Chat.Recall; 0: none
+	recall          int               // messages a turn gets that share the user's words: see Chat.Recall; 0: none. Set once, at start
 	resting         map[string]*rest  // subagents that have reported, still able to go on: see Tell
 	mcpUp           []string          // the servers connected when the last call sent its view: see mcpSettle
 	mcpSeen         []string          // and those listed then
@@ -664,6 +664,7 @@ type message struct {
 	files      []string     // the attachments' names, as the queue shows them
 	uploads    []attachment // those a page uploaded, which a stop hands back to it
 	logged     bool         // by a call that died before it could answer
+	at         int          // once logged: where in the log, or before
 }
 
 // full is m's text as the chat logs it: its own, with its attachments'
@@ -765,6 +766,9 @@ func (t *Turn) Send(m *message) bool {
 		return false
 	}
 	c := t.agent.chat
+	c.mu.Lock()
+	m.at = len(c.msgs)
+	c.mu.Unlock()
 	c.Log(m.kind, m.full(), m.images...)
 	m.logged = true
 	if t.p == nil {
@@ -808,17 +812,22 @@ func (t *Turn) Run(ctx context.Context, msgs []message) error {
 	if names := slices.Sorted(maps.Keys(a.running)); len(names) > 0 { // so Opt knows, with no zoom, what is underway
 		input = append(input, textBlock("[opt-chat] Subagents at work now: ["+strings.Join(names, "], [")+"].\n\n"))
 	}
-	recall := a.recall
 	a.mu.Unlock()
-	var asked []string
+	// Recall reads the log while the call starts. It looks before the
+	// messages of this turn: one logged already (by a call that died) would
+	// find itself.
+	var asked []string // the user's words, a voice message's too
+	before := from
 	for _, m := range msgs {
 		if m.kind == "user" {
-			asked = append(asked, m.text)
+			asked = append(asked, unframed(m.full()))
+		}
+		if m.logged {
+			before = min(before, m.at)
 		}
 	}
-	if r := c.Recall(strings.Join(asked, "\n"), from, recall); r != "" {
-		input = append(input, textBlock(r))
-	}
+	recalled, recallAt := make(chan string, 1), len(input)
+	go func() { recalled <- c.Recall(strings.Join(asked, "\n"), before, a.recall) }()
 	for _, m := range msgs {
 		if !m.logged {
 			c.Log(m.kind, m.full(), m.images...)
@@ -939,6 +948,9 @@ func (t *Turn) Run(ctx context.Context, msgs []message) error {
 		}
 	}
 	a.mcpSettle(p)
+	if r := <-recalled; r != "" {
+		input = slices.Insert(input, recallAt, textBlock(r))
+	}
 	first, second := viewMessages(lines, input)
 	if err := a.ack(p, first, &vu, handle); err != nil {
 		p.wait()

@@ -581,32 +581,45 @@ func TestOwnTagsInText(t *testing.T) {
 }
 
 // A tool result's compaction sees the call it answers, found by its Ref,
-// or for an import by its place; any other message's sees none.
+// or with none (an old log) by its place among calls made at once; any
+// other message's sees none.
 func TestCompactSeesCall(t *testing.T) {
 	c, _ := fakeChat(t, t.TempDir(), 100)
-	c.logRef("tool", `Edit {"file_path":"a.go","old_string":"`+strings.Repeat("o", 5000)+`"}`, "t1")
+	c.logRef("tool", `Edit {"file_path":"a.go","old_string":"</call>`+strings.Repeat("o", 5000)+`"}`, "t1")
 	c.logRef("tool", `Read {"file_path":"b.go"}`, "t2")
 	c.logRef("echo", "b.go: "+strings.Repeat("b", 600), "t2")
 	c.logRef("echo", "a.go edited "+strings.Repeat("a", 600), "t1")
-	c.Log("tool", `Bash {"command":"make"}`) // imported: no Ref
-	c.Log("echo", "built "+strings.Repeat("m", 600))
-	c.Log("user", "and </call> "+strings.Repeat("u", 600))
+	c.Log("tool", `Read {"file_path":"c.go"}`)                                              // 4: no Refs from here, two calls at once
+	c.Log("tool", `Write {"file_path":"d.go","content":"`+strings.Repeat("w", 40_000)+`"}`) // 5, 6: split
+	c.Log("echo", "c.go: "+strings.Repeat("c", 600))                                        // 7
+	c.Log("echo", "d.go written "+strings.Repeat("d", 40_000))                              // 8, 9: split
+	c.Log("tool", `Bash {"command":"a"}`)                                                   // 10
+	c.Log("tool", `Bash {"command":"b"}`)                                                   // 11
+	c.Log("echo", "one result for two calls "+strings.Repeat("m", 600))                     // 12
+	c.Log("user", "and </call> "+strings.Repeat("u", 600))                                  // 13
 	waitIdle(t, c)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	task := func(i int) string { _, task := c.compactInput(key{0, i}); return task[0].Text }
-	if s := task(3); !strings.Contains(s, "message 3 answers (message 0,") || !strings.Contains(s, `<call>`+"\n"+`Edit {"file_path":"a.go"`) ||
+	if s := task(3); !strings.Contains(s, "message 3 answers (message 0,") || !strings.Contains(s, "<call>\n"+`Edit {"file_path":"a.go","old_string":"‹/call›`) ||
 		!strings.Contains(s, "o…\n</call>\n<input>\necho: a.go edited") {
 		t.Fatalf("by Ref:\n%s", s)
 	}
-	if s := task(2); !strings.Contains(s, `<call>`+"\n"+`Read {"file_path":"b.go"}`+"\n</call>") {
+	if s := task(2); !strings.Contains(s, "<call>\n"+`Read {"file_path":"b.go"}`+"\n</call>") {
 		t.Fatalf("the other call:\n%s", s)
 	}
-	if s := task(5); !strings.Contains(s, "(message 4,") || !strings.Contains(s, `Bash {"command":"make"}`) {
-		t.Fatalf("by place:\n%s", s)
+	if s := task(7); !strings.Contains(s, "(message 4,") || !strings.Contains(s, `c.go"}`) {
+		t.Fatalf("by place, the first:\n%s", s)
 	}
-	if s := task(6); strings.Contains(s, "<call>") || strings.Count(s, "</call>") != 0 {
-		t.Fatalf("a user's message:\n%s", s)
+	for _, i := range []int{8, 9} { // the second call, from its head, for each part of its result
+		if s := task(i); !strings.Contains(s, "(message 5,") || !strings.Contains(s, "<call>\nWrite ") {
+			t.Fatalf("by place, the second (%d):\n%.300s", i, s)
+		}
+	}
+	for _, i := range []int{12, 13} { // runs that don't pair; not a result
+		if s := task(i); strings.Contains(s, "<call>") {
+			t.Fatalf("message %d:\n%.300s", i, s)
+		}
 	}
 }
 
@@ -640,6 +653,14 @@ func TestRecall(t *testing.T) {
 	}
 	if got := c.Recall("is it so?", 26, 8); got != "" { // no word of three letters or more matches
 		t.Fatalf("nothing: %q", got)
+	}
+	// Lowering can change byte lengths (K, a Kelvin sign, is 3 bytes; k one).
+	if e := excerpt(strings.Repeat("K", 1000)+" Needle "+strings.Repeat("x", 1000), "needle", 1200); !strings.Contains(e, "Needle") {
+		t.Fatalf("excerpt past a Kelvin sign: %d bytes, no Needle", len(e))
+	}
+	// A cut tail is marked, even where the start stepped back to a rune's.
+	if e := excerpt("a"+strings.Repeat("é", 1000)+"needle"+"é", "needle", 101); !strings.HasSuffix(e, "…") {
+		t.Fatalf("tail cut, not marked: %q", e)
 	}
 	if e := excerpt(strings.Repeat("a", 2000)+"Needle"+strings.Repeat("b", 2000), "needle", 100); !strings.HasPrefix(e, "…") ||
 		!strings.Contains(e, "Needle") || !strings.HasSuffix(e, "…") || len(e) > 100+2*len("…") {

@@ -39,6 +39,7 @@ type pastMsg struct {
 	date       time.Time
 	images     [][]byte
 	id         string // Claude Code's id of the line it came from: a resumed session copies lines
+	ref        string // a tool call's id, on it and on its result, as Msg.Ref
 }
 
 // importKey names a session across imports: by its id when it has one, so
@@ -207,9 +208,10 @@ func readSessionFile(path string, keep func(*session, pastMsg) bool) (session, e
 	id := strings.TrimSuffix(filepath.Base(path), ".jsonl")
 	s := session{app: "Claude Code", where: "session " + id}
 	var date time.Time
-	// Messages typed while Claude Code worked, held until its next reply: an
-	// Esc before it hands them back to the input, to be sent again.
-	var queued []pastMsg
+	// Messages typed while Claude Code worked, held until its next reply. An
+	// Esc before it hands them back to the input: those the next prompt
+	// sends again are dropped, the rest kept, the model having seen them.
+	var queued, handed []pastMsg
 	for n := 0; sc.Scan(); n++ {
 		var j struct {
 			Type             string `json:"type"`
@@ -265,16 +267,20 @@ func readSessionFile(path string, keep func(*session, pastMsg) bool) (session, e
 			!at.IsMeta && (at.Origin == nil || at.Origin.Kind == "human"):
 			queued = append(queued, withID(j.UUID, blocksMsgs("user", contentBlocks(at.Prompt), date, claudeSkip))...)
 		case kind == "user" && !j.IsSidechain && interrupted(j.Message.Content):
-			queued = nil
+			handed, queued = append(handed, queued...), nil
 		case kind != "" && !j.IsMeta && !j.IsSidechain && !j.IsCompactSummary:
+			ms := withID(j.UUID, blocksMsgs(kind, contentBlocks(j.Message.Content), date, claudeSkip))
 			if kind == "opt" {
 				s.add(keep, queued)
 				queued = nil
+			} else if len(ms) > 0 && ms[0].kind == "user" {
+				s.add(keep, slices.DeleteFunc(handed, func(h pastMsg) bool { return strings.Contains(ms[0].text, h.text) }))
+				handed = nil
 			}
-			s.add(keep, withID(j.UUID, blocksMsgs(kind, contentBlocks(j.Message.Content), date, claudeSkip)))
+			s.add(keep, ms)
 		}
 	}
-	s.add(keep, queued)
+	s.add(keep, append(handed, queued...))
 	return s, sc.Err()
 }
 
@@ -292,12 +298,20 @@ func withID(id string, msgs []pastMsg) []pastMsg {
 	return msgs
 }
 
+func withRef(ref string, msgs []pastMsg) []pastMsg {
+	for i := range msgs {
+		msgs[i].ref = ref
+	}
+	return msgs
+}
+
 // codexLine reads one line of a Codex session. A subagent's session is
 // skipped whole, as Claude Code's are.
 func codexLine(s *session, typ string, payload jsontext.Value, date time.Time) []pastMsg {
 	var p struct {
 		Type      string         `json:"type"`
 		ID        string         `json:"id"`
+		CallID    string         `json:"call_id"`
 		Role      string         `json:"role"`
 		Cwd       string         `json:"cwd"`
 		Source    jsontext.Value `json:"source"`
@@ -335,16 +349,16 @@ func codexLine(s *session, typ string, payload jsontext.Value, date time.Time) [
 			return blocksMsgs("opt", p.Content, date, codexSkip)
 		}
 	case "function_call":
-		return pastMsgs("tool", p.Name+" "+p.Arguments, nil, date)
+		return withRef(p.CallID, pastMsgs("tool", p.Name+" "+p.Arguments, nil, date))
 	case "custom_tool_call":
 		in, _ := json.Marshal(map[string]jsontext.Value{"input": p.Input})
-		return pastMsgs("tool", p.Name+" "+string(in), nil, date)
+		return withRef(p.CallID, pastMsgs("tool", p.Name+" "+string(in), nil, date))
 	case "local_shell_call":
 		in, _ := json.Marshal(map[string]jsontext.Value{"command": p.Action.Command})
-		return pastMsgs("tool", "shell "+string(in), nil, date)
+		return withRef(p.CallID, pastMsgs("tool", "shell "+string(in), nil, date))
 	case "function_call_output", "custom_tool_call_output":
 		out, imgs := resultContent(p.Output)
-		return pastMsgs("echo", out, imgs, date)
+		return withRef(p.CallID, pastMsgs("echo", out, imgs, date))
 	}
 	return nil
 }
@@ -379,10 +393,10 @@ func blocksMsgs(kind string, bs []block, date time.Time, skip *regexp.Regexp) []
 				words = append(words, "[image]")
 			}
 		case "tool_use":
-			tools = append(tools, pastMsgs("tool", b.Name+" "+string(b.Input), nil, date)...)
+			tools = append(tools, withRef(b.ID, pastMsgs("tool", b.Name+" "+string(b.Input), nil, date))...)
 		case "tool_result":
 			out, timgs := resultContent(b.Content)
-			tools = append(tools, pastMsgs("echo", out, timgs, date)...)
+			tools = append(tools, withRef(b.ToolID, pastMsgs("echo", out, timgs, date))...)
 		}
 	}
 	return append(pastMsgs(kind, strings.Join(words, "\n"), imgs, date), tools...)
@@ -642,7 +656,7 @@ func (c *Chat) logSessions(sessions []session, out io.Writer) {
 					m.text += "\n[image not kept: " + err.Error() + "]"
 				}
 			}
-			ms = append(ms, Msg{Kind: m.kind, Text: m.text, Date: m.date, Images: names})
+			ms = append(ms, Msg{Kind: m.kind, Text: m.text, Date: m.date, Images: names, Ref: m.ref})
 		}
 		c.logMsgs(ms)
 		if time.Since(told) >= time.Second || i == len(sessions)-1 {

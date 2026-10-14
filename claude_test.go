@@ -582,9 +582,12 @@ func TestStopAgent(t *testing.T) {
 		t.Fatalf("a report: %q", got)
 	case <-time.After(100 * time.Millisecond):
 	}
-	if last := c.msgs[len(c.msgs)-1]; last.Kind != "work" || !strings.HasPrefix(last.Text, "[Sleeper] stopped: the user stopped it from the page") {
-		t.Fatalf("last message: %q", last.Text)
-	}
+	waitFor(t, "the stop logged", func() bool { // by the subagent's goroutine, maybe after its state shows
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		last := c.msgs[len(c.msgs)-1]
+		return last.Kind == "work" && strings.HasPrefix(last.Text, "[Sleeper] stopped: the user stopped it from the page")
+	})
 	if r, _ := a.loadRecord("Sleeper"); r.State != "halted" {
 		t.Fatalf("record: %q", r.State)
 	}
@@ -784,8 +787,9 @@ func TestAgentAutocompact(t *testing.T) {
 	}
 }
 
-// A turn's input holds the messages recall finds for the user's words,
-// ahead of the user's message, and the log holds only that message.
+// A turn's input holds the messages recall finds for the user's words (a
+// voice message's here), ahead of the user's message, and the log holds
+// only that message.
 func TestTurnRecalls(t *testing.T) {
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	a, _ := fakeAgent(t, c)
@@ -795,15 +799,36 @@ func TestTurnRecalls(t *testing.T) {
 	}
 	waitIdle(t, c)
 	a.recall = 8
-	if err := (&Turn{agent: a}).Run(context.Background(), []message{{kind: "user", text: "where is the Zanzibar key?"}}); err != nil {
+	voice := `<attachment name="voice 0:02.webm" path="/c/files/ab.webm" size="9 KB">` + "\nwhere is the Zanzibar key?\n</attachment>"
+	if err := (&Turn{agent: a}).Run(context.Background(), []message{{kind: "user", extra: voice}}); err != nil { // the words of a voice message
 		t.Fatal(err)
 	}
 	last := c.msgs[len(c.msgs)-1]
-	if !strings.Contains(last.Text, `<recall>\n0+1|opt, `) || !strings.Contains(last.Text, `</recall>\n\nwhere is the Zanzibar key?`) {
+	if !strings.Contains(last.Text, `<recall>\n0+1|opt, `) || !strings.Contains(last.Text, `</recall>\n\n<attachment name=\"voice`) {
 		t.Fatalf("reply: %q", last.Text)
 	}
-	if user := c.msgs[6]; user.Text != "where is the Zanzibar key?" {
+	if user := c.msgs[6]; user.Text != voice {
 		t.Fatalf("logged: %q", user.Text)
+	}
+}
+
+// A message a call took and logged before it died is never recalled to
+// the turn that takes it on.
+func TestTurnRecallsNotItself(t *testing.T) {
+	c, _ := fakeChat(t, t.TempDir(), 100)
+	a, _ := fakeAgent(t, c)
+	for i := range 6 {
+		c.Log("note", fmt.Sprint("other ", i))
+	}
+	long := "where is the Zanzibar key? " + strings.Repeat("pad ", 200) // over nodeMax: not shown whole
+	c.Log("user", long)                                                 // 6, logged by Send, then the call died
+	waitIdle(t, c)
+	a.recall = 8
+	if err := (&Turn{agent: a}).Run(context.Background(), []message{{kind: "user", text: long, logged: true, at: 6}}); err != nil {
+		t.Fatal(err)
+	}
+	if last := c.msgs[len(c.msgs)-1]; strings.Contains(last.Text, "<recall>") {
+		t.Fatalf("recalled itself: %.200q", last.Text)
 	}
 }
 

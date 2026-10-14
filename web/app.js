@@ -1722,8 +1722,9 @@ async function startVoice() {
   set({ voice: 'rec' });
 }
 
-// stopVoice ends the recording, and sends it if keep.
-async function stopVoice(keep) {
+// stopVoice ends the recording, and sends it if keep: now, past the queue,
+// as Cmd+Enter sends.
+async function stopVoice(keep, now) {
   const r = rec;
   rec = null;
   if (!r) { if (S.voice === 'starting') set({ voice: null }); return; }
@@ -1753,7 +1754,7 @@ async function stopVoice(keep) {
   // Into the input, after what it holds, and sent with it.
   set({ voice: null, atts: S.atts.concat({ name: at.name, orig: at.orig, kind: at.kind, size: at.size, id: ++uploadSeq, status: 'done', promise: Promise.resolve() }) });
   if (at.error) notice('warn', `Voice message not transcribed (${at.error}): it is in the input as a file, to send as one or take off (×).`);
-  else submit();
+  else submit(now);
 }
 
 // paintLevels draws the microphone's levels, the latest on the right, and
@@ -1922,41 +1923,54 @@ function useClock(on) {
 }
 
 // The rail's width is the user's to drag, by its left edge; kept per browser.
-// --rail-w, set on the root element, overrides the stylesheet's width.
+// --rail-w, set on the root element, overrides the stylesheet's width, which
+// still caps it to the window (style.css).
 function railWidth(px) {
   const root = document.documentElement.style;
-  if (!px) { root.removeProperty('--rail-w'); return; }
-  root.setProperty('--rail-w', Math.round(Math.max(30 * chPx, Math.min(px, innerWidth - 40 * chPx))) + 'px');
+  if (px) root.setProperty('--rail-w', Math.round(px) + 'px');
+  else root.removeProperty('--rail-w');
 }
-try { const w = +localStorage.getItem('railW'); if (w) addEventListener('load', () => { roomy(); railWidth(w); }); } catch {}
+try { railWidth(+localStorage.getItem('railW')); } catch {}
 function keepRailWidth() {
-  const w = parseFloat(document.documentElement.style.getPropertyValue('--rail-w')) || 0;
+  const w = parseFloat(document.documentElement.style.getPropertyValue('--rail-w'));
   try { if (w) localStorage.setItem('railW', w); else localStorage.removeItem('railW'); } catch {}
+}
+// fitRail sets the width the user asks for, as far as the window has room:
+// beside the chat, its 40 columns stay; as a drawer, it covers 94% at most.
+function fitRail(px) {
+  const most = S.wide ? innerWidth - 40 * chPx : 0.94 * innerWidth;
+  railWidth(Math.max(Math.min(30 * chPx, most), Math.min(px, most)));
 }
 
 function Grip() {
+  const drag = useRef(null); // the pointer dragging it
+  const end = () => {
+    drag.current = null;
+    document.documentElement.classList.remove('resizing');
+  };
+  useEffect(() => end, []); // gone mid-drag (Esc closed the drawer): no cursor left behind
   const down = e => {
-    if (e.button) return;
+    if (e.button || drag.current != null) return;
     e.preventDefault();
-    const el = e.currentTarget;
-    el.setPointerCapture(e.pointerId);
+    drag.current = e.pointerId;
+    e.currentTarget.setPointerCapture(e.pointerId);
     document.documentElement.classList.add('resizing');
-    el.onpointermove = m => railWidth(innerWidth - m.clientX);
-    el.onpointerup = el.onpointercancel = () => {
-      el.onpointermove = el.onpointerup = el.onpointercancel = null;
-      document.documentElement.classList.remove('resizing');
-      keepRailWidth();
-    };
+  };
+  const move = e => { if (e.pointerId === drag.current) fitRail(innerWidth - e.clientX); };
+  const up = e => {
+    if (e.pointerId !== drag.current) return;
+    end();
+    keepRailWidth();
   };
   const key = e => {
     if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
     e.preventDefault();
-    railWidth(e.currentTarget.parentElement.getBoundingClientRect().width + (e.key === 'ArrowLeft' ? 4 : -4) * chPx);
+    fitRail(e.currentTarget.parentElement.getBoundingClientRect().width + (e.key === 'ArrowLeft' ? 4 : -4) * chPx);
     keepRailWidth();
   };
   return html`<div class="grip" role="separator" aria-orientation="vertical" aria-label="the rail's width" tabindex="0"
-    title="drag to widen or narrow; a double-click sets it back" onPointerDown=${down} onKeyDown=${key}
-    onDblClick=${() => { railWidth(0); keepRailWidth(); }}/>`;
+    title="drag to widen or narrow; a double-click sets it back" onPointerDown=${down} onPointerMove=${move}
+    onPointerUp=${up} onPointerCancel=${up} onKeyDown=${key} onDblClick=${() => { railWidth(0); keepRailWidth(); }}/>`;
 }
 
 function Rail() {
@@ -2149,11 +2163,13 @@ addEventListener('keydown', e => {
     return;
   }
   // Enter and Esc are the recording's, not the input's; Shift+Enter still
-  // breaks the input's line, typed as you speak.
-  if (S.voice && (e.key === 'Enter' && !e.shiftKey && !e.altKey || e.key === 'Escape')) {
+  // breaks the input's line, typed as you speak, and a menu open in it (/,
+  // @, the model picker) takes its keys as ever.
+  const menu = S.picker || e.target === inputEl && (S.mention?.items.length || suggestions(inputEl).length);
+  if (S.voice && !menu && (e.key === 'Enter' && !e.shiftKey && !e.altKey || e.key === 'Escape')) {
     e.preventDefault();
     e.stopPropagation();
-    if (S.voice !== 'sending') stopVoice(e.key === 'Enter');
+    if (S.voice !== 'sending') stopVoice(e.key === 'Enter', e.metaKey || e.ctrlKey);
     return;
   }
   if (e.altKey && e.code === 'KeyA' && !e.metaKey && !e.ctrlKey) { // the agents rail

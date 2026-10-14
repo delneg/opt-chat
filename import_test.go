@@ -85,7 +85,15 @@ func TestImportClaudeCode(t *testing.T) {
 			{"type": "text", "text": "See [Image #1]"},
 			{"type": "image", "source": obj{"type": "base64", "media_type": "image/png", "data": img}},
 		}),
-		obj{"type": "attachment", "timestamp": "2026-09-01T10:00:08Z", "attachment": obj{"type": "queued_command", "prompt": "and the tests"}},
+		// Typed mid-turn, then handed back by an Esc and sent again: once.
+		obj{"type": "attachment", "timestamp": "2026-09-01T10:00:07Z", "attachment": obj{"type": "queued_command", "commandMode": "prompt", "prompt": "and the docs"}},
+		claudeLine("user", "2026-09-01T10:00:07Z", []obj{{"type": "text", "text": "[Request interrupted by user]"}}),
+		claudeLine("user", "2026-09-01T10:00:07Z", "and the docs"),
+		obj{"type": "attachment", "timestamp": "2026-09-01T10:00:08Z", "attachment": obj{"type": "queued_command", "commandMode": "prompt", "prompt": []obj{{"type": "text", "text": "and the tests"}}}},
+		// Claude Code's own notices, queued the same way.
+		obj{"type": "attachment", "timestamp": "2026-09-01T10:00:08Z", "attachment": obj{"type": "queued_command", "commandMode": "task-notification", "prompt": "<task-notification>done</task-notification>"}},
+		obj{"type": "attachment", "timestamp": "2026-09-01T10:00:08Z", "attachment": obj{"type": "queued_command", "commandMode": "prompt", "prompt": "an agent's report", "origin": obj{"kind": "agent"}}},
+		obj{"type": "attachment", "timestamp": "2026-09-01T10:00:08Z", "attachment": obj{"type": "queued_command", "commandMode": "prompt", "prompt": "a reminder", "isMeta": true}},
 	)
 	jsonl(t, filepath.Join(home, ".claude", "projects", "-work", "s1", "subagents", "a.jsonl"), claudeLine("user", "2026-09-01T10:00:00Z", "sub"))
 	jsonl(t, filepath.Join(home, ".claude", "other.jsonl"), claudeLine("user", "2026-09-01T10:00:00Z", "not a session"))
@@ -97,7 +105,7 @@ func TestImportClaudeCode(t *testing.T) {
 	if err := importChats(c, empty, importOpts{}, strings.NewReader("y\n"), io.Discard); err == nil || err.Error() != "no chats in "+empty {
 		t.Fatalf("a directory with no session: %v", err)
 	}
-	if out := importInto(t, c, filepath.Join(home, ".claude"), importOpts{}, "n\n"); !strings.Contains(out, "5 messages (0.0 MB) from 2 sessions, ") ||
+	if out := importInto(t, c, filepath.Join(home, ".claude"), importOpts{}, "n\n"); !strings.Contains(out, "6 messages (0.0 MB) from 2 sessions, ") ||
 		!strings.Contains(out, "-import-tools adds them") || len(logged(c)) != 0 {
 		t.Fatalf("declined: %q, logged %q", out, logged(c))
 	}
@@ -110,6 +118,7 @@ func TestImportClaudeCode(t *testing.T) {
 		"user: Fix the build",
 		"opt: Looking.",
 		"user: See [Image #1]",
+		"user: and the docs",
 		"user: and the tests",
 	}
 	if got := logged(c); !slices.Equal(got, want) {
@@ -129,7 +138,7 @@ func TestImportClaudeCode(t *testing.T) {
 		claudeLine("user", "2026-09-02T09:00:01Z", []obj{{"type": "tool_result", "content": "contents of " + strings.Repeat("y", 40_000)}}),
 	)
 	importInto(t, c, file, importOpts{tools: true}, "y\n")
-	got := logged(c)[6:]
+	got := logged(c)[7:]
 	if len(got) != 4 || got[0] != want[0] || got[1] != "opt: Done." || got[2] != `tool: Read {"file_path":"a"}` ||
 		!strings.HasPrefix(got[3], "echo: contents of ") || !strings.Contains(got[3], " characters cut ...]") {
 		t.Fatalf("the rest: %q", got)

@@ -207,6 +207,9 @@ func readSessionFile(path string, keep func(*session, pastMsg) bool) (session, e
 	id := strings.TrimSuffix(filepath.Base(path), ".jsonl")
 	s := session{app: "Claude Code", where: "session " + id}
 	var date time.Time
+	// Messages typed while Claude Code worked, held until its next reply: an
+	// Esc before it hands them back to the input, to be sent again.
+	var queued []pastMsg
 	for n := 0; sc.Scan(); n++ {
 		var j struct {
 			Type             string `json:"type"`
@@ -220,8 +223,13 @@ func readSessionFile(path string, keep func(*session, pastMsg) bool) (session, e
 				Content jsontext.Value `json:"content"`
 			} `json:"message"`
 			Attachment struct {
-				Type   string         `json:"type"`
-				Prompt jsontext.Value `json:"prompt"`
+				Type        string         `json:"type"`
+				Prompt      jsontext.Value `json:"prompt"`
+				CommandMode string         `json:"commandMode"`
+				IsMeta      bool           `json:"isMeta"`
+				Origin      *struct {
+					Kind string `json:"kind"`
+				} `json:"origin"`
 			} `json:"attachment"`
 			Payload jsontext.Value `json:"payload"`
 		}
@@ -248,16 +256,33 @@ func readSessionFile(path string, keep func(*session, pastMsg) bool) (session, e
 		} else if j.Type == "assistant" {
 			kind = "opt"
 		}
+		at := j.Attachment
 		switch {
-		case j.Type == "attachment" && j.Attachment.Type == "queued_command": // sent mid-turn
-			var prompt string
-			json.Unmarshal(j.Attachment.Prompt, &prompt)
-			s.add(keep, withID(j.UUID, pastMsgs("user", prompt, nil, date)))
+		// Typed mid-turn. Task and agent notifications come the same way,
+		// marked as Claude Code's own or as not a prompt.
+		// (After https://github.com/jonaslsaa/pi-optchat/pull/162.)
+		case j.Type == "attachment" && at.Type == "queued_command" && (at.CommandMode == "" || at.CommandMode == "prompt") &&
+			!at.IsMeta && (at.Origin == nil || at.Origin.Kind == "human"):
+			queued = append(queued, withID(j.UUID, blocksMsgs("user", contentBlocks(at.Prompt), date, claudeSkip))...)
+		case kind == "user" && interrupted(j.Message.Content):
+			queued = nil
 		case kind != "" && !j.IsMeta && !j.IsSidechain && !j.IsCompactSummary:
+			if kind == "opt" {
+				s.add(keep, queued)
+				queued = nil
+			}
 			s.add(keep, withID(j.UUID, blocksMsgs(kind, contentBlocks(j.Message.Content), date, claudeSkip)))
 		}
 	}
+	s.add(keep, queued)
 	return s, sc.Err()
+}
+
+// interrupted reports whether a user line of Claude Code is its mark of an
+// Esc: a string, or since 2.1 a one-block array.
+func interrupted(content jsontext.Value) bool {
+	bs := contentBlocks(content)
+	return len(bs) == 1 && bs[0].Type == "text" && strings.HasPrefix(bs[0].Text, "[Request interrupted by user")
 }
 
 func withID(id string, msgs []pastMsg) []pastMsg {

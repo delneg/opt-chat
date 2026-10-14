@@ -1722,8 +1722,9 @@ async function stopVoice(keep) {
   if (!r) { if (S.voice === 'starting') set({ voice: null }); return; }
   clearTimeout(r.cap);
   const ms = performance.now() - r.since;
-  const stopped = new Promise(res => { r.recorder.onstop = res; });
-  r.recorder.stop();
+  // A recorder whose microphone went away (unplugged) has stopped itself.
+  const stopped = r.recorder.state === 'inactive' ? null : new Promise(res => { r.recorder.onstop = res; });
+  if (stopped) r.recorder.stop();
   r.stream.getTracks().forEach(t => t.stop()); // the browser's recording light goes off
   r.ctx.close();
   if (!keep) { set({ voice: null }); return; }

@@ -876,10 +876,14 @@ var (
 // block for a turn's input; "" when none does. A summary line keeps only
 // so much of a message, so a turn gets these raw: names, numbers, paths.
 // Each word of three characters or more weighs its BM25 inverse document
-// frequency, none when half the messages or more hold it; a message scores
-// the sum of the weights of the words it holds, ties going to the newer.
-// The chat's own lookups are left out, and so are messages the view shows
-// whole. (After https://github.com/ericjuta/omp-optchat/releases/tag/v0.9.0,
+// frequency squared, so that the rare words lead, and nothing when half
+// the messages or more hold it. A message scores the sum of the weights of
+// the words it holds, scaled by its length as BM25 scales a word found
+// once, so that a long paste holding many middling words loses to a short
+// message holding the rare one. Ties go to the newer; hits under a quarter
+// of the best one's score are dropped. The chat's own lookups are left
+// out, and so are messages the view shows whole.
+// (After https://github.com/ericjuta/omp-optchat/releases/tag/v0.9.0,
 // whose recall tool takes such messages as candidates.)
 func (c *Chat) Recall(text string, before, limit int) string {
 	var terms []string
@@ -903,13 +907,13 @@ func (c *Chat) Recall(text string, before, limit int) string {
 		score float64
 	}
 	var hits []hit
-	n := 0
+	n, total := 0, 0
 	for i := range before {
 		m := msgs[i]
 		if lookups[m.Ref] {
 			continue
 		}
-		n++
+		n, total = n+1, total+len(m.Text)
 		lower := strings.ToLower(m.Text)
 		var found []int
 		for t, term := range terms {
@@ -922,21 +926,26 @@ func (c *Chat) Recall(text string, before, limit int) string {
 			hits = append(hits, hit{i: i, terms: found})
 		}
 	}
-	weight := lo.Map(df, func(d, _ int) float64 { return max(0, math.Log((float64(n-d)+0.5)/(float64(d)+0.5))) })
+	weight := lo.Map(df, func(d, _ int) float64 { w := max(0, math.Log((float64(n-d)+0.5)/(float64(d)+0.5))); return w * w })
 	c.mu.Lock()
 	hits = slices.DeleteFunc(hits, func(h hit) bool {
 		k := c.viewLine(h.i) // shown whole: a message's own line, written with no model call
 		return k.L == 0 && msgs[h.i].Size <= nodeMax && len(msgs[h.i].Images) == 0
 	})
 	c.mu.Unlock()
-	for j := range hits {
-		hits[j].score = lo.SumBy(hits[j].terms, func(t int) float64 { return weight[t] })
+	const k1, lenB = 1.2, 0.75 // BM25's usual
+	avg := float64(total) / float64(max(n, 1))
+	for j, h := range hits {
+		norm := (k1 + 1) / (1 + k1*(1-lenB+lenB*float64(len(msgs[h.i].Text))/avg))
+		hits[j].score = norm * lo.SumBy(h.terms, func(t int) float64 { return weight[t] })
 	}
 	hits = slices.DeleteFunc(hits, func(h hit) bool { return h.score <= 0 })
 	slices.SortStableFunc(hits, func(a, b hit) int { return cmp.Or(cmp.Compare(b.score, a.score), cmp.Compare(b.i, a.i)) })
 	if len(hits) == 0 {
 		return ""
 	}
+	// Far behind the best, a hit shares only middling words: noise.
+	hits = slices.DeleteFunc(hits, func(h hit) bool { return h.score < hits[0].score/4 })
 	var b strings.Builder
 	fmt.Fprintf(&b, "[opt-chat] Recall: messages from the log that share this message's rarest words,\n"+
 		"found by words alone, so some may be beside the point; each cut to %d bytes\n"+

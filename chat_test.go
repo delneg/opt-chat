@@ -623,21 +623,22 @@ func TestRecall(t *testing.T) {
 	c.logRef("tool", `search {"text":"zanzibar"}`, "t1")                                      // 22
 	c.logRef("echo", "2 messages hold \"zanzibar\": the staging host "+pad, "t1")             // 23
 	c.Log("user", "Staging moved: the project's host is now 10.0.9.2. "+pad+" ZANZIBAR")      // 24
-	c.Log("user", "where is the Zanzibar staging key?")                                       // 25: the question, after before
+	c.Log("echo", strings.Repeat("a zanzibar staging key paste ", 400))                       // 25: as long as it is, far behind: dropped
+	c.Log("user", "where is the Zanzibar staging key?")                                       // 26: the question, after before
 	waitIdle(t, c)
 	// 24 holds zanzibar and staging too, but only 20 holds "key" as well.
-	got := c.Recall("where is the Zanzibar staging key?", 25, 1)
+	got := c.Recall("where is the Zanzibar staging key?", 26, 1)
 	if !strings.Contains(got, "\n20+1|opt, ") || strings.Contains(got, "24+1|") || !strings.HasSuffix(got, "</recall>\n\n") {
 		t.Fatalf("the best:\n%s", got)
 	}
-	got = c.Recall("where is the Zanzibar staging key?", 25, 8)
+	got = c.Recall("where is the Zanzibar staging key?", 26, 8)
 	if !strings.Contains(got, "\n20+1|") || !strings.Contains(got, "\n24+1|") || strings.Contains(got, "21+1|") || strings.Contains(got, "23+1|") || strings.Contains(got, "\n0+1|") {
 		t.Fatalf("all:\n%s", got)
 	}
-	if strings.Index(got, "20+1|") > strings.Index(got, "24+1|") {
+	if strings.Index(got, "20+1|") > strings.Index(got, "24+1|") || strings.Contains(got, "25+1|") {
 		t.Fatalf("order:\n%s", got)
 	}
-	if got := c.Recall("is it so?", 25, 8); got != "" { // no word of three letters or more matches
+	if got := c.Recall("is it so?", 26, 8); got != "" { // no word of three letters or more matches
 		t.Fatalf("nothing: %q", got)
 	}
 	if e := excerpt(strings.Repeat("a", 2000)+"Needle"+strings.Repeat("b", 2000), "needle", 100); !strings.HasPrefix(e, "…") ||

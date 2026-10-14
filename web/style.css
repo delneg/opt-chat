@@ -196,6 +196,8 @@ a { color: var(--blue); }
 .voice progress::-webkit-progress-value { background: var(--accent); border-radius: 2px; }
 .voice progress::-moz-progress-bar { background: var(--accent); border-radius: 2px; }
 .voice .len { font-variant-numeric: tabular-nums; }
+.voice .fold { color: var(--faint); padding: 0 .5ch; }
+.voice .fold:hover { color: var(--fg); }
 .voice .words { white-space: pre-wrap; margin-top: .2em; }
 .voice + .voice { margin-top: .5em; }
 .text + .voice { margin-top: .4em; }

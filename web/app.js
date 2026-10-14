@@ -994,7 +994,7 @@ function UserMsg({ m }) {
       <div class="body">
         <div class="text">${parts.map((p, j) => typeof p === 'string' ? p : html`<${MarkView} mk=${p} images=${m.images} inline=${true} onOpen=${() => setShown(shown === j ? -1 : j)} open=${shown === j}/>`)}${rest.body}</div>
         ${shown >= 0 && parts[shown]?.content !== undefined && html`<div class="attach-text"><pre>${parts[shown].content}</pre></div>`}
-        ${rest.marks.filter(isVoice).map(mk => html`<${Voice} mk=${mk}/>`)}
+        ${rest.marks.filter(isVoice).map((mk, j) => html`<${Voice} mk=${mk} k=${`v${m.i}.${j}`}/>`)}
         <${Attached} id=${m.i} marks=${rest.marks.filter(mk => !isVoice(mk))} images=${(m.images || []).filter(n => !inline.some(p => n.endsWith('/' + p.path.split('/').pop())))}/>
       </div>
     </div>`;
@@ -1004,7 +1004,7 @@ function UserMsg({ m }) {
     <div class="body">
       ${body && html`<div class="text">${long && !open ? head : body}</div>`}
       ${long && html`<button class="more" onClick=${() => setOpen(!open)}>${open ? '▴ fold' : `… +${hidden ? count(hidden, 'line') : count(body.length - head.length, 'character')} (click to expand)`}</button>`}
-      ${marks.filter(isVoice).map(mk => html`<${Voice} mk=${mk}/>`)}
+      ${marks.filter(isVoice).map((mk, j) => html`<${Voice} mk=${mk} k=${`v${m.i}.${j}`}/>`)}
       <${Attached} id=${m.i} marks=${marks.filter(mk => !isVoice(mk))} images=${m.images}/>
     </div>
   </div>`;
@@ -1623,7 +1623,7 @@ function Help() {
     ['Shift+Tab', 'permission mode: manual, accept edits, auto'],
     ['/mcp · /skills · /plugins', 'your Claude Code MCP servers, skills and plugins: on or off'],
     ['Alt+A · /agents', 'the subagents: what each does now, and its steps'],
-    ['Alt+K', 'record a voice message; Alt+K or Enter sends it, Esc drops it'],
+    ['Alt+K', 'record a voice message; Alt+K or Enter sends it with the input, Esc drops it'],
     ['/help', 'the commands'],
   ];
   return html`<div class="help">${rows.map(([a, b]) => html`<kbd>${a}</kbd><span>${b}</span>`)}</div>`;
@@ -1665,9 +1665,10 @@ function Input() {
 
 // ---------------------------------------------------------------- voice messages
 
-// Alt+K records a voice message; Alt+K or Enter sends it, Esc drops it.
-// opt-chat has its words transcribed (Whisper, on Groq), and it goes as a
-// message: the audio, which plays in the chat, with its words for Opt.
+// Alt+K records a voice message; Alt+K or Enter sends it, with what the
+// input holds (its text, a screenshot), Esc drops it. opt-chat has its
+// words transcribed (Whisper, on Groq): the chat plays the audio, Opt reads
+// the words.
 // S.voice is where it is: starting, rec or sending.
 const VOICE_MAX = 10 * 60e3; // ms: a longer one is sent at ten minutes
 const AUDIO = /\.(webm|ogg|oga|opus|m4a|mp4|mp3|wav|flac)$/i;
@@ -1741,18 +1742,10 @@ async function stopVoice(keep) {
     notice('warn', `Voice message not sent: ${err.message}`);
     return;
   }
-  set({ voice: null });
-  const file = { name: at.name, orig: at.orig, kind: at.kind, size: at.size };
-  if (at.error) {
-    restore('', [file]);
-    notice('warn', `Voice message not transcribed (${at.error}): it is in the input as a file, to send as one or take off (×).`);
-    return;
-  }
-  const seq = ++sendSeq;
-  const payload = { t: 'send', text: '', files: [file], paths: [], skip: [], chosen: [], seq, key: pageKey + ':' + seq };
-  if (!send(payload)) { restore('', [file]); notice('warn', 'Not connected: your voice message is in the input until opt-chat is back.'); return; }
-  toEnd = true;
-  sending.set(seq, { payload, text: '', files: [file] });
+  // Into the input, after what it holds, and sent with it.
+  set({ voice: null, atts: S.atts.concat({ name: at.name, orig: at.orig, kind: at.kind, size: at.size, id: ++uploadSeq, status: 'done', promise: Promise.resolve() }) });
+  if (at.error) notice('warn', `Voice message not transcribed (${at.error}): it is in the input as a file, to send as one or take off (×).`);
+  else submit();
 }
 
 // paintLevels draws the microphone's levels, the latest on the right, and
@@ -1810,9 +1803,10 @@ function Recorder() {
   </div>`;
 }
 
-// Voice is a voice message in the chat: it plays, and its words show.
-function Voice({ mk }) {
+// Voice is a voice message in the chat: it plays, and ▾ shows its words.
+function Voice({ mk, k }) {
   const audio = useRef();
+  const [open, setOpen] = useKept(k, false);
   const [at, setAt] = useState(0);
   const [playing, setPlaying] = useState(false);
   const len = mk.name.match(/(\d+):(\d\d)/);
@@ -1823,11 +1817,12 @@ function Voice({ mk }) {
       <button class="play" onClick=${toggle} title=${playing ? 'pause' : 'play'} aria-label=${playing ? 'pause' : 'play the voice message'}>${playing ? '❚❚' : '▶'}</button>
       <progress max=${total || 1} value=${Math.min(at, total || 1)}/>
       <span class="len">${playing || at ? clock(at * 1000) + ' / ' : ''}${len ? len[0] : ''}</span>
+      <button class="fold" onClick=${() => setOpen(!open)} title=${open ? 'hide its words' : 'show its words'} aria-expanded=${open}>${open ? '▴' : '▾'}</button>
       <audio ref=${audio} src=${fileURL(mk.path)} preload="none"
         onTimeUpdate=${e => setAt(e.target.currentTime)} onPlay=${() => setPlaying(true)} onPause=${() => setPlaying(false)}
         onEnded=${() => { setPlaying(false); setAt(0); }}/>
     </div>
-    <div class="words">${mk.content}</div>
+    ${open && html`<div class="words">${mk.content}</div>`}
   </div>`;
 }
 

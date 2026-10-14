@@ -960,7 +960,7 @@ function Notice({ n }) {
 // AsideView is a side question (/btw) and its answer, set apart: the chat
 // never sees them.
 function AsideView({ a }) {
-  const q = useMemo(() => ({ i: 'btw' + a.date, kind: 'user', text: a.q, images: a.images, date: a.date }), [a.q, a.date, a.images]);
+  const q = useMemo(() => ({ i: 'btw' + a.date, kind: 'user', text: a.q, images: a.images, date: a.date }), [a.date]); // its question never changes
   return html`<div class="aside">
     <div class="aside-tag">btw · beside the chat, which never sees it</div>
     <${UserMsg} m=${q}/>

@@ -1623,7 +1623,7 @@ function Help() {
     ['Shift+Tab', 'permission mode: manual, accept edits, auto'],
     ['/mcp · /skills · /plugins', 'your Claude Code MCP servers, skills and plugins: on or off'],
     ['Alt+A · /agents', 'the subagents: what each does now, and its steps'],
-    ['Alt+K', 'record a voice message; Alt+K or Enter sends it with the input, Esc drops it'],
+    ['Alt+K', 'record a voice message; Alt+K or Enter sends it with the input, Esc drops it; type meanwhile, Shift+Enter breaks the line'],
     ['/help', 'the commands'],
   ];
   return html`<div class="help">${rows.map(([a, b]) => html`<kbd>${a}</kbd><span>${b}</span>`)}</div>`;
@@ -1666,7 +1666,8 @@ function Input() {
 // ---------------------------------------------------------------- voice messages
 
 // Alt+K records a voice message; Alt+K or Enter sends it, with what the
-// input holds (its text, a screenshot), Esc drops it. opt-chat has its
+// input holds (its text, a screenshot), Esc drops it. The input stays
+// open meanwhile, Shift+Enter breaking its lines. opt-chat has its
 // words transcribed (Whisper, on Groq): the chat plays the audio, Opt reads
 // the words.
 // S.voice is where it is: starting, rec or sending.
@@ -2102,7 +2103,9 @@ addEventListener('keydown', e => {
     voiceKey();
     return;
   }
-  if (S.voice && (e.key === 'Enter' || e.key === 'Escape')) { // the recording's, not the input's
+  // Enter and Esc are the recording's, not the input's; Shift+Enter still
+  // breaks the input's line, typed as you speak.
+  if (S.voice && (e.key === 'Enter' && !e.shiftKey && !e.altKey || e.key === 'Escape')) {
     e.preventDefault();
     e.stopPropagation();
     if (S.voice !== 'sending') stopVoice(e.key === 'Enter');

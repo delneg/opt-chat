@@ -1588,7 +1588,13 @@ function Footer() {
     else if (s.subs?.length && !railShown()) right.push(html`<button title="this run's subagents (Alt+A)" onClick=${() => toggleRail()}>agents</button>`);
   }
   if (s?.limits?.length) right.push(html`<${Limits} windows=${s.limits}/>`);
-  if (l) right.push(html`<span title="tokens. in: the turn's biggest request, its context: the view, the prompt and tools, your message, its steps. out: what Opt wrote, its thinking too">last turn: ${l.context ? k(l.context) + ' in, ' : ''}${k(l.turn.output_tokens)} out</span>`);
+  if (l) {
+    // Of all the input the turn's requests sent, the share read back from the
+    // prompt cache: low after the view merged, else a sign the cache broke.
+    const u = ['view', 'turn'].map(n => l[n] || {}), sum = f => u.reduce((t, x) => t + (x[f] || 0), 0);
+    const read = sum('cache_read_input_tokens'), all = read + sum('cache_creation_input_tokens') + sum('input_tokens');
+    right.push(html`<span title="tokens. in: the turn's biggest request, its context: the view, the prompt and tools, your message, its steps. cached: the share of all its requests' input read from the prompt cache. out: what Opt wrote, its thinking too">last turn: ${l.context ? k(l.context) + ' in, ' : ''}${all ? Math.floor(100 * read / all) + '% cached, ' : ''}${k(l.turn.output_tokens)} out</span>`);
+  }
   const conn = { open: ['ok', '● connected'], connecting: ['', '○ connecting'], closed: ['bad', '● reconnecting'], denied: ['bad', '● no key'] }[S.conn];
   const mode = s?.mode;
   return html`<div class="footer"><div class="segs">

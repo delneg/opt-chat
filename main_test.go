@@ -127,3 +127,17 @@ func TestTypedHidden(t *testing.T) {
 		t.Fatalf("notices: %q", r.notices())
 	}
 }
+
+// The system prompt names the chat's AGENTS.md, and lists wake only when on.
+func TestSystemPrompt(t *testing.T) {
+	path := "/chats/x/AGENTS.md"
+	off := systemPrompt(path, false)
+	if strings.Contains(off, "{{") || !strings.Contains(off, path) || strings.Contains(off, "wake(") ||
+		!strings.Contains(off, "unchecked") || !strings.Contains(off, "CLAUDE.md") {
+		t.Fatalf("prompt without wake:\n%s", off)
+	}
+	on := systemPrompt(path, true)
+	if strings.Count(on, "- wake(") != 1 || strings.Index(on, "- wake(") > strings.Index(on, "# Turns") || strings.Index(on, "- wake(") < strings.Index(on, "- tell(") {
+		t.Fatalf("prompt with wake:\n%s", on)
+	}
+}

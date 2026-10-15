@@ -29,8 +29,9 @@ go build -o opt-chat .
 `./opt-chat` prints the page's address and opens it in your browser. Ctrl-C
 in the terminal quits and stops every call underway; `-repl` chats in the
 terminal instead. Put your own instructions in `<dir>/AGENTS.md` (who you
-are, how you like work done). They follow the system prompt, so edit the
-file rarely: every change starts the prompt cache over.
+are, how you like work done). They follow the system prompt, read again
+when the file changes, so edit it rarely: every change starts the prompt
+cache over.
 
 ## What the page does
 

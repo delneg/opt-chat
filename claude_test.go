@@ -1030,3 +1030,36 @@ func TestResumeAgent(t *testing.T) {
 		t.Fatal(got)
 	}
 }
+
+// The user's instructions in AGENTS.md reach each call as the file is then:
+// read again when it changes, and gone when it is.
+func TestAgentsReload(t *testing.T) {
+	c, _ := fakeChat(t, t.TempDir(), 100)
+	record(c)
+	a, calls := fakeAgent(t, c)
+	a.agentsMD = filepath.Join(t.TempDir(), "AGENTS.md")
+	turn := func() string {
+		t.Helper()
+		if err := (&Turn{agent: a}).Run(context.Background(), []message{{kind: "user", text: "hi"}}); err != nil {
+			t.Fatal(err)
+		}
+		all := calls()
+		return flagOf(all[len(all)-1], "--system-prompt")
+	}
+	if got := turn(); got != "system" {
+		t.Fatalf("no AGENTS.md: %q", got)
+	}
+	os.WriteFile(a.agentsMD, []byte("- bun only (12)\n"), 0o600)
+	if got := turn(); got != "system\n# The user's instructions\n\n- bun only (12)\n" {
+		t.Fatalf("with AGENTS.md: %q", got)
+	}
+	os.WriteFile(a.agentsMD, []byte("- bun only (12)\n- never deploy (40)\n"), 0o600)
+	os.Chtimes(a.agentsMD, time.Now(), time.Now().Add(time.Hour)) // a later mtime, however coarse the clock
+	if got := turn(); !strings.HasSuffix(got, "- never deploy (40)\n") {
+		t.Fatalf("after an edit: %q", got)
+	}
+	os.Remove(a.agentsMD)
+	if got := turn(); got != "system" {
+		t.Fatalf("after removal: %q", got)
+	}
+}

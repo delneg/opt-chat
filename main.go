@@ -40,6 +40,8 @@ func main() {
 	perm := flag.String("permission-mode", "auto", "Claude Code permission mode to start in: manual, acceptEdits or auto (Shift+Tab cycles them)")
 	tools := flag.String("tools", "Bash,Read,Edit,Write,WebSearch,WebFetch", "Claude Code tools")
 	ownConfig := flag.Bool("claude-config", true, "give turns and subagents your Claude Code skills, plugins, MCP servers and settings (never its hooks, CLAUDE.md or memory)")
+	claudeMd := flag.Bool("claude-md", true, "with -claude-config, give turns and subagents the CLAUDE.md files of the folders they work in (never ~/.claude/CLAUDE.md)")
+	wake := flag.Bool("wake", true, "let Opt set wake-ups: messages to itself at a time, kept in <dir>/wake.jsonl")
 	importPath := flag.String("import", "", "import past chats, then chat: a ~/.claude or ~/.codex directory, a session's .jsonl, a Claude or ChatGPT export (.zip), or a text file whose lines become notes")
 	importSince := flag.String("import-since", "", "import only messages from this day on (YYYY-MM-DD)")
 	importTools := flag.Bool("import-tools", false, "import tool calls and results too")
@@ -87,10 +89,7 @@ func main() {
 			fatal("import: %v", err)
 		}
 	}
-	system := prompt
-	if b, err := os.ReadFile(filepath.Join(*dir, "AGENTS.md")); err == nil {
-		system += "\n# The user's instructions\n\n" + string(b)
-	}
+	agentsMD := filepath.Join(*dir, "AGENTS.md")
 	hb := newHub()
 	if *repl {
 		hb.print = replPrinter()
@@ -98,7 +97,7 @@ func main() {
 		hb.print = webPrinter()
 	}
 	h := &harness{}
-	a := &Agent{chat: c, system: system, model: *model, effort: *effort,
+	a := &Agent{chat: c, system: systemPrompt(agentsMD, *wake), agentsMD: agentsMD, claudeMd: *claudeMd, model: *model, effort: *effort,
 		amodel: *amodel, aeffort: *aeffort, cmodel: *cmodel, ceffort: *ceffort, perm: *perm, cwd: *cwd, tools: *tools, ownConfig: *ownConfig, mcpOff: saved.MCPOff, skillsSet: saved.Skills, pluginsSet: saved.Plugins, agentWindow: saved.AgentAutocompact, recall: *recall,
 		running: map[string]*proc{}, writing: map[string]chan struct{}{}, report: func(text string) { h.input(message{kind: "work", text: text}) }}
 	a.life, a.stop = context.WithCancel(context.Background())
@@ -125,6 +124,16 @@ func main() {
 	dim(fmt.Sprintf("[%d messages; the view is %d lines, %d bytes; %s%s]", len(c.msgs), len(c.view.keys), c.view.size(), *dir, backlog))
 	c.pump()
 	c.mu.Unlock()
+	if *wake { // after the hub: one missed while down starts a turn now
+		w, err := startWaker(*dir, func(text string) { h.input(message{kind: "work", text: text}) })
+		if err != nil {
+			fatal("wake: %v", err)
+		}
+		a.mu.Lock()
+		a.wakes = w
+		a.mu.Unlock()
+		defer w.stop()
+	}
 	stopStatus := make(chan struct{})
 	go watchStatus(c, a, hb, stopStatus)
 
@@ -196,6 +205,16 @@ func main() {
 	}
 }
 
+// systemPrompt is the prompt for a chat whose instructions are in
+// agentsMD, with the wake tool listed when on.
+func systemPrompt(agentsMD string, wake bool) string {
+	s := strings.ReplaceAll(prompt, "{{AGENTS.md}}", agentsMD)
+	if wake {
+		s = strings.Replace(s, "\n\n# Turns\n", "\n"+wakePrompt+"\n# Turns\n", 1)
+	}
+	return s
+}
+
 // typed is a message typed in the terminal, with the files it names.
 func typed(c *Chat, text string) message {
 	paths := filePaths(text)
@@ -253,6 +272,9 @@ func (h *harness) input(m message) {
 	}
 	h.mu.Unlock()
 	if t != nil && (m.kind != "user" || t.inTool()) && t.Send(&m) {
+		if m.kind == "user" { // the user's turn now: it may set wake-ups
+			h.agent.setWoken(false)
+		}
 		return
 	}
 	h.mu.Lock()
@@ -322,6 +344,9 @@ func (h *harness) flush() {
 		h.publish()
 		h.mu.Unlock()
 		if t.Send(&it.message) {
+			if it.kind == "user" {
+				h.agent.setWoken(false)
+			}
 			continue
 		}
 		h.mu.Lock()
@@ -478,9 +503,11 @@ func (h *harness) loop() {
 		t := &Turn{agent: h.agent, onTool: h.flush}
 		h.turn = t
 		h.mu.Unlock()
+		h.agent.setWoken(wakeOnly(msgs))
 		if err := t.Run(ctx, msgs); err != nil && ctx.Err() == nil {
 			c.hub.notice("warn", "turn: %v", err)
 		}
+		h.agent.setWoken(false)
 		h.mu.Lock()
 		h.turn = nil
 		var left []queued

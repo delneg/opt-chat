@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json/v2"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -152,5 +153,26 @@ func TestWebConfig(t *testing.T) {
 	ws.send(map[string]any{"t": "mcp"})
 	if u := ws.next("bare", typ("mcp")); !strings.Contains(u["error"].(string), "-claude-config=false") {
 		t.Fatalf("bare: %v", u)
+	}
+}
+
+// With -claude-md, a turn loads the CLAUDE.md files of the folders it works
+// in, never the user's own ~/.claude/CLAUDE.md; memory stays off.
+func TestClaudeMd(t *testing.T) {
+	c, _ := fakeChat(t, t.TempDir(), 100)
+	record(c)
+	a, calls := fakeAgent(t, c)
+	a.ownConfig, a.claudeMd = true, true
+	if err := (&Turn{agent: a}).Run(context.Background(), []message{{kind: "user", text: "hi"}}); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal([]string{filepath.Join(claudeConfigDir(), "CLAUDE.md")})
+	want := `{"disableAllHooks":true,"autoCompactEnabled":false,"claudeMdExcludes":` + string(b) + `}`
+	if got := flagOf(calls()[0], "--settings"); got != want {
+		t.Fatalf("settings: %s, want %s", got, want)
+	}
+	env := fakeFiles(a, ".env")[0]
+	if strings.Contains(env, "CLAUDE_CODE_DISABLE_CLAUDE_MDS") || !strings.Contains(env, "CLAUDE_CODE_DISABLE_AUTO_MEMORY=1") {
+		t.Fatalf("turn env: %s", env)
 	}
 }

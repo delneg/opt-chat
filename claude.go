@@ -27,7 +27,8 @@ import (
 // loop (Bash, Read, Edit, ...); this program only owns the memory.
 type Agent struct {
 	chat            *Chat
-	system          string // byte-identical across calls: the head of every cached prefix
+	system          string // the prompt: with agentsMD's instructions, the head of every cached prefix
+	agentsMD        string // the user's instructions, read again when the file changes; "": none
 	mcpConfig       string // the chat's tools, for turns and compactions
 	agentMCP        string // the same tools, for subagents, which can't spawn or tell
 	model, effort   string // turns
@@ -36,6 +37,7 @@ type Agent struct {
 	perm, cwd       string
 	tools           string
 	ownConfig       bool              // turns and subagents get the user's Claude Code skills, plugins and MCP servers
+	claudeMd        bool              // and the CLAUDE.md files of the folders they work in, never the user's own
 	mcpOff          []string          // of those servers, the ones the user turned off here
 	skillsSet       map[string]string // the user's skills' states set here: on, off, ...
 	pluginsSet      map[string]bool   // and plugins turned on or off here, by name@marketplace
@@ -47,6 +49,7 @@ type Agent struct {
 	mcpSeen         []string          // and those listed then
 
 	report func(text string) // hands an agent's report to the chat
+	wakes  *waker            // the wake tool's (-wake); nil: off
 
 	life  context.Context // canceled at quit: every call stops
 	stop  context.CancelFunc
@@ -71,6 +74,10 @@ type Agent struct {
 	ctlSeq      int
 	allowed     []string // rules the user allowed for good this run, as "Bash(npm test:*)"
 	dirs        []string // and folders
+
+	woken      bool      // the turn underway was started by wake-ups: it sets none
+	instructed string    // system with agentsMD as last read
+	agentsSeen fileStamp // and that file then; zero: absent
 
 	ctlMu  sync.Mutex
 	ctl    *control   // nil until asked, and once stopped
@@ -261,16 +268,49 @@ const (
 // same as a turn's, so that on one model both read one cache entry (gist §4);
 // with the user's own setup, a turn's add Skill and ToolSearch.
 // ownSettings are a call's settings over the user's own: never their hooks
-// or Claude Code's auto-compaction (see start); their skills and plugins on
-// or off as set here. Under a.mu.
+// or Claude Code's auto-compaction (see start), nor their own CLAUDE.md
+// when repos' ones load; their skills and plugins on or off as set here.
+// Under a.mu.
 func (a *Agent) ownSettings() string {
+	var excludes []string
+	if a.claudeMd {
+		excludes = []string{filepath.Join(claudeConfigDir(), "CLAUDE.md")}
+	}
 	b, _ := json.Marshal(struct {
 		DisableAllHooks    bool              `json:"disableAllHooks"`
 		AutoCompactEnabled bool              `json:"autoCompactEnabled"`
+		ClaudeMdExcludes   []string          `json:"claudeMdExcludes,omitzero"`
 		SkillOverrides     map[string]string `json:"skillOverrides,omitzero"`
 		EnabledPlugins     map[string]bool   `json:"enabledPlugins,omitzero"`
-	}{true, false, a.skillsSet, a.pluginsSet}, json.Deterministic(true))
+	}{true, false, excludes, a.skillsSet, a.pluginsSet}, json.Deterministic(true))
 	return string(b)
+}
+
+// fileStamp tells a file's versions apart, as a build tool does.
+type fileStamp struct {
+	mod  int64 // mtime, in ns
+	size int64
+}
+
+// systemNow is the system prompt with the user's instructions in agentsMD
+// as the file is now. A change rewrites the cache once, for every role.
+// Under a.mu.
+func (a *Agent) systemNow() string {
+	if a.agentsMD == "" {
+		return a.system
+	}
+	var st fileStamp
+	if fi, err := os.Stat(a.agentsMD); err == nil {
+		st = fileStamp{fi.ModTime().UnixNano(), fi.Size()}
+	}
+	if a.instructed != "" && st == a.agentsSeen {
+		return a.instructed
+	}
+	a.instructed, a.agentsSeen = a.system, st
+	if b, err := os.ReadFile(a.agentsMD); err == nil && st != (fileStamp{}) {
+		a.instructed += "\n# The user's instructions\n\n" + string(b)
+	}
+	return a.instructed
 }
 
 // withTools is the tools list with names added, each once.
@@ -303,9 +343,10 @@ func (a *Agent) start(ctx context.Context, model, effort string, r role, extra .
 		}
 	}()
 	a.mu.Lock()
-	mcp, perm, allowed := a.mcpConfig, a.perm, append([]string{"mcp__opt__zoom", "mcp__opt__date", "mcp__opt__search", "mcp__opt__spawn", "mcp__opt__tell"}, a.allowed...)
+	mcp, perm, allowed := a.mcpConfig, a.perm, append([]string{"mcp__opt__zoom", "mcp__opt__date", "mcp__opt__search", "mcp__opt__spawn", "mcp__opt__tell", "mcp__opt__wake"}, a.allowed...)
 	dirs, own := slices.Clone(a.dirs), a.ownConfig && r != roleCompact
-	settings := a.ownSettings()
+	settings, claudeMd := a.ownSettings(), a.claudeMd
+	system := a.systemNow()
 	a.mu.Unlock()
 	switch r {
 	case roleAgent:
@@ -324,7 +365,7 @@ func (a *Agent) start(ctx context.Context, model, effort string, r role, extra .
 		tools = withTools(tools, "Skill", "ToolSearch") // ToolSearch: MCP servers' tools load as needed, not in every prompt
 	}
 	args := []string{"-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
-		"--model", model, "--system-prompt", a.system, "--tools", tools, "--mcp-config", mcp,
+		"--model", model, "--system-prompt", system, "--tools", tools, "--mcp-config", mcp,
 		"--permission-mode", perm, "--allowedTools", strings.Join(allowed, ",")}
 	if r == roleAgent { // saved, so it can be resumed: see resume.go
 		args = append(args, extra...)
@@ -333,8 +374,9 @@ func (a *Agent) start(ctx context.Context, model, effort string, r role, extra .
 	}
 	if own {
 		// The user's skills, plugins, MCP servers and settings, as Claude Code
-		// run in cwd has them; never their hooks, CLAUDE.md or memory (env),
-		// which would make Opt someone else.
+		// run in cwd has them; never their hooks, CLAUDE.md or memory (env,
+		// settings), which would make Opt someone else. With -claude-md,
+		// the CLAUDE.md files of the folders it works in.
 		args = append(args, "--setting-sources", "user,project,local", "--settings", settings)
 	} else {
 		// Nothing of the user's Claude Code setup leaks in: no hooks, plugins, CLAUDE.md or MCP servers.
@@ -373,7 +415,12 @@ func (a *Agent) start(ctx context.Context, model, effort string, r role, extra .
 		// Tool search always: left to decide, Claude Code defers MCP tools or
 		// not by which servers have connected by each request, so the ack and
 		// the turn after it disagreed, and the view was written again.
-		cmd.Env = append(cmd.Env, "CLAUDE_CODE_DISABLE_CLAUDE_MDS=1", "CLAUDE_CODE_DISABLE_AUTO_MEMORY=1", "ENABLE_TOOL_SEARCH=true")
+		cmd.Env = append(cmd.Env, "CLAUDE_CODE_DISABLE_AUTO_MEMORY=1", "ENABLE_TOOL_SEARCH=true")
+		if claudeMd { // not even from a Claude Code that started opt-chat
+			cmd.Env = slices.DeleteFunc(cmd.Env, func(kv string) bool { return strings.HasPrefix(kv, "CLAUDE_CODE_DISABLE_CLAUDE_MDS=") })
+		} else {
+			cmd.Env = append(cmd.Env, "CLAUDE_CODE_DISABLE_CLAUDE_MDS=1")
+		}
 	}
 	p = &proc{prefix: model + " " + effort, ctx: ctx, cmd: cmd, done: done, onLimits: a.noteLimits}
 	cmd.Stderr = &p.stderr

@@ -8,10 +8,11 @@ import (
 	"net"
 	"net/http"
 	"path/filepath"
+	"slices"
 	"strconv"
 )
 
-// serveMCP serves zoom, date, search, spawn and tell to Claude Code over MCP (streamable HTTP,
+// serveMCP serves zoom, date, search, spawn, tell and wake to Claude Code over MCP (streamable HTTP,
 // plain JSON replies) on a local port, behind a random secret in the path.
 // It returns the --mcp-config that points at it, and one for subagents.
 func serveMCP(a *Agent) (string, string, error) {
@@ -85,7 +86,22 @@ var (
 			"(after its report, or stopped by a restart of opt-chat), with all it knew, and reports again.",
 			schema([]string{"name", "message"}, map[string]any{"name": str, "message": str})),
 	}
+	wakeTool = tool("wake", "Set a message to yourself, at a time: then opt-chat starts a turn with \""+wakeFrame+"<time>: <message>\", as a report does. "+
+		"Kept across restarts; one missed while opt-chat was down comes once as it starts. "+
+		"at: a duration from now (90m, 2h), a time (21:30: today, or tomorrow once passed) or a date and time (2026-10-20 09:00), local. "+
+		"cancel: a pending one's id. With neither, it lists those pending. A turn a wake-up started sets none.",
+		schema(nil, map[string]any{"at": str, "message": str, "cancel": num}))
 )
+
+// mcpList is the tools the chat serves: wake only with -wake.
+func (a *Agent) mcpList() []map[string]any {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.wakes == nil {
+		return mcpTools
+	}
+	return append(slices.Clip(mcpTools), wakeTool)
+}
 
 func mcpResult(a *Agent, method string, params jsontext.Value, fromAgent bool) (any, bool) {
 	switch method {
@@ -99,7 +115,7 @@ func mcpResult(a *Agent, method string, params jsontext.Value, fromAgent bool) (
 	case "ping":
 		return map[string]any{}, true
 	case "tools/list":
-		return map[string]any{"tools": mcpTools}, true
+		return map[string]any{"tools": a.mcpList()}, true
 	case "tools/call":
 		var p struct {
 			Name string   `json:"name"`
@@ -135,6 +151,8 @@ type toolArgs struct {
 	Loop    *loopHook      `json:"loop"`
 	Text    string         `json:"text"`
 	Before  int            `json:"before"`
+	At      string         `json:"at"`
+	Cancel  int            `json:"cancel"`
 }
 
 // callTool runs one tool and returns its text and the images that go with it.
@@ -169,6 +187,8 @@ func callTool(a *Agent, fromAgent bool, tool string, x toolArgs) (string, []stri
 		return a.Spawn(x.Name, x.Task, x.Effort, x.Model, x.Window, x.Loop), nil
 	case tool == "tell":
 		return a.Tell(x.Name, x.Message), nil
+	case tool == "wake":
+		return a.wakeTool(fromAgent, x), nil
 	}
 	return "No tool " + tool + ".", nil
 }

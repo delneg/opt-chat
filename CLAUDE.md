@@ -26,7 +26,7 @@ land there. The web tests go through real HTTP and WebSocket connections.
 | `chat.go`, `view.go` | the log, the summary tree, the view and its merges |
 | `claude.go` | `claude -p` calls: turns, compactions, subagents |
 | `agents.go`, `subs.go`, `resume.go` | subagents, the page's agents rail, resuming saved sessions |
-| `mcp.go` | the `zoom`, `date`, `search`, `spawn` and `tell` tools over MCP |
+| `mcp.go`, `wake.go` | the `zoom`, `date`, `search`, `spawn`, `tell` and `wake` tools over MCP; wake-ups |
 | `hub.go`, `web.go` | updates to pages and the terminal; the page's server and its guards |
 | `attach.go`, `mention.go` | attachments; the `@` path menu |
 | `import.go` | importing past chats |

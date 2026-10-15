@@ -499,7 +499,7 @@ func (h *harness) loop() {
 var (
 	commandWord = regexp.MustCompile(`(?s)^\s*/([A-Za-z][\w:.-]*)(?:\s+(.*?))?\s*$`) // "/word args", never a path like /Users/me/shot.png
 	modelName   = regexp.MustCompile(`^[\w.:\[\]-]+$`)
-	commands    = []string{"model", "effort", "mode", "autocompact", "mcp", "skills", "plugins", "agents", "btw", "help"}
+	commands    = []string{"model", "effort", "mode", "autocompact", "mcp", "skills", "plugins", "agents", "status", "btw", "help"}
 )
 
 // command runs a line that starts with /word, and says what it did; false
@@ -529,6 +529,9 @@ func command(a *Agent, line string) (string, bool, error) {
 	}
 	if word == "mcp" || word == "skills" || word == "plugins" { // asks Claude Code: outside a.mu
 		return configCommand(a, word, arg), true, nil
+	}
+	if word == "status" { // asks Claude Code: outside a.mu
+		return statusCommand(a), true, nil
 	}
 	if word == "autocompact" {
 		return autocompact(a, arg)
@@ -572,6 +575,7 @@ func command(a *Agent, line string) (string, bool, error) {
 			"/skills [on|off name] your Claude Code skills: list them, or turn one on or off for Opt\n" +
 			"/plugins [on|off id] your Claude Code plugins (skills and MCP servers together), as name@marketplace\n" +
 			"/agents             list the subagents at work\n" +
+			"/status             Claude Code's version and account, this run's settings, the view and the plan's usage\n" +
 			"/btw question       a side question: answered beside the chat, which never sees it\n" +
 			"/<skill> [args]     run one of your skills, as in Claude Code\n" +
 			"Ctrl-C stops the turn; Ctrl-C when idle, or Ctrl-D, quits.", true, nil
@@ -587,7 +591,7 @@ func asks(a *Agent, line string) bool {
 		return false
 	}
 	switch word := strings.ToLower(m[1]); word {
-	case "mcp", "skills", "plugins":
+	case "mcp", "skills", "plugins", "status":
 		return true
 	default:
 		_, known := a.skillState(m[1], true)

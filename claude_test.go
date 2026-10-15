@@ -145,6 +145,8 @@ func fakeClaude() {
 				{"name": "one", "display_name": "one", "description": "the first", "source": "user", "tokens": 10, "state": "on"},
 				{"name": "plug:two", "display_name": "plug:two", "description": "the second", "source": "plugin", "tokens": 20, "state": "on", "locked_by": "plugin"},
 			}})
+		case "initialize":
+			ok(map[string]any{"claude_code_version": "9.9.9", "account": map[string]any{"email": "me@example.com", "subscriptionType": "Claude Max", "apiProvider": "firstParty"}})
 		case "list_models":
 			ok(map[string]any{"models": []map[string]any{
 				{"value": "default", "displayName": "Default (recommended)", "description": "Big 2 · best", "supportsEffort": true},

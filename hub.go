@@ -379,6 +379,16 @@ func (h *hub) setStatus(s status) {
 	}
 }
 
+// lastEnd is the last turn's usage this run; nil before one ended.
+func (h *hub) lastEnd() *turnEnd {
+	if h == nil {
+		return nil
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.last
+}
+
 func (h *hub) ended(e turnEnd) {
 	if h == nil {
 		dim(e.String())

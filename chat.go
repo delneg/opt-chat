@@ -101,7 +101,7 @@ type Chat struct {
 }
 
 func openChat(dir string) (*Chat, error) {
-	for _, d := range []string{"main", "tree", "files", "btw"} {
+	for _, d := range []string{"main", "tree", "files", "btw", "usage"} {
 		if err := os.MkdirAll(filepath.Join(dir, d), 0o700); err != nil {
 			return nil, err
 		}

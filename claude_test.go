@@ -69,9 +69,21 @@ func fakeClaude() {
 	}
 	say := func(bs ...block) { emit(map[string]any{"type": "assistant", "message": map[string]any{"content": bs}}) }
 	stream := func(ev any) { emit(map[string]any{"type": "stream_event", "event": ev}) }
+	// What the session spent, as its results count it: from the last
+	// run's when resumed (as Claude Code restores it).
+	cost, out := 0.0, 0
+	if flagOf(os.Args, "--resume") != "" {
+		cost, out = 0.5, 500
+	}
+	totals := func() map[string]any {
+		return map[string]any{"claude-big": map[string]any{"inputTokens": 10, "outputTokens": out, "cacheReadInputTokens": 1000 * out / 10,
+			"cacheCreationInputTokens": 100, "costUSD": cost, "contextWindow": 1_000_000}}
+	}
 	result := func(text string) {
 		say(textBlock(text))
-		emit(map[string]any{"type": "result", "result": text, "usage": map[string]any{"cache_read_input_tokens": 1000}})
+		cost, out = cost+0.25, out+10
+		emit(map[string]any{"type": "result", "result": text, "usage": map[string]any{"cache_read_input_tokens": 1000},
+			"total_cost_usd": cost, "duration_api_ms": 1500 * out / 10, "num_turns": 1, "modelUsage": totals()})
 	}
 	lines := make(chan string)
 	go func() {
@@ -159,11 +171,22 @@ func fakeClaude() {
 			}
 			spend := at(0, 1_802_000_000)
 			spend["limit_dollars"], spend["used_dollars"] = 250, 20
-			ok(map[string]any{"subscription_type": "max", "rate_limits": map[string]any{
-				"five_hour": at(12, 1_800_010_000), "seven_day": at(33, 1_800_500_000), "seven_day_opus": nil,
-				"seven_day_sonnet": at(0, 1_800_500_000), "seven_day_fable": at(40, 1_800_500_000), "spend": spend,
-				"extra_usage": map[string]any{"is_enabled": true, "monthly_limit": 5000, "utilization": nil}, "odd": 5,
-			}})
+			ok(map[string]any{"subscription_type": "max", "session": map[string]any{"total_cost_usd": cost, "total_api_duration_ms": 150 * out, "model_usage": totals()},
+				"behaviors": map[string]any{"day": map[string]any{"request_count": 2947, "session_count": 23,
+					"behaviors":   []map[string]any{{"key": "long_context", "pct": 67, "count": 1542}},
+					"agents":      []map[string]any{{"name": "general-purpose", "pct": 7}},
+					"mcp_servers": []map[string]any{{"name": "plugin:playwright:playwright", "pct": 11}}}},
+				"rate_limits": map[string]any{
+					"limits": []map[string]any{
+						{"kind": "session", "percent": 9, "resets_at": "2026-10-15T10:20:00.2+00:00"},
+						{"kind": "weekly_scoped", "percent": 27, "resets_at": "2026-10-15T10:00:00+00:00", "scope": map[string]any{"model": map[string]any{"display_name": "Fable"}}},
+					},
+					"spend":               map[string]any{"enabled": true, "used": map[string]any{"amount_minor": 125, "exponent": 2}, "limit": map[string]any{"amount_minor": 5000, "exponent": 2}},
+					"seven_day_breakdown": map[string]any{"rows": []map[string]any{{"display_name": "Claude Code", "percent": 96}, {"display_name": "Chats", "percent": 1}}},
+					"five_hour":           at(12, 1_800_010_000), "seven_day": at(33, 1_800_500_000), "seven_day_opus": nil,
+					"seven_day_sonnet": at(0, 1_800_500_000), "seven_day_fable": at(40, 1_800_500_000), "iguana_necktie": spend,
+					"extra_usage": map[string]any{"is_enabled": true, "monthly_limit": 5000, "utilization": nil}, "odd": 5,
+				}})
 		case "fail":
 			emit(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "error", "request_id": r.RequestID, "error": "no such thing"}})
 		default:

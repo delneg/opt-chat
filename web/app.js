@@ -407,6 +407,7 @@ const commands = [
   ['/plugins', 'your Claude Code plugins, their skills and MCP servers at once: on or off'],
   ['/agents', 'list the subagents at work'],
   ['/status', 'Claude Code\'s version and account, this run\'s settings, the view and the plan\'s usage'],
+  ['/usage', 'the plan\'s limits, what uses them, and what Opt\'s calls spent: day, week or run'],
   ['/btw', 'a side question: answered beside the chat, which never sees it'],
   ['/help', 'list the commands'],
 ];

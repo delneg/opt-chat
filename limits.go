@@ -73,6 +73,7 @@ func (a *Agent) askUsage(ctx context.Context) error {
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	a.planRaw = v
 	for name, raw := range r.Limits {
 		var w struct { // null for a window the plan has not
 			Utilization *float64 `json:"utilization"` // a percent

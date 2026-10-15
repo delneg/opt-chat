@@ -40,7 +40,7 @@ func TestLimits(t *testing.T) {
 	if err := a.askUsage(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if got := show(); got != "five_hour 12%, seven_day 33%, seven_day_fable 40%, spend 0% $20/$250" {
+	if got := show(); got != "five_hour 12%, seven_day 33%, iguana_necktie 0% $20/$250, seven_day_fable 40%" {
 		t.Fatalf("from get_usage: %q", got)
 	}
 	if err := a.askUsage(ctx); err != nil {
@@ -50,7 +50,7 @@ func TestLimits(t *testing.T) {
 		t.Fatalf("get_usage asked %d times within a minute", n)
 	}
 	now = time.Unix(1_800_020_000, 0) // past the five-hour window's reset
-	if got := show(); got != "five_hour 0%, seven_day 33%, seven_day_fable 40%, spend 0% $20/$250" {
+	if got := show(); got != "five_hour 0%, seven_day 33%, iguana_necktie 0% $20/$250, seven_day_fable 40%" {
 		t.Fatalf("after a reset: %q", got)
 	}
 }

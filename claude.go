@@ -60,6 +60,7 @@ type Agent struct {
 	modelList   []modelInfo              // Claude Code's, once asked
 	limits      map[string]window        // the plan's usage limits, by name: see limits.go
 	usageAsked  time.Time                // when get_usage was last asked
+	planRaw     jsontext.Value           // and its answer, for /usage
 	subs        map[string]*sub          // this run's subagents, as the page's rail shows them: see subs.go
 	halts       map[string]*halt         // each subagent's call underway, at work or at rest, by name: see StopAgent
 	recMu       sync.Mutex               // agents/<Name>.json: see resume.go
@@ -176,6 +177,13 @@ type event struct {
 	Response  controlResponse `json:"response"` // control_response: Claude Code answers
 
 	Limits limitInfo `json:"rate_limit_info"` // rate_limit_event
+
+	// result: the call's spend so far, at list prices; a resumed session's
+	// starts from its last run's (see spent)
+	Cost   float64               `json:"total_cost_usd"`
+	APIms  float64               `json:"duration_api_ms"`
+	Turns  int                   `json:"num_turns"` // requests for this result
+	Models map[string]modelSpend `json:"modelUsage"`
 }
 
 // streamEvent is the API's streaming event inside a stream_event, which a
@@ -229,6 +237,8 @@ type proc struct {
 	who       string      // a subagent's name; empty for the turn
 	onRequest func(event) // takes Claude Code's control requests; nil: refused
 	onLimits  func(limitInfo)
+	onResult  func(event)
+	spent     spent // the spend its results told so far: see noteSpend
 
 	callMu   sync.Mutex // not mu: a write to the call can wait on its reader
 	callSeq  int
@@ -407,6 +417,12 @@ func (a *Agent) start(ctx context.Context, model, effort string, r role, extra .
 	if own && r == roleControl { // a turn's or subagent's waits for its servers: see mcpSettle
 		go a.mcpApply(p)
 	}
+	if r != roleControl {
+		p.onResult = func(e event) { a.noteSpend(p, r, e) }
+		if slices.Contains(extra, "--resume") {
+			p.spent = resumedSpend(p)
+		}
+	}
 	p.done = func() {
 		if p.ctx.Err() != nil { // stopped: nothing of it outlives it
 			syscall.Kill(-pid, syscall.SIGKILL)
@@ -507,6 +523,9 @@ func (p *proc) next() (event, bool) {
 				p.onLimits(e.Limits)
 			}
 			continue
+		}
+		if e.Type == "result" && p.onResult != nil {
+			p.onResult(e)
 		}
 		if e.Type == "control_request" || e.Type == "control_cancel_request" {
 			switch {

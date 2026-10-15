@@ -63,7 +63,7 @@ func joinEfforts() string { return strings.Join(efforts, ", ") }
 
 // Spawn starts an agent and returns at once. An empty effort is
 // -agent-effort; an empty model, -agent-model.
-func (a *Agent) Spawn(name, task, effort, model string, window int) string {
+func (a *Agent) Spawn(name, task, effort, model string, window int, loop *loopHook) string {
 	if strings.TrimSpace(task) == "" {
 		return "No task given."
 	}
@@ -75,6 +75,11 @@ func (a *Agent) Spawn(name, task, effort, model string, window int) string {
 	}
 	if window != 0 && (window < windowMin || window > windowMax) {
 		return fmt.Sprintf("autocompact must be from %d to %d tokens, or left out.", windowMin, windowMax)
+	}
+	if loop != nil {
+		if bad := loop.check(); bad != "" {
+			return bad
+		}
 	}
 	if effort == "" {
 		effort = a.aeffort
@@ -105,7 +110,7 @@ func (a *Agent) Spawn(name, task, effort, model string, window int) string {
 	a.mu.Unlock()
 	go func() {
 		defer a.calls.Done() // after its report is in the chat
-		a.runAgent(name, h, agentRecord{Session: newSession(), Model: model, Effort: effort, Window: window, Task: task}, "")
+		a.runAgent(name, h, agentRecord{Session: newSession(), Model: model, Effort: effort, Window: window, Task: task, Loop: loop}, "")
 	}()
 	return fmt.Sprintf("Started [%s] in the background, on %s. Its report will come as a message starting \"[%s]\".", name, model, name)
 }
@@ -134,6 +139,9 @@ func (a *Agent) Tell(name, text string) string {
 		a.chat.hub.notice("info", "[%s] back at work", name)
 	case p == nil:
 		return fmt.Sprintf("[%s] is starting: tell it again in a moment.", name)
+	case a.looping(name):
+		a.held[name] = append(a.held[name], text)
+		return fmt.Sprintf("Sent: [%s] is in a loop: it gets this when its turn ends, ahead of the loop's next step.", name)
 	}
 	a.agentWrite(name, "opt", text)
 	msg := []block{textBlock(text)}
@@ -251,6 +259,7 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg string) {
 		a.mu.Lock()
 		if a.halts[name] == h {
 			delete(a.halts, name)
+			delete(a.held, name)
 		}
 		a.mu.Unlock()
 		h.cancel()
@@ -391,7 +400,14 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg string) {
 	p.send(second...)
 	a.running[name] = p
 	a.subLocked(name, func(s *sub) { s.State = "working" })
+	if rec.Loop != nil {
+		if a.held == nil {
+			a.held = map[string][]string{}
+		}
+		a.held[name] = nil
+	}
 	a.mu.Unlock()
+	lp := loopState{hook: rec.Loop}
 	for {
 		e, ok := p.next()
 		if !ok {
@@ -417,9 +433,38 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg string) {
 			a.mu.Unlock()
 			continue
 		}
+		if lp.compacting { // its compaction between turns is over: the next comes with the view and its task
+			a.mu.Unlock()
+			lp.compacting = false
+			a.setSub(name, func(s *sub) { s.State = "working" })
+			if q := a.takeHeld(name); len(q) > 0 { // Opt's tells first
+				lp.next = q
+			}
+			p.send(anchored(lines, name, task, lp.next)...)
+			continue
+		}
 		final := e.Result
 		if e.IsError {
 			final = "failed: " + final
+		}
+		if lp.hook != nil {
+			a.mu.Unlock() // the hook takes a while
+			next, note := a.loopStep(name, h, &lp, rec.Session, e)
+			if next != nil {
+				if window > 0 && size > window { // compacted now, between turns, never in one
+					lp.compacting, lp.next = true, next
+					a.setSub(name, func(s *sub) { s.State = "compacting" })
+					p.send(textBlock(compactAsk))
+				} else {
+					p.send(textBlock(strings.Join(next, "\n\n")))
+				}
+				continue
+			}
+			if h.ctx.Err() != nil { // stopped: its call ends now
+				continue
+			}
+			final += note
+			a.mu.Lock()
 		}
 		// At rest: a tell sets it to work again, with all it knew. Past its
 		// window, it is compacted now, between steps, never in one.
@@ -441,11 +486,18 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg string) {
 			delete(a.resting, oldest)
 			a.subLocked(oldest, func(s *sub) { s.State = "ended" })
 		}
+		late := a.held[name] // tells that came as its loop ended
+		if len(late) > 0 {
+			a.held[name] = nil
+		}
 		a.mu.Unlock()
 		a.note(name, func(r *agentRecord) { r.State = "resting" })
 		send(final)
+		if len(late) > 0 {
+			a.Tell(name, strings.Join(late, "\n\n"))
+		}
 		if r.compacting {
-			p.send(textBlock("/compact Keep what is needed to go on with your task: what was asked, what is done and how, what is left, the decisions and why, the files and commands."))
+			p.send(textBlock(compactAsk))
 		}
 		time.AfterFunc(agentRest, func() {
 			a.mu.Lock()
@@ -475,6 +527,8 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg string) {
 		report(failed(fmt.Errorf("no reply: %v", err)))
 	}
 }
+
+const compactAsk = "/compact Keep what is needed to go on with your task: what was asked, what is done and how, what is left, the decisions and why, the files and commands."
 
 // ZoomAgent gives a subagent's whole chat.
 func (c *Chat) ZoomAgent(name string) string {

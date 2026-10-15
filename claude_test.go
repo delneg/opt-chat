@@ -505,7 +505,7 @@ func TestSubagentsAndQuit(t *testing.T) {
 	a, calls := fakeAgent(t, c)
 	reported := make(chan string, 2)
 	a.report = func(text string) { c.Log("work", text); reported <- text }
-	if got := a.Spawn("Scout", "look around", "", "", 0); !strings.HasPrefix(got, "Started [Scout]") {
+	if got := a.Spawn("Scout", "look around", "", "", 0, nil); !strings.HasPrefix(got, "Started [Scout]") {
 		t.Fatal(got)
 	}
 	report := func() string {
@@ -523,7 +523,7 @@ func TestSubagentsAndQuit(t *testing.T) {
 	if !strings.Contains(c.ZoomAgent("[Scout]"), `tool: Read {"file_path":"x.png"}`+"\n\ntool: date {\"id\":0}") {
 		t.Fatalf("Scout's log: %q", c.ZoomAgent("Scout"))
 	}
-	if got := a.Spawn("Scout", "again", "max", "fable", 0); !strings.HasPrefix(got, "Started [Scout-2]") || !strings.HasPrefix(report(), "[Scout-2] ") {
+	if got := a.Spawn("Scout", "again", "max", "fable", 0, nil); !strings.HasPrefix(got, "Started [Scout-2]") || !strings.HasPrefix(report(), "[Scout-2] ") {
 		t.Fatalf("a second Scout: %q", got)
 	}
 	if args := calls()[0]; flagOf(args, "--model") != "mid" || flagOf(args, "--mcp-config") != "agent-mcp" || flagOf(args, "--tools") != "Read" ||
@@ -533,14 +533,14 @@ func TestSubagentsAndQuit(t *testing.T) {
 	if args := calls()[1]; flagOf(args, "--effort") != "max" || flagOf(args, "--model") != "fable" {
 		t.Fatalf("a subagent spawned on fable at max effort: %q", args)
 	}
-	if got := a.Spawn("Scout", "x", "", "two words", 0); !strings.HasPrefix(got, "model is one word") {
+	if got := a.Spawn("Scout", "x", "", "two words", 0, nil); !strings.HasPrefix(got, "model is one word") {
 		t.Fatal(got)
 	}
-	if got := a.Spawn("Scout", "x", "huge", "", 0); !strings.HasPrefix(got, "effort must be one of") {
+	if got := a.Spawn("Scout", "x", "huge", "", 0, nil); !strings.HasPrefix(got, "effort must be one of") {
 		t.Fatal(got)
 	}
 
-	a.Spawn("Sleeper", "wait-for-stop", "", "", 0)
+	a.Spawn("Sleeper", "wait-for-stop", "", "", 0, nil)
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		a.mu.Lock()
@@ -570,7 +570,7 @@ func TestSubagentsAndQuit(t *testing.T) {
 	if !strings.Contains(c.ZoomAgent("Sleeper"), "opt: hurry") {
 		t.Fatalf("Sleeper's log: %q", c.ZoomAgent("Sleeper"))
 	}
-	if got := a.Spawn("Late", "x", "", "", 0); got != "opt-chat is quitting." {
+	if got := a.Spawn("Late", "x", "", "", 0, nil); got != "opt-chat is quitting." {
 		t.Fatal(got)
 	}
 }
@@ -599,7 +599,7 @@ func TestStopAgent(t *testing.T) {
 		}
 	}
 
-	a.Spawn("Scout", "look around", "", "", 0)
+	a.Spawn("Scout", "look around", "", "", 0, nil)
 	<-reported
 	waitState("Scout", "resting")
 	if a.ClearAgent("Scout") {
@@ -613,7 +613,7 @@ func TestStopAgent(t *testing.T) {
 		t.Fatal("Scout not cleared")
 	}
 
-	a.Spawn("Sleeper", "wait-for-stop", "", "", 0)
+	a.Spawn("Sleeper", "wait-for-stop", "", "", 0, nil)
 	waitState("Sleeper", "working")
 	if !a.StopAgent("Sleeper") {
 		t.Fatal("no stop at work")
@@ -776,7 +776,7 @@ func TestAgentAutocompact(t *testing.T) {
 			t.Fatalf("/autocompact %s taken", bad)
 		}
 	}
-	a.Spawn("Long", "big-task", "", "", 0)
+	a.Spawn("Long", "big-task", "", "", 0, nil)
 	if got := report(); !strings.Contains(got, "did the big one") || !strings.Contains(got, "its context at 300k tokens") {
 		t.Fatalf("first report: %q", got)
 	}
@@ -790,7 +790,7 @@ func TestAgentAutocompact(t *testing.T) {
 		t.Fatalf("Long's log: %q", c.ZoomAgent("Long"))
 	}
 
-	a.Spawn("Later", "big-task", "", "", 0) // told once its compaction is over
+	a.Spawn("Later", "big-task", "", "", 0, nil) // told once its compaction is over
 	report()
 	waitFor(t, "the compaction at rest", func() bool { return strings.Contains(c.ZoomAgent("Later"), "compacted:") })
 	waitFor(t, "its end", func() bool {
@@ -806,11 +806,11 @@ func TestAgentAutocompact(t *testing.T) {
 	if _, _, err := command(a, "/autocompact off"); err != nil {
 		t.Fatal(err)
 	}
-	a.Spawn("Small", "big-task", "", "", 0)
+	a.Spawn("Small", "big-task", "", "", 0, nil)
 	report()
-	a.Spawn("Asked", "big-task", "", "", 400_000) // spawn's own window: not reached
+	a.Spawn("Asked", "big-task", "", "", 400_000, nil) // spawn's own window: not reached
 	report()
-	if got := a.Spawn("Bad", "x", "", "", 5); !strings.HasPrefix(got, "autocompact must be") {
+	if got := a.Spawn("Bad", "x", "", "", 5, nil); !strings.HasPrefix(got, "autocompact must be") {
 		t.Fatal(got)
 	}
 	time.Sleep(500 * time.Millisecond)
@@ -915,7 +915,7 @@ func TestTellResumes(t *testing.T) {
 		defer a.mu.Unlock()
 		return a.subsLocked()[0].State
 	}
-	a.Spawn("Rest", "first", "", "", 0)
+	a.Spawn("Rest", "first", "", "", 0, nil)
 	report()
 	if got := state(); got != "resting" {
 		t.Fatalf("after its report: %s", got)
@@ -965,7 +965,7 @@ func TestTellResumes(t *testing.T) {
 func TestResumeAgent(t *testing.T) {
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	a, calls := fakeAgent(t, c)
-	a.Spawn("Long", "wait-for-stop", "", "", 0)
+	a.Spawn("Long", "wait-for-stop", "", "", 0, nil)
 	waitFor(t, "Long at work", func() bool { return strings.Contains(c.ZoomAgent("Long"), "agent: working") })
 	a.quit()
 	rec, err := a.loadRecord("Long")

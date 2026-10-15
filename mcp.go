@@ -74,9 +74,13 @@ var (
 		tool("spawn", `Start a subagent on a task, in the background, and return at once. Its report comes back as a message starting "[Name]". Never wait for it. `+
 			"effort: how long it thinks first; more is smarter and slower. Leave it out for the default. "+
 			"model: the Claude it runs on: opus (the default), fable, sonnet, haiku, or a full model name; leave it out unless the user asks for one. "+
-			"autocompact: for a long task, a context size in tokens: once the subagent has reported past it, opt-chat compacts it at rest, never mid-step, and its next message (a tell) brings the view and its task again; leave it out for the user's setting (/autocompact).",
+			"autocompact: for a long task, a context size in tokens: once the subagent has reported past it, opt-chat compacts it at rest, never mid-step, and its next message (a tell) brings the view and its task again; leave it out for the user's setting (/autocompact). "+
+			"loop: keeps it at work turn after turn, as a Claude Code Stop hook would: after each turn opt-chat runs command (sh, in dir, the Stop hook's JSON on stdin), "+
+			`and a {"decision":"block","reason":...} sends the reason as its next message; it reports once the hook lets it stop, or after max turns (60). `+
+			"Leave it out unless asked.",
 			schema([]string{"name", "task"}, map[string]any{"name": str, "task": str, "effort": map[string]any{"type": "string", "enum": efforts}, "model": str,
-				"autocompact": map[string]any{"type": "integer", "minimum": windowMin, "maximum": windowMax}})),
+				"autocompact": map[string]any{"type": "integer", "minimum": windowMin, "maximum": windowMax},
+				"loop":        schema([]string{"command", "dir"}, map[string]any{"command": str, "dir": str, "max": num})})),
 		tool("tell", "Send a subagent a message. A running one gets it between its tool calls; any other goes on with it where it stopped "+
 			"(after its report, or stopped by a restart of opt-chat), with all it knew, and reports again.",
 			schema([]string{"name", "message"}, map[string]any{"name": str, "message": str})),
@@ -128,6 +132,7 @@ type toolArgs struct {
 	Effort  string         `json:"effort"`
 	Model   string         `json:"model"`
 	Window  int            `json:"autocompact"`
+	Loop    *loopHook      `json:"loop"`
 	Text    string         `json:"text"`
 	Before  int            `json:"before"`
 }
@@ -161,7 +166,7 @@ func callTool(a *Agent, fromAgent bool, tool string, x toolArgs) (string, []stri
 	case (tool == "spawn" || tool == "tell") && fromAgent:
 		return "Only Opt starts and tells subagents.", nil
 	case tool == "spawn":
-		return a.Spawn(x.Name, x.Task, x.Effort, x.Model, x.Window), nil
+		return a.Spawn(x.Name, x.Task, x.Effort, x.Model, x.Window, x.Loop), nil
 	case tool == "tell":
 		return a.Tell(x.Name, x.Message), nil
 	}

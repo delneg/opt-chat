@@ -17,13 +17,14 @@ import (
 
 // agentRecord is a subagent's, as agents/<Name>.json keeps it.
 type agentRecord struct {
-	Session   string `json:"session"` // Claude Code's session: --resume goes on from it
-	Model     string `json:"model"`
-	Effort    string `json:"effort"`
-	Window    int    `json:"window,omitzero"`
-	Task      string `json:"task"`
-	State     string `json:"state"`              // working, resting, ended, stopped, failed
-	Compacted bool   `json:"compacted,omitzero"` // since its last message: the next brings the view and its task again
+	Session   string    `json:"session"` // Claude Code's session: --resume goes on from it
+	Model     string    `json:"model"`
+	Effort    string    `json:"effort"`
+	Window    int       `json:"window,omitzero"`
+	Task      string    `json:"task"`
+	State     string    `json:"state"`              // working, resting, ended, stopped, failed
+	Compacted bool      `json:"compacted,omitzero"` // since its last message: the next brings the view and its task again
+	Loop      *loopHook `json:"loop,omitzero"`      // its Stop hook, run at the end of each turn: see loop.go
 }
 
 func (a *Agent) recordPath(name string) string {
@@ -64,14 +65,23 @@ func newSession() string {
 
 // saved tells whether Claude Code has the session on disk, where it keeps
 // every project's: --resume of one it has not starts afresh, silently.
-func saved(session string) bool {
-	dir := os.Getenv("CLAUDE_CONFIG_DIR")
-	if dir == "" {
-		home, _ := os.UserHomeDir()
-		dir = filepath.Join(home, ".claude")
+func saved(session string) bool { return sessionPath(session) != "" }
+
+// sessionPath is where Claude Code keeps the session, or "".
+func sessionPath(session string) string {
+	found, _ := filepath.Glob(filepath.Join(claudeConfigDir(), "projects", "*", session+".jsonl"))
+	if len(found) == 0 {
+		return ""
 	}
-	found, _ := filepath.Glob(filepath.Join(dir, "projects", "*", session+".jsonl"))
-	return len(found) > 0
+	return found[0]
+}
+
+func claudeConfigDir() string {
+	if dir := os.Getenv("CLAUDE_CONFIG_DIR"); dir != "" {
+		return dir
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".claude")
 }
 
 // resumeNote begins the message that resumes a subagent's session, its

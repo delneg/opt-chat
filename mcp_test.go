@@ -63,12 +63,13 @@ func TestMCP(t *testing.T) {
 		t.Fatalf("tools/list: %v", out)
 	}
 	for args, want := range map[string]string{
-		`{"name":"zoom","arguments":{"id":0,"n":1}}`:                           "0+1|user: hi",
-		`{"name":"zoom","arguments":{"id":"0","n":1}}`:                         "0+1|user: hi",
-		`{"name":"zoom","arguments":{"id":"Nobody"}}`:                          "No subagent [Nobody].",
-		`{"name":"tell","arguments":{"name":"X","message":"m"}}`:               "No subagent [X] is taking messages, and none was saved to resume. A new one can read its chat with zoom(\"X\").",
-		`{"name":"spawn","arguments":{"name":"X","task":" "}}`:                 "No task given.",
-		`{"name":"spawn","arguments":{"name":"X","task":"t","effort":"lots"}}`: "effort must be one of low, medium, high, xhigh, max, or left out.",
+		`{"name":"zoom","arguments":{"id":0,"n":1}}`:                                              "0+1|user: hi",
+		`{"name":"zoom","arguments":{"id":"0","n":1}}`:                                            "0+1|user: hi",
+		`{"name":"zoom","arguments":{"id":"Nobody"}}`:                                             "No subagent [Nobody].",
+		`{"name":"tell","arguments":{"name":"X","message":"m"}}`:                                  "No subagent [X] is taking messages, and none was saved to resume. A new one can read its chat with zoom(\"X\").",
+		`{"name":"spawn","arguments":{"name":"X","task":" "}}`:                                    "No task given.",
+		`{"name":"spawn","arguments":{"name":"X","task":"t","effort":"lots"}}`:                    "effort must be one of low, medium, high, xhigh, max, or left out.",
+		`{"name":"spawn","arguments":{"name":"X","task":"t","loop":{"command":"x","dir":"rel"}}}`: "loop's dir must be an absolute path to a folder.",
 	} {
 		if _, out := call(`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":` + args + `}`); text(out) != want {
 			t.Fatalf("%s: %q, want %q", args, text(out), want)

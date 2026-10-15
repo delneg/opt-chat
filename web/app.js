@@ -2061,6 +2061,7 @@ function stepMsgs(name, steps, off) {
     const i = `${name}:${off + j}`;
     switch (s.kind) {
       case 'task': case 'opt': out.push({ kind: 'user', text: s.text, i }); break;
+      case 'loop': out.push({ kind: 'user', text: 'Stop hook: ' + s.text, i }); break;
       case 'agent': out.push({ kind: 'opt', text: s.text, i }); break;
       case 'tool': case 'echo': out.push({ kind: s.kind, text: s.text, i }); break;
       case 'compacted': out.push({ kind: 'note', text: 'Its context was compacted at rest: ' + s.text.replace(/(\d+) tokens to (\d+)/, (_, x, y) => `${k(+x)} tokens to ${k(+y)}`), i }); break;

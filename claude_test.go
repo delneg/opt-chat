@@ -975,7 +975,7 @@ func TestResumeAgent(t *testing.T) {
 	}
 
 	b, calls := fakeAgent(t, c) // opt-chat again
-	if msgs := b.recoverAgents(); len(msgs) != 0 {
+	if msgs, _ := b.recoverAgents(); len(msgs) != 0 {
 		t.Fatalf("after a quit: %v", msgs)
 	}
 	b.mu.Lock()
@@ -1001,9 +1001,9 @@ func TestResumeAgent(t *testing.T) {
 		t.Fatalf("resumed with %q", args)
 	}
 
-	b.note("Long", func(r *agentRecord) { r.State = "working" }) // as a crash leaves it
+	b.note("Long", func(r *agentRecord) { r.State, r.Pid = "working", 0 }) // as a crash leaves it, its call gone
 	b.subs = nil
-	if msgs := b.recoverAgents(); len(msgs) != 1 || !strings.HasPrefix(msgs[0].text, "[Long] stopped: opt-chat ended without quitting") {
+	if msgs, _ := b.recoverAgents(); len(msgs) != 1 || !strings.HasPrefix(msgs[0].text, "[Long] stopped: opt-chat ended without quitting") {
 		t.Fatalf("after a crash: %v", msgs)
 	}
 	if rec, _ := b.loadRecord("Long"); rec.State != "stopped" {

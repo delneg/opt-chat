@@ -48,14 +48,17 @@ type Agent struct {
 	mcpUp           []string          // the servers connected when the last call sent its view: see mcpSettle
 	mcpSeen         []string          // and those listed then
 
-	report func(text string) // hands an agent's report to the chat
-	wakes  *waker            // the wake tool's (-wake); nil: off
+	report     func(text string) // hands an agent's report to the chat
+	autoResume bool              // a start resumes the subagents a quit, crash or reload cut off: see resume.go
+	onReload   func()            // /reload's: see reload.go; nil: none
+	wakes      *waker            // the wake tool's (-wake); nil: off
 
 	life  context.Context // canceled at quit: every call stops
 	stop  context.CancelFunc
 	calls sync.WaitGroup // calls and subagents underway
 
 	mu          sync.Mutex
+	cutting     bool                     // a reload is stopping every call: none starts
 	compactions int                      // since the last turn's report
 	cusage      usage                    // their usage
 	running     map[string]*proc         // agents by name; nil while starting or finished
@@ -499,7 +502,7 @@ func stopChildren() {
 func (a *Agent) begin() bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.life.Err() != nil {
+	if a.life.Err() != nil || a.cutting {
 		return false
 	}
 	a.calls.Add(1)

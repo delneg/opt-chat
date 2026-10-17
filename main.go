@@ -42,6 +42,7 @@ func main() {
 	ownConfig := flag.Bool("claude-config", true, "give turns and subagents your Claude Code skills, plugins, MCP servers and settings (never its hooks, CLAUDE.md or memory)")
 	claudeMd := flag.Bool("claude-md", true, "with -claude-config, give turns and subagents the CLAUDE.md files of the folders they work in (never ~/.claude/CLAUDE.md)")
 	wake := flag.Bool("wake", true, "let Opt set wake-ups: messages to itself at a time, kept in <dir>/wake.jsonl")
+	autoResume := flag.Bool("auto-resume", true, fmt.Sprintf("as opt-chat starts, resume the subagents a quit, a crash or /reload cut off mid-task, under a day ago, up to %d times in a row", resumeMax))
 	importPath := flag.String("import", "", "import past chats, then chat: a ~/.claude or ~/.codex directory, a session's .jsonl, a Claude or ChatGPT export (.zip), or a text file whose lines become notes")
 	importSince := flag.String("import-since", "", "import only messages from this day on (YYYY-MM-DD)")
 	importTools := flag.Bool("import-tools", false, "import tool calls and results too")
@@ -51,6 +52,8 @@ func main() {
 	open := flag.Bool("open", true, "open the web chat in the browser")
 	recall := flag.Int("recall", 8, "messages from the whole log that share your message's rare words, given raw to each turn (0: none)")
 	flag.Parse()
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, syscall.SIGUSR1) // at once: unhandled, it would end opt-chat; a reload waits for the start's end
 	given := map[string]bool{}
 	flag.Visit(func(f *flag.Flag) { given[f.Name] = true })
 	// What the model picker saved, unless a flag says otherwise.
@@ -68,6 +71,9 @@ func main() {
 		if !validEffort(e) {
 			fatal("-%s must be one of %s", name, joinEfforts())
 		}
+	}
+	if os.Getenv(probeEnv) != "" { // a reload's check that this build starts with these flags
+		return
 	}
 
 	c, err := openChat(*dir)
@@ -99,10 +105,11 @@ func main() {
 	h := &harness{}
 	a := &Agent{chat: c, system: systemPrompt(agentsMD, *wake), agentsMD: agentsMD, claudeMd: *claudeMd, model: *model, effort: *effort,
 		amodel: *amodel, aeffort: *aeffort, cmodel: *cmodel, ceffort: *ceffort, perm: *perm, cwd: *cwd, tools: *tools, ownConfig: *ownConfig, mcpOff: saved.MCPOff, skillsSet: saved.Skills, pluginsSet: saved.Plugins, agentWindow: saved.AgentAutocompact, recall: *recall,
-		running: map[string]*proc{}, writing: map[string]chan struct{}{}, report: func(text string) { h.input(message{kind: "work", text: text}) }}
+		running: map[string]*proc{}, writing: map[string]chan struct{}{}, report: func(text string) { h.input(message{kind: "work", text: text}) }, autoResume: *autoResume}
 	a.life, a.stop = context.WithCancel(context.Background())
 	h.agent = a
-	logAll(c, a.recoverAgents()) // in the chat, for the next turn: none starts now
+	recovered, cut := a.recoverAgents()
+	logAll(c, recovered) // in the chat, for the next turn: none starts now
 	if a.mcpConfig, a.agentMCP, err = serveMCP(a); err != nil {
 		fatal("mcp: %v", err)
 	}
@@ -124,6 +131,22 @@ func main() {
 	dim(fmt.Sprintf("[%d messages; the view is %d lines, %d bytes; %s%s]", len(c.msgs), len(c.view.keys), c.view.size(), *dir, backlog))
 	c.pump()
 	c.mu.Unlock()
+	a.resumeCut(cut)
+	rl, err := newReloader(flag.CommandLine)
+	if err != nil {
+		warn("reload: %v", err)
+	}
+	reload := func() {
+		if rl == nil {
+			return
+		}
+		if err := h.reload(rl); err != nil {
+			hb.notice("warn", "reload: %v", err)
+		}
+	}
+	if rl != nil {
+		a.onReload = func() { go reload() }
+	}
 	if *wake { // after the hub: one missed while down starts a turn now
 		w, err := startWaker(*dir, func(text string) { h.input(message{kind: "work", text: text}) })
 		if err != nil {
@@ -144,7 +167,6 @@ func main() {
 		h.quit()
 		close(stopStatus)
 	}
-	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP) // the terminal closed: quit as well, stopping every call
 	if !*repl {
 		w, err := serveWeb(h, *addr)
@@ -156,7 +178,12 @@ func main() {
 		if *open {
 			openBrowser(w.url)
 		}
-		<-sig
+		for s := range sig {
+			if s != syscall.SIGUSR1 {
+				break
+			}
+			go reload()
+		}
 		fmt.Println()
 		dim("[quitting: stopping every call...]")
 		quit()
@@ -192,6 +219,10 @@ func main() {
 				h.input(typed(c, text))
 			}
 		case s := <-sig:
+			if s == syscall.SIGUSR1 {
+				go reload()
+				continue
+			}
 			back, ok := h.stop()
 			if !ok || s != os.Interrupt { // only Ctrl-C stops a turn and stays
 				quit()
@@ -239,17 +270,18 @@ func typed(c *Chat, text string) message {
 // it: at once while a tool call runs, else at the next tool call; or it
 // starts the next turn. An agent's report joins at once.
 type harness struct {
-	agent    *Agent
-	mu       sync.Mutex
-	queue    []queued
-	lastID   int
-	turn     *Turn
-	cancel   context.CancelFunc
-	running  bool
-	stopped  bool // the turn underway was stopped, and its queue taken
-	hurry    bool // sent now: the next turn waits for no summary
-	quitting bool
-	loops    sync.WaitGroup
+	agent     *Agent
+	mu        sync.Mutex
+	queue     []queued
+	lastID    int
+	turn      *Turn
+	cancel    context.CancelFunc
+	running   bool
+	stopped   bool // the turn underway was stopped, and its queue taken
+	hurry     bool // sent now: the next turn waits for no summary
+	quitting  bool
+	loops     sync.WaitGroup
+	reloading sync.Mutex // held by a reload: see reload.go
 }
 
 type queued struct {
@@ -526,7 +558,7 @@ func (h *harness) loop() {
 var (
 	commandWord = regexp.MustCompile(`(?s)^\s*/([A-Za-z][\w:.-]*)(?:\s+(.*?))?\s*$`) // "/word args", never a path like /Users/me/shot.png
 	modelName   = regexp.MustCompile(`^[\w.:\[\]-]+$`)
-	commands    = []string{"model", "effort", "mode", "autocompact", "mcp", "skills", "plugins", "agents", "status", "usage", "btw", "help"}
+	commands    = []string{"model", "effort", "mode", "autocompact", "mcp", "skills", "plugins", "agents", "status", "usage", "btw", "reload", "help"}
 )
 
 // command runs a line that starts with /word, and says what it did; false
@@ -566,6 +598,13 @@ func command(a *Agent, line string) (string, bool, error) {
 	}
 	if word == "autocompact" {
 		return autocompact(a, arg)
+	}
+	if word == "reload" {
+		if a.onReload == nil {
+			return "", true, errors.New("/reload needs opt-chat run from its built binary")
+		}
+		a.onReload()
+		return "Reloading: building opt-chat from its source. Once the chat is idle, it restarts in place, and the subagents it cuts off go on.", true, nil
 	}
 	if word == "mode" && arg != "" {
 		if err := a.setMode(arg); err != nil {
@@ -609,6 +648,7 @@ func command(a *Agent, line string) (string, bool, error) {
 			"/status             Claude Code's version and account, this run's settings, the view and the plan's usage\n" +
 			"/usage [day|week|run] the plan's limits, what uses them, and what Opt's calls spent\n" +
 			"/btw question       a side question: answered beside the chat, which never sees it\n" +
+			"/reload             build opt-chat from its source and, once the chat is idle, restart it in place; cut-off subagents go on\n" +
 			"/<skill> [args]     run one of your skills, as in Claude Code\n" +
 			"Ctrl-C stops the turn; Ctrl-C when idle, or Ctrl-D, quits.", true, nil
 	}

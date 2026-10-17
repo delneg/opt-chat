@@ -48,7 +48,10 @@ cache over.
   your hooks, CLAUDE.md or memory. `/skills`, `/mcp` and `/plugins` switch
   them for Opt alone.
 - Subagents run in the background, in a rail beside the chat that stops
-  and clears each. A stopped one resumes when Opt tells it something.
+  and clears each. One that a quit, a crash or a reload cut off mid-task
+  goes on by itself at the next start; one you stopped, when Opt tells it.
+- `/reload` (or `kill -USR1`) rebuilds opt-chat from its source and, once
+  the chat is idle, restarts it in place: same terminal, port and page.
 - `-import` brings in past chats from Claude Code, Codex, or a Claude or
   ChatGPT export.
 - The bar shows how big the memory is, the last turn's tokens and your
@@ -67,6 +70,7 @@ cache over.
 | `-permission-mode` | `auto` | `manual`, `acceptEdits` or `auto` |
 | `-tools` | `Bash,Read,Edit,Write,WebSearch,WebFetch` | Claude Code tools |
 | `-claude-config` | on | your skills, plugins, MCP servers and settings |
+| `-auto-resume` | on | resume cut-off subagents at start |
 | `-import` | | import past chats first; see `-import-since`, `-import-tools`, `-import-skip` in the guide |
 | `-addr` | last run's port | `127.0.0.1:port` |
 | `-open` | `true` | open the page in the browser |

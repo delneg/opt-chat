@@ -5,8 +5,11 @@ import (
 	"encoding/json/v2"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -25,6 +28,10 @@ type agentRecord struct {
 	State     string    `json:"state"`              // working, resting, ended, stopped, failed
 	Compacted bool      `json:"compacted,omitzero"` // since its last message: the next brings the view and its task again
 	Loop      *loopHook `json:"loop,omitzero"`      // its Stop hook, run at the end of each turn: see loop.go
+	Turns     int       `json:"turns,omitzero"`     // its loop's turns since its last report: the cap holds across a restart
+	Cut       bool      `json:"cut,omitzero"`       // cut off mid-task by a quit, a crash or a reload: the next start resumes it
+	Resumes   int       `json:"resumes,omitzero"`   // times a start resumed it since its last result
+	Pid       int       `json:"pid,omitzero"`       // its Claude Code's, while at work: after a crash, stopped before it is resumed
 }
 
 func (a *Agent) recordPath(name string) string {
@@ -92,17 +99,30 @@ func resumeNote(state string) string {
 		return "Your call had ended after your report; opt-chat resumed it from its saved session. Opt's message:\n"
 	}
 	if state == "halted" {
-		return "The user stopped you while you worked, and opt-chat has now resumed your call from its saved session: a tool call underway then was cut short. Opt's message:\n"
+		return "The user stopped you while you worked, and opt-chat has now resumed your call from its saved session. " + cutShort + " Opt's message:\n"
 	}
-	return "opt-chat stopped while you worked, and resumed your call from its saved session: a tool call underway then was cut short. Opt's message:\n"
+	return "opt-chat stopped while you worked, and resumed your call from its saved session. " + cutShort + " Opt's message:\n"
 }
 
-// recoverAgents, as opt-chat starts, marks the subagents a crash stopped
-// mid-task, and returns a report for each, for the chat; those stopped in
-// the last day, by a crash, a quit or the user, show in the rail.
-func (a *Agent) recoverAgents() []message {
+const cutShort = "Your last tool call may have been cut off: check its effect before redoing it."
+
+// restartNote is the whole message that resumes a subagent cut off
+// mid-task, as opt-chat starts again: see resumeCut.
+const restartNote = "opt-chat restarted while you worked, and resumed your call from its saved session on its own: Opt sent no message. " +
+	cutShort + " Then go on with your task."
+
+// resumeMax is how many times in a row a start resumes a subagent that
+// gets no result in between: one that ends opt-chat each time stops.
+const resumeMax = 3
+
+// recoverAgents, as opt-chat starts, lists the subagents to resume: each
+// one a quit, a crash or a reload cut off mid-task, under a day ago, and
+// resumed fewer than resumeMax times since its last result, while
+// auto-resume is on. For each other one cut off, it gives a report, for
+// the chat. Those stopped in the last day, by a crash, a quit or the user,
+// show in the rail.
+func (a *Agent) recoverAgents() (out []message, cut []string) {
 	files, _ := filepath.Glob(filepath.Join(a.chat.dir, "agents", "*.json"))
-	var out []message
 	for _, f := range files {
 		name := strings.TrimSuffix(filepath.Base(f), ".json")
 		r, err := a.loadRecord(name)
@@ -113,11 +133,35 @@ func (a *Agent) recoverAgents() []message {
 		if r.State == "resting" { // its call ended with opt-chat: nothing lost
 			a.note(name, func(r *agentRecord) { r.State = "ended" })
 		}
-		if r.State == "working" {
-			a.note(name, func(r *agentRecord) { r.State = "stopped" })
+		if r.State == "working" || r.Cut {
+			at := fi.ModTime() // as it was cut off: its record's last change, or its last step
+			if li, err := os.Stat(a.agentLog(name)); err == nil && li.ModTime().After(at) {
+				at = li.ModTime()
+			}
+			why := ""
+			switch {
+			case !a.autoResume:
+			case r.Resumes >= resumeMax:
+				why = fmt.Sprintf(" opt-chat resumed it %d times since its last result, so not again on its own.", resumeMax)
+			case time.Since(at) >= 24*time.Hour:
+				why = " That was over a day ago, so opt-chat did not resume it on its own."
+			}
+			resume, crash := a.autoResume && why == "", r.State == "working"
+			if crash && r.Pid > 0 {
+				stopOrphan(r.Pid, r.Session)
+			}
+			a.note(name, func(r *agentRecord) { r.State, r.Cut = "stopped", resume })
 			r.State = "stopped"
-			out = append(out, message{kind: "work", text: fmt.Sprintf("[%s] stopped: opt-chat ended without quitting (a crash?) before this subagent finished. %s\n\nRan on %s. Full chat: zoom(%q)",
-				name, resumeHint(name), strings.TrimSpace(r.Model+" "+r.Effort), name)})
+			how := "quit"
+			if crash {
+				how = "ended without quitting (a crash?)"
+			}
+			if resume {
+				cut = append(cut, name)
+			} else {
+				out = append(out, message{kind: "work", text: fmt.Sprintf("[%s] stopped: opt-chat %s before this subagent finished.%s %s\n\nRan on %s. Full chat: zoom(%q)",
+					name, how, why, resumeHint(name), strings.TrimSpace(r.Model+" "+r.Effort), name)})
+			}
 		}
 		if (r.State == "stopped" || r.State == "halted") && time.Since(fi.ModTime()) < 24*time.Hour {
 			a.setSub(name, func(s *sub) {
@@ -125,7 +169,45 @@ func (a *Agent) recoverAgents() []message {
 			})
 		}
 	}
-	return out
+	return out, cut
+}
+
+// resumeCut sets the subagents recoverAgents listed to work again, each
+// from its saved session, and says so in the chat, starting no turn.
+func (a *Agent) resumeCut(names []string) {
+	var back []string
+	for _, name := range names {
+		a.note(name, func(r *agentRecord) { r.Cut, r.Resumes = false, r.Resumes+1 })
+		a.mu.Lock()
+		out := a.resume(name, restartNote, true)
+		a.mu.Unlock()
+		if strings.HasPrefix(out, "Resuming") {
+			back = append(back, "["+name+"]")
+		} else {
+			a.chat.Log("work", "[opt-chat] "+out)
+		}
+	}
+	if len(back) > 0 {
+		a.chat.Log("work", "[opt-chat] Started again, and resumed from their saved sessions the subagents cut off mid-task: "+strings.Join(back, ", ")+". Each reports when done.")
+	}
+}
+
+// stopOrphan ends the process group of pid, a subagent's Claude Code
+// that outlived a crash, its turn still going on, if it is still that
+// session's: else the pid was reused.
+func stopOrphan(pid int, session string) {
+	out, err := exec.Command("ps", "-o", "args=", "-p", strconv.Itoa(pid)).Output()
+	if err != nil || !strings.Contains(string(out), session) {
+		return
+	}
+	syscall.Kill(-pid, syscall.SIGTERM)
+	for range 50 { // as a call's WaitDelay; then for good
+		if syscall.Kill(pid, 0) != nil {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	syscall.Kill(-pid, syscall.SIGKILL)
 }
 
 func resumeHint(name string) string {

@@ -23,6 +23,7 @@ land there. The web tests go through real HTTP and WebSocket connections.
 | file | what it holds |
 |---|---|
 | `main.go` | flags, startup, the terminal |
+| `reload.go` | `/reload` and SIGUSR1: build, wait for the chat to be idle, stop every call, exec in place |
 | `chat.go`, `view.go` | the log, the summary tree, the view and its merges |
 | `claude.go` | `claude -p` calls: turns, compactions, subagents |
 | `agents.go`, `subs.go`, `resume.go` | subagents, the page's agents rail, resuming saved sessions |

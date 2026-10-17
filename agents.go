@@ -126,7 +126,7 @@ func (a *Agent) Tell(name, text string) string {
 	r, resting := a.resting[name]
 	switch {
 	case !ok && !resting:
-		return a.resume(name, text)
+		return a.resume(name, text, false)
 	case !ok && r.compacting:
 		a.agentWrite(name, "opt", text)
 		r.pending = append(r.pending, text)
@@ -175,16 +175,21 @@ func (a *Agent) agentWrite(name, kind, text string) {
 }
 
 // resume sets a subagent whose call has ended to work again: its saved
-// session, with all it knew, and text. a.mu held.
-func (a *Agent) resume(name, text string) string {
+// session, with all it knew, and text: Opt's message, or, from opt-chat
+// (auto), the whole message. a.mu held.
+func (a *Agent) resume(name, text string, auto bool) string {
 	rec, err := a.loadRecord(name)
 	switch {
 	case err != nil || rec.Session == "":
 		return fmt.Sprintf("No subagent [%s] is taking messages, and none was saved to resume. A new one can read its chat with zoom(%q).", name, name)
 	case !saved(rec.Session):
 		return fmt.Sprintf("[%s]'s saved session is gone from Claude Code's, so it can't be resumed. A new one can read its chat with zoom(%q).", name, name)
-	case a.life.Err() != nil:
+	case a.life.Err() != nil || a.cutting:
 		return "opt-chat is quitting."
+	}
+	msg := resumeNote(rec.State) + text
+	if auto {
+		msg = text
 	}
 	a.calls.Add(1) // as begin, a.mu held
 	a.running[name] = nil
@@ -195,7 +200,7 @@ func (a *Agent) resume(name, text string) string {
 	h := a.haltLocked(name)
 	go func() {
 		defer a.calls.Done()
-		a.runAgent(name, h, rec, text)
+		a.runAgent(name, h, rec, msg)
 	}()
 	return fmt.Sprintf("Resuming [%s] where it stopped, from its saved session: it goes on with all it knew, and your message, and will report again.", name)
 }
@@ -265,7 +270,7 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg string) {
 		h.cancel()
 	}()
 	task, effort, model, window := rec.Task, rec.Effort, rec.Model, rec.Window
-	resumed, note := msg != "", resumeNote(rec.State)+msg
+	resumed := msg != ""
 	size := 0 // its context: the tokens its latest request read
 	send := func(text string) {
 		a.chat.hub.notice("info", "[%s] done", name)
@@ -279,24 +284,43 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg string) {
 		a.report(fmt.Sprintf("%s\n\nRan on %s. Full chat: zoom(%q)", text, on, name)) // as UniiChat ends a report
 	}
 	report := func(text string) { // the end
+		a.mu.Lock()
+		quit, reload := a.life.Err() != nil, a.cutting
 		state := "failed"
-		if a.life.Err() != nil {
+		if quit || reload {
 			state = "stopped"
 		}
-		a.mu.Lock()
-		byUser := h.byUser && a.life.Err() == nil
+		byUser := h.byUser && !quit
 		if byUser {
 			state = "halted"
 		}
 		delete(a.running, name)
 		a.subLocked(name, func(s *sub) { s.State = state })
 		a.mu.Unlock()
-		a.note(name, func(r *agentRecord) { r.State = state })
-		if byUser {
+		var now agentRecord
+		a.note(name, func(r *agentRecord) {
+			r.State = state
+			r.Cut = state == "stopped" && a.autoResume && r.Resumes < resumeMax && saved(r.Session)
+			now = *r
+		})
+		switch {
+		case byUser:
 			a.chat.hub.notice("info", "[%s] stopped", name)
 			a.chat.Log("work", fmt.Sprintf("[%s] stopped: the user stopped it from the page before it finished, so it sends no report. %s\n\nRan on %s. Full chat: zoom(%q)",
 				name, resumeHint(name), strings.TrimSpace(model+" "+effort), name))
 			return
+		case now.Cut: // the next start resumes it: no report
+			a.chat.hub.notice("info", "[%s] cut off: it goes on when opt-chat starts again", name)
+			return
+		case state == "stopped":
+			how, why := "quit", ""
+			if !quit {
+				how = "reloaded"
+			}
+			if a.autoResume && now.Resumes >= resumeMax {
+				why = fmt.Sprintf(" opt-chat resumed it %d times since its last result, so not again on its own.", resumeMax)
+			}
+			text = fmt.Sprintf("stopped: opt-chat %s before this subagent finished.%s %s", how, why, resumeHint(name))
 		}
 		send(text)
 	}
@@ -305,12 +329,7 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg string) {
 		return
 	}
 	c := a.chat
-	failed := func(err error) string {
-		if a.life.Err() != nil {
-			return "stopped: opt-chat quit before this subagent finished. " + resumeHint(name)
-		}
-		return "failed: " + err.Error()
-	}
+	failed := func(err error) string { return "failed: " + err.Error() } // stopped by a quit or a reload: report says so
 	var lines []string
 	if resumed {
 		a.chat.hub.notice("info", "[%s] resumed on %s", name, strings.TrimSpace(model+" "+effort))
@@ -345,6 +364,7 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg string) {
 		return
 	}
 	p.who = name // before its first message: its questions say who asks
+	a.note(name, func(r *agentRecord) { r.Pid = p.cmd.Process.Pid })
 	acking := !resumed
 	each := func(e event) {
 		if e.Parent != nil {
@@ -382,10 +402,10 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg string) {
 	var second []block
 	switch {
 	case resumed && rec.Compacted: // its view and task again, as a tell after a compaction brings them
-		second = anchored(c.viewNow(), name, task, []string{note})
+		second = anchored(c.viewNow(), name, task, []string{msg})
 		a.note(name, func(r *agentRecord) { r.Compacted = false })
 	case resumed:
-		second = []block{textBlock(note)}
+		second = []block{textBlock(msg)}
 	default:
 		var first []block
 		first, second = viewMessages(lines, []block{textBlock(fmt.Sprintf("You are subagent [%s]. Your task:\n%s", name, task))})
@@ -407,7 +427,7 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg string) {
 		a.held[name] = nil
 	}
 	a.mu.Unlock()
-	lp := loopState{hook: rec.Loop}
+	lp := loopState{hook: rec.Loop, turns: rec.Turns}
 	for {
 		e, ok := p.next()
 		if !ok {
@@ -450,6 +470,7 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg string) {
 		if lp.hook != nil {
 			a.mu.Unlock() // the hook takes a while
 			next, note := a.loopStep(name, h, &lp, rec.Session, e)
+			a.note(name, func(r *agentRecord) { r.Turns, r.Resumes = lp.turns, 0 })
 			if next != nil {
 				if window > 0 && size > window { // compacted now, between turns, never in one
 					lp.compacting, lp.next = true, next
@@ -491,7 +512,7 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg string) {
 			a.held[name] = nil
 		}
 		a.mu.Unlock()
-		a.note(name, func(r *agentRecord) { r.State = "resting" })
+		a.note(name, func(r *agentRecord) { r.State, r.Resumes = "resting", 0 })
 		send(final)
 		if len(late) > 0 {
 			a.Tell(name, strings.Join(late, "\n\n"))

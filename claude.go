@@ -378,8 +378,8 @@ func (a *Agent) start(ctx context.Context, model, effort string, r role, extra .
 	if own {
 		// The user's skills, plugins, MCP servers and settings, as Claude Code
 		// run in cwd has them; never their hooks, CLAUDE.md or memory (env,
-		// settings), which would make Opt someone else. With -claude-md,
-		// the CLAUDE.md files of the folders it works in.
+		// settings), which would make Opt someone else. With -claude-md (on by
+		// default), the CLAUDE.md files of the folders it works in.
 		args = append(args, "--setting-sources", "user,project,local", "--settings", settings)
 	} else {
 		// Nothing of the user's Claude Code setup leaks in: no hooks, plugins, CLAUDE.md or MCP servers.

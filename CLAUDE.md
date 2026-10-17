@@ -41,7 +41,7 @@ land there. The web tests go through real HTTP and WebSocket connections.
   memory. Claude Code's own auto-compaction stays off in every call.
   Subagents compact only when the user opts in, and only at rest, never
   mid-step.
-- New behavior is off by default and behind a setting or flag.
+- New behavior is on by default, with a flag or setting to turn it off.
 - Only subagent calls keep a Claude Code session on disk
   (`--session-id`/`--resume`); turns, compactions and control calls run
   with `--no-session-persistence`.

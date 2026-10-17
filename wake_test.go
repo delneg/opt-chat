@@ -101,7 +101,7 @@ func TestWakeTool(t *testing.T) {
 	if n := len(a.mcpList()); n != 5 {
 		t.Fatalf("tools when off: %d", n)
 	}
-	if got, _ := callTool(a, false, "wake", toolArgs{At: "1h", Message: "m"}); got != "Wake-ups are off: opt-chat runs without -wake." {
+	if got, _ := callTool(a, false, "wake", toolArgs{At: "1h", Message: "m"}); got != "Wake-ups are off: opt-chat runs with -wake=false." {
 		t.Fatalf("off: %q", got)
 	}
 	w, err := startWaker(c.dir, func(string) {})

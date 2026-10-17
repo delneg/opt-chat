@@ -206,7 +206,7 @@ func (a *Agent) wakeTool(fromAgent bool, x toolArgs) string {
 	a.mu.Unlock()
 	switch {
 	case w == nil:
-		return "Wake-ups are off: opt-chat runs without -wake."
+		return "Wake-ups are off: opt-chat runs with -wake=false."
 	case fromAgent:
 		return "Only Opt sets wake-ups."
 	case x.Cancel != 0:

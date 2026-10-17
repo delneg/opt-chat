@@ -68,11 +68,11 @@ func (a *Agent) Btw(m message) {
 	c.asides = append(c.asides, at)
 	c.hub.send(asideUpdate{T: "aside", Aside: at})
 	c.mu.Unlock()
-	answer, err := a.btw(lines, earlier, m, at.After+1)
+	r, err := a.btw(lines, earlier, m, at.After+1)
 	if err != nil {
 		at.Err = err.Error()
 	}
-	at.A = answer
+	at.A = r.answer
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.asides[i] = at
@@ -92,9 +92,17 @@ func (c *Chat) recentAsides(now time.Time) []Aside {
 	return out
 }
 
+// asideRun is a side question's call: its answer, its result event and
+// the tools it called, for -eval.
+type asideRun struct {
+	answer string
+	result event
+	tools  []string
+}
+
 // btw runs the call: the view, then whatever the call needs, then the
 // question. before: where the log was when it was asked, for Recall.
-func (a *Agent) btw(lines []string, earlier []Aside, m message, before int) (string, error) {
+func (a *Agent) btw(lines []string, earlier []Aside, m message, before int) (r asideRun, err error) {
 	c := a.chat
 	input := a.atWork()
 	if r := c.Recall(unframed(m.full()), before, a.recall); r != "" {
@@ -114,31 +122,40 @@ func (a *Agent) btw(lines []string, earlier []Aside, m message, before int) (str
 	a.mu.Unlock()
 	p, err := a.start(context.Background(), model, effort, roleBtw)
 	if err != nil {
-		return "", err
+		return r, err
 	}
 	defer p.wait()
 	a.mcpSettle(p)
 	var u usage
 	first, second := viewMessages(lines, input)
 	if err := a.ack(p, first, &u, nil); err != nil {
-		return "", err
+		return r, err
 	}
 	p.send(second...)
 	for {
 		e, ok := p.next()
 		if !ok {
-			return "", p.exited()
+			return r, p.exited()
+		}
+		if e.Type == "assistant" {
+			for _, b := range e.blocks() {
+				if b.Type == "tool_use" {
+					r.tools = append(r.tools, toolCall(b))
+				}
+			}
 		}
 		if e.Type != "result" {
 			continue
 		}
+		r.result = e
 		answer := strings.TrimSpace(e.Result)
 		switch {
 		case e.IsError:
-			return "", errors.New(e.failure())
+			return r, errors.New(e.failure())
 		case answer == "":
-			return "", errors.New("the answer came back empty")
+			return r, errors.New("the answer came back empty")
 		}
-		return answer, nil
+		r.answer = answer
+		return r, nil
 	}
 }

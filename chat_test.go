@@ -636,7 +636,7 @@ func TestRecall(t *testing.T) {
 	c.logRef("tool", `search {"text":"zanzibar"}`, "t1")                                      // 22
 	c.logRef("echo", "2 messages hold \"zanzibar\": the staging host "+pad, "t1")             // 23
 	c.Log("user", "Staging moved: the project's host is now 10.0.9.2. "+pad+" ZANZIBAR")      // 24
-	c.Log("echo", strings.Repeat("a zanzibar staging key paste ", 400))                       // 25: as long as it is, far behind: dropped
+	c.Log("echo", strings.Repeat("a zanzibar staging key paste ", 400))                       // 25: all three words, but as long as it is, last
 	c.Log("user", "where is the Zanzibar staging key?")                                       // 26: the question, after before
 	waitIdle(t, c)
 	// 24 holds zanzibar and staging too, but only 20 holds "key" as well.
@@ -648,7 +648,7 @@ func TestRecall(t *testing.T) {
 	if !strings.Contains(got, "\n20+1|") || !strings.Contains(got, "\n24+1|") || strings.Contains(got, "21+1|") || strings.Contains(got, "23+1|") || strings.Contains(got, "\n0+1|") {
 		t.Fatalf("all:\n%s", got)
 	}
-	if strings.Index(got, "20+1|") > strings.Index(got, "24+1|") || strings.Contains(got, "25+1|") {
+	if i20, i24, i25 := strings.Index(got, "20+1|"), strings.Index(got, "24+1|"), strings.Index(got, "25+1|"); i20 > i24 || i24 > i25 {
 		t.Fatalf("order:\n%s", got)
 	}
 	if got := c.Recall("is it so?", 26, 8); got != "" { // no word of three letters or more matches

@@ -980,7 +980,12 @@ func (c *Chat) Recall(text string, before, limit int) string {
 		})
 	}
 	c.mu.Unlock()
-	const k1, lenB = 1.2, 0.75 // BM25's usual
+	// k1 is BM25's usual. Its usual b, 0.75, buried long replies and
+	// reports: on questions drawn from a real chat, 0.3 put the message
+	// holding the answer in the first 8 for 40 of 56 against 32, and the
+	// calls answering them made 40% fewer tool calls
+	// (docs/2026-10-17-memory-eval.md).
+	const k1, lenB = 1.2, 0.3
 	avg := float64(total) / float64(max(n, 1))
 	for j, h := range hits {
 		norm := (k1 + 1) / (1 + k1*(1-lenB+lenB*float64(len(msgs[h.i].Text))/avg))

@@ -51,6 +51,9 @@ func main() {
 	addr := flag.String("addr", "", "where the web chat listens, as 127.0.0.1:port (empty: the last run's port when free, else any)")
 	open := flag.Bool("open", true, "open the web chat in the browser")
 	recall := flag.Int("recall", 8, "messages from the whole log that share your message's rare words, given raw to each turn (0: none)")
+	evalPath := flag.String("eval", "", "ask this file's questions (JSON lines with \"q\") about the chat as side questions, write the answers to -eval-out, and quit")
+	evalOut := flag.String("eval-out", "answers.jsonl", "where -eval writes its answers")
+	evalPar := flag.Int("eval-par", 4, "questions -eval asks at once")
 	flag.Parse()
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGUSR1) // at once: unhandled, it would end opt-chat; a reload waits for the start's end
@@ -112,6 +115,14 @@ func main() {
 	logAll(c, recovered) // in the chat, for the next turn: none starts now
 	if a.mcpConfig, a.agentMCP, err = serveMCP(a); err != nil {
 		fatal("mcp: %v", err)
+	}
+	if *evalPath != "" { // no turn and no compaction: the view as it stands
+		err := runEval(a, *evalPath, *evalOut, *evalPar)
+		a.quit()
+		if err != nil {
+			fatal("eval: %v", err)
+		}
+		return
 	}
 
 	c.mu.Lock()

@@ -56,7 +56,7 @@ Output only JSON: {"ok": true, "q": "...", "gold": "the short answer, with the k
 
 def ask(m):
     i = m["i"]
-    ctx = [x for x in msgs[max(0, i - 2):i]]
+    ctx = msgs[max(0, i - 2):i]
     def fmt(x, n):
         return f"[{x['kind']} {x['i']}, {x['date'][:16]}]\n{x['text'][:n]}"
     prompt = "CONTEXT:\n" + "\n\n".join(fmt(x, 1500) for x in ctx) + "\n\nTARGET:\n" + fmt(m, 6000)

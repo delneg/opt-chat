@@ -55,7 +55,6 @@ func runEval(a *Agent, in, out string, par int) error {
 	if err != nil {
 		return err
 	}
-	defer w.Close()
 
 	c := a.chat
 	c.mu.Lock()
@@ -84,10 +83,10 @@ func runEval(a *Agent, in, out string, par int) error {
 			b, _ := json.Marshal(q)
 			mu.Lock()
 			defer mu.Unlock()
-			w.Write(append(b, '\n'))
+			w.Write(append(b, '\n')) // an error shows at Close
 			dim(fmt.Sprintf("[eval %d/%d] %s: %d tools, $%.3f", n+1, len(qs), oneLine(text, 60), len(r.tools), r.result.Cost))
 		})
 	}
 	wg.Wait()
-	return nil
+	return w.Close()
 }

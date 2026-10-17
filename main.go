@@ -111,12 +111,10 @@ func main() {
 		running: map[string]*proc{}, writing: map[string]chan struct{}{}, report: func(text string) { h.input(message{kind: "work", text: text}) }, autoResume: *autoResume}
 	a.life, a.stop = context.WithCancel(context.Background())
 	h.agent = a
-	recovered, cut := a.recoverAgents()
-	logAll(c, recovered) // in the chat, for the next turn: none starts now
 	if a.mcpConfig, a.agentMCP, err = serveMCP(a); err != nil {
 		fatal("mcp: %v", err)
 	}
-	if *evalPath != "" { // no turn and no compaction: the view as it stands
+	if *evalPath != "" { // no turn, no compaction and no subagent: the chat as it stands
 		err := runEval(a, *evalPath, *evalOut, *evalPar)
 		a.quit()
 		if err != nil {
@@ -124,6 +122,8 @@ func main() {
 		}
 		return
 	}
+	recovered, cut := a.recoverAgents()
+	logAll(c, recovered) // in the chat, for the next turn: none starts now
 
 	c.mu.Lock()
 	c.hub = hb

@@ -67,6 +67,10 @@ type Node struct {
 	I    int    `json:"i"`
 	Text string `json:"text"`
 	Size int    `json:"size"`
+	// Redo marks a line to build again, its text kept until then: one a
+	// model wrote wrong, or one made from such a line. A later entry for
+	// the same node clears it.
+	Redo bool `json:"redo,omitzero"`
 }
 
 // failure is a line's compactions that failed: n in a row, the strikes among
@@ -85,6 +89,7 @@ type Chat struct {
 	msgs    []Msg
 	asides  []Aside // side questions: never in msgs, see btw.go
 	tree    map[key]string
+	redo    map[key]bool     // built lines to build again: see Node.Redo
 	view    view             // what turns see
 	cview   view             // what compactions see
 	queued  map[key]bool     // waiting in ready0/readyM or running
@@ -116,7 +121,7 @@ func openChat(dir string) (*Chat, error) {
 		return nil, fmt.Errorf("another opt-chat owns %s", dir)
 	}
 	c := &Chat{
-		dir: dir, lock: lock, tree: map[key]string{}, queued: map[key]bool{}, busy: map[key]bool{},
+		dir: dir, lock: lock, tree: map[key]string{}, redo: map[key]bool{}, queued: map[key]bool{}, busy: map[key]bool{},
 		failing: map[key]*failure{}, changed: make(chan struct{}),
 		view: view{lo: viewLo, hi: viewHi}, cview: view{lo: cviewLo, hi: cviewHi},
 	}
@@ -137,9 +142,18 @@ func openChat(dir string) (*Chat, error) {
 		return nil, err
 	}
 	slices.SortStableFunc(c.asides, func(a, b Aside) int { return a.Date.Compare(b.Date) }) // kept as answered
-	if err := load(filepath.Join(dir, "tree"), func(n Node) { c.tree[key{n.L, n.I}] = n.Text }); err != nil {
+	if err := load(filepath.Join(dir, "tree"), func(n Node) {
+		k := key{n.L, n.I}
+		c.tree[k] = n.Text
+		if n.Redo {
+			c.redo[k] = true
+		} else {
+			delete(c.redo, k)
+		}
+	}); err != nil {
 		return nil, err
 	}
+	c.markAcks()
 	// The view is kept, never rebuilt: a rebuilt view differs and kills every cache entry.
 	if b, err := os.ReadFile(filepath.Join(dir, "view.json")); err == nil {
 		saved, err := readView(b)
@@ -436,10 +450,36 @@ func (c *Chat) freeText(k key) (string, bool) {
 	return s, len(s) <= nodeMax
 }
 
-// need queues node k, or builds it at once when it is free.
+// markAcks marks for redo each line that is only "ok" (a compaction that
+// answered the view's first message instead of its input, before Compact
+// caught that) and every line built on it, which lost what it held.
+func (c *Chat) markAcks() {
+	var marks []any
+	for k, t := range c.tree {
+		if !isAck(t) {
+			continue
+		}
+		for p := k; c.built(p) && !c.redo[p]; p = p.parent() {
+			c.redo[p] = true
+			marks = append(marks, Node{L: p.L, I: p.I, Text: c.tree[p], Size: len(c.tree[p]), Redo: true})
+		}
+	}
+	if len(marks) > 0 {
+		warn("%d summary lines were \"ok\" or built on one: building them again", len(marks))
+		c.appendDay("tree", marks...)
+	}
+}
+
+// need queues node k, or builds it at once when it is free. A line to
+// redo waits for its halves to be redone first.
 func (c *Chat) need(k key) {
-	if c.built(k) || c.queued[k] {
+	if (c.built(k) && !c.redo[k]) || c.queued[k] {
 		return
+	}
+	if k.L > 0 {
+		if a, b := k.kids(); c.redo[a] || c.redo[b] {
+			return
+		}
 	}
 	if t, ok := c.freeText(k); ok {
 		c.setNode(k, t)
@@ -454,7 +494,12 @@ func (c *Chat) need(k key) {
 }
 
 func (c *Chat) setNode(k key, text string) {
+	if c.built(k) { // a redo: the views drop its old size first
+		c.view.unbuilt(c, k)
+		c.cview.unbuilt(c, k)
+	}
 	c.tree[k] = text
+	delete(c.redo, k)
 	c.view.built(c, k)
 	c.cview.built(c, k)
 	c.appendDay("tree", Node{L: k.L, I: k.I, Text: text, Size: len(text)})

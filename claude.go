@@ -697,7 +697,7 @@ func (a *Agent) Compact(ctx context.Context, lines []string, task []block) (stri
 		return "", err
 	}
 	p.send(second...)
-	best := ""
+	best, acks := "", 0
 	for try := 1; ; {
 		e, ok := p.next()
 		if !ok && best != "" {
@@ -717,6 +717,20 @@ func (a *Agent) Compact(ctx context.Context, lines []string, task []block) (stri
 		} else if line == "" {
 			return "", errors.New("empty compaction")
 		}
+		// An "ok" is the reply the view's first message asks for, given to the
+		// input too: no line. Ask once more, then fail, and let the line's
+		// failures run their course rather than keep the "ok".
+		if isAck(line) {
+			if acks++; acks > 1 {
+				if best != "" {
+					return best, nil
+				}
+				return "", errors.New(`compaction answered "ok"`)
+			}
+			p.send(textBlock(`"ok" was the reply to the view's first message only. This message holds the` + "\n" +
+				"<input>: write its one line now, as the task above says."))
+			continue
+		}
 		if best == "" || len(line) < len(best) {
 			best = line
 		}
@@ -734,6 +748,13 @@ func (a *Agent) Compact(ctx context.Context, lines []string, task []block) (stri
 // echoedHead is a line's id+n| head, which a compaction sees on the lines it
 // merges and may write back.
 var echoedHead = regexp.MustCompile(`^\d+\+\d+\|\s*`)
+
+// ackOnly matches a reply that is only "ok": the answer to the view's first
+// message, never a line, since a message short enough to be "ok" is its own
+// line with no model call.
+var ackOnly = regexp.MustCompile(`(?i)^(ok(ay)?[.!]?\s*)+$`)
+
+func isAck(s string) bool { return ackOnly.MatchString(strings.TrimSpace(s)) }
 
 // message is one the chat hands a turn: the user's (kind user) or an agent's report (kind work).
 type message struct {

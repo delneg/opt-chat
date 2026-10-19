@@ -194,7 +194,7 @@ func fakeClaude() {
 		}
 		return true
 	}
-	failRetry, longTries := false, -1
+	failRetry, longTries, ackAlways := false, -1, false
 	for line := range lines {
 		if control(line) {
 			continue
@@ -221,6 +221,13 @@ func fakeClaude() {
 			} else {
 				result("bad retry: " + text)
 			}
+		case strings.Contains(in, "was the reply to the view's first message only") && ackAlways:
+			result("Ok.")
+		case strings.Contains(in, "was the reply to the view's first message only"):
+			result("the line at last")
+		case strings.Contains(in, "Compaction:") && strings.Contains(in, "answers-ok"):
+			ackAlways = strings.Contains(in, "always")
+			result("ok")
 		case strings.Contains(in, "Compaction:") && strings.Contains(in, "empty-error"):
 			emit(map[string]any{"type": "result", "subtype": "error_during_execution", "is_error": true, "result": ""})
 		case strings.Contains(in, "Compaction:") && strings.Contains(in, "always-long"):
@@ -455,7 +462,17 @@ func TestCompact(t *testing.T) {
 	if err != nil || got != strings.Repeat("y", 696) {
 		t.Fatalf("Compact = %d bytes %.8q, %v; want the fifth try's 696", len(got), got, err)
 	}
-	if n, u := a.takeCompactions(); n != 4 || u.Read == 0 {
+	// An "ok" is the first message's reply, given to the input: asked again
+	// once, then a failure, never a line.
+	got, err = a.Compact(context.Background(), lines, []block{textBlock("Compaction: answers-ok")})
+	if err != nil || got != "the line at last" {
+		t.Fatalf("an ok was not asked again: %q, %v", got, err)
+	}
+	got, err = a.Compact(context.Background(), nil, []block{textBlock("Compaction: answers-ok always")})
+	if err == nil {
+		t.Fatalf("an ok twice became the line %q", got)
+	}
+	if n, u := a.takeCompactions(); n != 6 || u.Read == 0 {
 		t.Fatalf("compactions counted: %d, %v", n, u)
 	}
 }

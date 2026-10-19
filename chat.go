@@ -831,7 +831,10 @@ func (c *Chat) Zoom(id, n int) (string, []string) {
 	return c.callLine(a) + "\n" + c.callLine(b), nil // a message not summarized yet: its head
 }
 
-const searchPage = 20
+const (
+	searchPage  = 20
+	searchWords = 10 // messages a search that finds nothing shows by its words instead
+)
 
 // Search finds the messages that hold text, in any case, newest first, a
 // page at a time, from before message before (0: the end): each with a
@@ -861,6 +864,14 @@ func (c *Chat) Search(text string, before int) string {
 		}
 	}
 	if total == 0 {
+		// The chat often put it in other words: rank the messages that
+		// share its words, as recall does. On questions worded apart from
+		// the chat, this answered more of them right at the same cost
+		// (docs/2026-10-19-memory-eval-2.md).
+		if lines := c.shared(text, before, searchWords); lines != "" {
+			return fmt.Sprintf("No message before %d holds %q. These share its words, rarest weighing most, "+
+				"each cut to %d bytes around its rarest word: zoom(id, 1) opens one whole.\n", before, text, recallCut) + strings.TrimRight(lines, "\n")
+		}
 		return fmt.Sprintf("No message before %d holds %q.", before, text)
 	}
 	var b strings.Builder
@@ -930,6 +941,17 @@ var (
 // (After https://github.com/ericjuta/omp-optchat/releases/tag/v0.9.0,
 // whose recall tool takes such messages as candidates.)
 func (c *Chat) Recall(text string, before, limit int) string {
+	lines := c.shared(text, before, limit)
+	if lines == "" {
+		return ""
+	}
+	return fmt.Sprintf("[opt-chat] Recall: messages from the log that share this message's rarest words,\n"+
+		"found by words alone, so some may be beside the point; each cut to %d bytes\n"+
+		"around its rarest word: zoom(id, 1) opens one whole.\n<recall>\n", recallCut) + lines + "</recall>\n\n"
+}
+
+// shared is Recall's messages, a line each; "" when none.
+func (c *Chat) shared(text string, before, limit int) string {
 	var terms []string
 	for _, w := range nonWord.Split(strings.ToLower(text), -1) {
 		if utf8.RuneCountInString(w) >= 3 && !slices.Contains(terms, w) && len(terms) < 64 {
@@ -999,15 +1021,11 @@ func (c *Chat) Recall(text string, before, limit int) string {
 	top := hits[0].score
 	hits = slices.DeleteFunc(hits, func(h hit) bool { return h.score < top/4 })
 	var b strings.Builder
-	fmt.Fprintf(&b, "[opt-chat] Recall: messages from the log that share this message's rarest words,\n"+
-		"found by words alone, so some may be beside the point; each cut to %d bytes\n"+
-		"around its rarest word: zoom(id, 1) opens one whole.\n<recall>\n", recallCut)
 	for _, h := range hits[:min(limit, len(hits))] {
 		m := msgs[h.i]
 		rare := slices.MaxFunc(h.terms, func(a, b int) int { return cmp.Compare(weight[a], weight[b]) })
 		fmt.Fprintf(&b, "%d+1|%s, %s: %s\n", h.i, m.Kind, m.Date.Local().Format("2006-01-02"), recallTag.Replace(flat(excerpt(m.Text, terms[rare], recallCut))))
 	}
-	b.WriteString("</recall>\n\n")
 	return b.String()
 }
 

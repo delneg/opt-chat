@@ -49,7 +49,7 @@ Every run got all ten "never discussed" questions right.
 ## Tried and dropped
 
 - **Longer excerpts (2,400 bytes instead of 1,200).** Accuracy was within noise. Cost rose 10%.
-- **Search falling back to words.** A third of the chat's searches with no recall found nothing: they were phrases that the chat had put in other words. The fallback ranked the messages that share the phrase's words, as recall does. It did not reduce tool calls, with recall (1.23 against 1.20) or without it (3.64 against 3.77).
+- **Search falling back to words.** A third of the chat's searches with no recall found nothing: they were phrases that the chat had put in other words. The fallback ranked the messages that share the phrase's words, as recall does. It did not reduce tool calls, with recall (1.23 against 1.20) or without it (3.64 against 3.77). [Round 2](2026-10-19-memory-eval-2.md) took it back: on questions worded apart from the chat, it answered more of them right.
 - **A warning against misleading memory**, after [MemTrapBench](https://arxiv.org/html/2608.20202), where every memory method scored about 15 points below no memory at all. Opt said "no record" to every question about things the chat never held, so there was nothing for the warning to fix here.
 
 ## Limits

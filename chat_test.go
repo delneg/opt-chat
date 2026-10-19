@@ -697,4 +697,9 @@ func TestSearch(t *testing.T) {
 	if got := c.Search("needle", 0); !strings.Contains(got, "|note: …"+strings.Repeat("a", 99)+" needle "+strings.Repeat("b", 149)+"…") {
 		t.Fatalf("snippet:\n%s", got)
 	}
+	// Not held as written: the messages that share its words.
+	if got := c.Search("haystack needle", 0); !strings.HasPrefix(got, `No message before 34 holds "haystack needle". These share its words`) ||
+		!strings.Contains(got, "\n33+1|note, ") {
+		t.Fatalf("by words:\n%s", got)
+	}
 }

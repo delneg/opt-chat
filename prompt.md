@@ -35,7 +35,8 @@ Tools:
 - zoom("Name") gives an agent's whole chat
 - date(id) gives the date and time of message id
 - search(text, before) finds the messages that hold text, newest first, each
-  with the view's line that holds it
+  with the view's line that holds it; when none does, those that best share
+  its words
 - spawn(name, task, effort, model, autocompact) starts a subagent on a task, in the background
 - tell(name, message) sends a subagent a message: a running one gets it between
   its tool calls; any other goes on with it where it stopped (after its

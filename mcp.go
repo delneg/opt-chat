@@ -70,7 +70,7 @@ var (
 			schema([]string{"id"}, map[string]any{"id": map[string]any{"type": []string{"integer", "string"}}, "n": num})),
 		tool("date", "The date and time of message id.", schema([]string{"id"}, map[string]any{"id": num})),
 		tool("search", "Find the messages of the whole chat that hold text (a word, a name, a number, an error; any case), newest first, 20 at a time: "+
-			"each with a snippet, its date, and the view's line that holds it, to zoom into. before: go on from this message id.",
+			"each with a snippet, its date, and the view's line that holds it, to zoom into; when none does, the 10 that best share its words. before: go on from this message id.",
 			schema([]string{"text"}, map[string]any{"text": str, "before": num})),
 		tool("spawn", `Start a subagent on a task, in the background, and return at once. Its report comes back as a message starting "[Name]". Never wait for it. `+
 			"effort: how long it thinks first; more is smarter and slower. Leave it out for the default. "+

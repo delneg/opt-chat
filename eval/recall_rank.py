@@ -64,10 +64,11 @@ for m in msgs:
     if m["kind"] == "tool" and m["text"].startswith("zoom "):
         try:
             a = json.loads(m["text"][5:])
-        except ValueError:
+            old = int(a["id"])  # the model sends it as a number or a string
+        except (ValueError, KeyError, TypeError):
             continue
-        if a.get("n") == 1 and isinstance(a.get("id"), int) and last is not None and a["id"] < last - 20:
-            real.setdefault(last, set()).add(a["id"])
+        if a.get("n") == 1 and last is not None and old < last - 20:
+            real.setdefault(last, set()).add(old)
 real = [(msgs[u]["text"], g, u) for u, g in real.items()]
 
 for name, rows in (("generated", gen), ("lookups", real)):

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"cmp"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
@@ -64,6 +65,7 @@ type Agent struct {
 	cusage      usage                    // their usage
 	running     map[string]*proc         // agents by name; nil while starting or finished
 	writing     map[string]chan struct{} // first messages being written to the cache
+	cached      map[[32]byte]time.Time   // compactions' first messages in the cache, by hash: when last written or read
 	modelList   []modelInfo              // Claude Code's, once asked
 	limits      map[string]window        // the plan's usage limits, by name: see limits.go
 	usageAsked  time.Time                // when get_usage was last asked
@@ -113,6 +115,41 @@ func (a *Agent) writeOnce(ctx context.Context, prefix string) (release func()) {
 		a.mu.Unlock()
 		close(ch)
 	}
+}
+
+// cachedFor is how long a first message is taken to stay cached after it
+// was last written or read: Claude Code's cache entries live 5 minutes.
+const cachedFor = 4 * time.Minute
+
+// inCache reports whether the cache holds a compaction's first message,
+// waiting for a call that is writing it to begin its response; a call that
+// goes on to read it keeps it there (noteCached).
+func (a *Agent) inCache(ctx context.Context, prefix string) bool {
+	a.mu.Lock()
+	ch, writing := a.writing[prefix]
+	at, ok := a.cached[sha256.Sum256([]byte(prefix))]
+	a.mu.Unlock()
+	if writing {
+		select {
+		case <-ch:
+			return true
+		case <-ctx.Done():
+			return false
+		}
+	}
+	return ok && time.Since(at) < cachedFor
+}
+
+// noteCached notes that a compaction's first message was written or read
+// just now.
+func (a *Agent) noteCached(prefix string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.cached == nil {
+		a.cached = map[[32]byte]time.Time{}
+	}
+	maps.DeleteFunc(a.cached, func(_ [32]byte, at time.Time) bool { return time.Since(at) >= cachedFor })
+	a.cached[sha256.Sum256([]byte(prefix))] = time.Now()
 }
 
 func (a *Agent) takeCompactions() (int, usage) {
@@ -641,6 +678,17 @@ const viewGoesOn = `The view goes on in the next message, with the input: reply 
 // step leaves less to write anew each time. Measured by TestCacheReplay.
 const ccheckpoint = 8
 
+// creuse is how many lines short of its own first message a compaction's
+// first message may end and still be one cached already (compactView).
+// Further back, the lines between them, written by every call that reuses
+// it, cost more than writing the newer one once: one checkpoint and two did
+// about as well in TestCacheReplay and on a real chat's import, three and
+// more worse.
+const creuse = ccheckpoint
+
+// viewHere follows a first message sent with the rest of the view.
+const viewHere = `The view goes on here, in this same message, with the input: answer the input, not with "ok".`
+
 // viewMessages renders the view's two messages around input. A nil first
 // message: fewer lines than one checkpoint.
 func viewMessages(lines []string, input []block) (first, second []block) {
@@ -658,14 +706,44 @@ func splitView(lines []string, stable, every int, input []block) (first, second 
 		}
 		return "<chat>\n" + strings.Join(ls, "\n") + "\n</chat>"
 	}
-	if j := slices.IndexFunc(lines[:min(stable, len(lines))], func(l string) bool { return strings.HasSuffix(l, unbuilt) }); j >= 0 {
-		stable = j
-	}
-	base := min(stable, len(lines)) / every * every
+	base := viewCut(lines, stable, every)
 	if base > 0 {
 		first = []block{textBlock(chat(lines[:base]) + "\n" + viewGoesOn)}
 	}
 	return first, append([]block{textBlock(chat(lines[base:]))}, input...)
+}
+
+// viewCut is where splitView ends the first message.
+func viewCut(lines []string, stable, every int) int {
+	if j := slices.IndexFunc(lines[:min(stable, len(lines))], func(l string) bool { return strings.HasSuffix(l, unbuilt) }); j >= 0 {
+		stable = j
+	}
+	return min(stable, len(lines)) / every * every
+}
+
+// compactView splits a compaction's view as splitView does, unless the cache
+// holds the first message, or one up to creuse lines shorter (inCache): then
+// the call sends it with the rest in one message, and Claude Code's mark at
+// that message's end reads it back. The API looks back for a cached prefix at
+// the ends of the 20 blocks before a mark, while a first message sent alone,
+// to be answered "ok" (ack), costs a request of its own, and one written
+// anew costs the whole message again: during an import, when the view
+// changes with nearly every line built, most first messages were written
+// for one or two calls. TestCacheReplay measures it.
+func (a *Agent) compactView(ctx context.Context, prefix string, lines []string, stable int, task []block) (first, rest []block) {
+	first, rest = splitView(lines, stable, ccheckpoint, task)
+	if first == nil || len(rest) > 16 { // the blocks after it, past the API's lookback
+		return first, rest
+	}
+	cut := viewCut(lines, stable, ccheckpoint)
+	for n := cut; n > 0 && n >= cut-creuse; n -= ccheckpoint {
+		f, r := splitView(lines, n, ccheckpoint, task)
+		if key := prefix + "\x00" + f[0].Text; a.inCache(ctx, key) {
+			a.noteCached(key)
+			return nil, slices.Concat(f, []block{textBlock(viewHere)}, r)
+		}
+	}
+	return first, rest
 }
 
 // ack sends the view's first message and waits out the model's "ok",
@@ -725,11 +803,14 @@ func (a *Agent) Compact(ctx context.Context, lines []string, stable int, task []
 		a.cusage.add(u)
 		a.mu.Unlock()
 	}()
-	first, second := splitView(lines, stable, ccheckpoint, task)
+	first, rest := a.compactView(p.ctx, p.prefix, lines, stable, task)
 	if err := a.ack(p, first, &u, nil); err != nil {
 		return "", err
 	}
-	p.send(second...)
+	if first != nil {
+		a.noteCached(p.prefix + "\x00" + first[0].Text)
+	}
+	p.send(rest...)
 	best, acks := "", 0
 	for try := 1; ; {
 		e, ok := p.next()

@@ -78,3 +78,57 @@ about 83%, none saw over 32 KB, and every turn sees the latest reply as
 its own line. Turns read about 70% either way: without lookback, a turn
 writes the lines after its first message's 64-line checkpoint anew.
 UniiChat, with lookback, asks 95% of both.
+
+## The ack, priced
+
+A compaction sends its view's first part alone, waits for the model's
+"ok" (the ack), then sends the rest with its task. On a copy of the chat
+during that import, 117 Sonnet results cost $1.81: 63 lines at $0.0287
+each, and 54 acks made 65% of it. 26 of the acks wrote 7k to 15k tokens
+anew, because the compactions' view changed with nearly every line built,
+and most first messages were used by one or two calls.
+
+What Claude Code's caching allows, probed with `claude -p` in stream-json
+on Haiku and Sonnet 5.5 (Claude Code 2.1), reading each result's
+`cache_creation_input_tokens` and `cache_read_input_tokens`:
+
+- An entry is written only where Claude Code marks: the system prompt and
+  the end of each of the last two messages. A first message sent alone is
+  marked at its end.
+- A mark reads back a prefix cached at the end of an earlier block, in
+  its own message or before it. One message of three blocks (a first
+  message cached by another call's ack, the rest of the view, the task)
+  read the whole first message back, and Sonnet answered the task, not
+  "ok".
+- One message never writes an entry at a block inside it: the same three
+  blocks sent twice with nothing cached read nothing back.
+- Two user messages sent at once run as two turns, so they give no mark
+  for free. Two acks in a row, a cached first part and then a second, are
+  not shared between calls when the model thinks: its "ok" differs.
+
+`TestCacheReplay`'s fake now marks block by block, with the API's lookback
+of 20 blocks, and prices requests (writes 1.25 times input, reads 0.1, the
+system prompt read by every request, 4 tokens out for an ack). Cost of
+each way, against acking every call at 8-line checkpoints, in the replay
+and in a replay of that chat's import from a copy:
+
+| way | replay | the chat's import |
+|---|---|---|
+| no ack: the whole view in one message | 1.84 | 1.13 to 1.32 |
+| ack every call, checkpoints of 4, 16, 32, 64 lines | 1.02, 1.05, 1.16, 1.45 | 16: 0.93 |
+| first message fixed until the compactions' view batches | 1.20 | |
+| one call acks; the others send its first message with the rest | 0.83 | 0.92 to 0.95 |
+| as above, also reusing a cached first message 8 lines shorter | 0.84 | 0.81 to 0.83 |
+| as above, 16 lines shorter | 0.87 | 0.79 to 0.80 |
+
+What shipped is the fifth row (`compactView`): a compaction whose first
+message, or one a checkpoint shorter, was written or read in the last 4
+minutes (Claude Code's entries live 5), or is being written by a call
+whose response has begun, sends it as the first block of one message with
+the rest; any other acks it as before. Turns are unchanged.
+
+Live, from the same copy for 50 seconds: 61 lines at $0.0170 each, acks
+included, against $0.0287; 17 acks against 54 for 63 lines; no compaction
+answered "ok"; no first message served more than 6 calls. With 16 lines
+of reuse, a run of 75 seconds gave $0.0218, one stretch of 13 calls each
+writing 4k to 6k tokens behind a short first message.

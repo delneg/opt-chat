@@ -346,9 +346,10 @@ function loadDraft(to) {
 }
 
 // restoreTo puts a message not sent back where it was typed: in the bar,
-// or in the draft that waits for to.
+// or in the draft that waits for to. One to an agent gone goes in the bar.
 function restoreTo(to, text, files) {
   to = to || '';
+  if (to && !(S.status?.subs || []).some(s => s.name === to)) to = target();
   if (to === target()) { restore(text, files); return; }
   const d = drafts.get(to) || { text: storedDraft(to), atts: [], paths: [], skipped: new Set(), chosen: new Set() };
   const back = (files || []).map(f => ({ ...f, id: ++uploadSeq, status: 'done', url: kindOf(f) === 'image' ? '/' + f.name : null, promise: Promise.resolve() }));
@@ -541,8 +542,7 @@ async function submit(now) {
   if (submitting) return;
   const to = target();
   if (!inputEl.value.trim() && !S.atts.length) {
-    if (to) { if (fullBusy()) stopFull(); } // full screen, Enter on an empty bar interrupts the agent, as Esc does
-    else if (now && S.queue.length) send({ t: 'now' });
+    if (!to && now && S.queue.length) send({ t: 'now' }); // full screen: nothing; Esc interrupts the agent, so a double Enter never stops it
     return;
   }
   if (S.conn !== 'open') { notice('warn', 'Not connected: your message stays in the input until opt-chat is back.'); return; }
@@ -749,7 +749,8 @@ function upload(file) {
     url: file.type.startsWith('image/') ? URL.createObjectURL(file) : null,
   };
   if (inputEl) insertAtCaret(att.at); // before it is listed: the input's change can't take it off
-  const update = patch => set({ atts: S.atts.map(a => a.id === id ? Object.assign(a, patch) : a) });
+  // att itself, wherever it waits: in the bar, in another's draft, or taken off
+  const update = patch => { Object.assign(att, patch); set({ atts: S.atts.slice() }); };
   const blob = att.url;
   att.promise = new Promise(resolve => {
     const xhr = att.xhr = new XMLHttpRequest();
@@ -1188,9 +1189,9 @@ function WorkMsg({ m }) {
 // logs it: one line, set apart from Opt's own work; a click shows it whole.
 function RelayMsg({ m, name, text }) {
   const [open, setOpen] = useKept('r' + m.i, false);
-  const { body, marks } = useMemo(() => splitMarks(text), [text]);
+  const att = text.match(/(?:^|\n\n)Attached: ([^\n]*)$/); // the server names its attachments last
+  const body = att ? text.slice(0, att.index) : text, files = att ? ' + ' + att[1] : '';
   const line = oneLine(body, 160), long = line !== body;
-  const files = marks.length ? ` + ${marks.map(mk => mk.name).join(', ')}` : '';
   return html`<div class="msg relay" title=${when(m.date)}><span class="mark" aria-hidden="true">→</span><div class="body">
     <button class="who" title=${`[${name}] full screen (Alt+O)`} onClick=${() => goFull(name)}>user → [${name}]</button>
     ${long ? html`<span class="text" role="button" tabindex="0" aria-expanded=${open} onClick=${() => { if (!getSelection().toString()) setOpen(!open); }}>${open ? body : line}</span>`
@@ -1456,7 +1457,7 @@ function answer(q, [, allow, always]) {
 function askKey(e) {
   const q = shownAsk();
   if (!q || S.picker || S.lightbox || S.help || e.metaKey || e.ctrlKey || e.altKey) return false;
-  if (!e.target.closest?.('.ask')) return false;
+  if (!e.target.closest?.('.dock .ask')) return false;
   const choices = askChoices(q);
   let sel = Math.min(S.askSel, choices.length - 1);
   switch (e.key) {
@@ -1870,7 +1871,7 @@ async function startVoice() {
 // stopVoice ends the recording, and sends it if keep: now, past the queue,
 // as Cmd+Enter sends.
 async function stopVoice(keep, now) {
-  const r = rec;
+  const r = rec, to = target();
   rec = null;
   if (!r) { if (S.voice === 'starting') set({ voice: null }); return; }
   clearTimeout(r.cap);
@@ -1899,6 +1900,7 @@ async function stopVoice(keep, now) {
   // Into the input, after what it holds, and sent with it.
   set({ voice: null, atts: S.atts.concat({ name: at.name, orig: at.orig, kind: at.kind, size: at.size, id: ++uploadSeq, status: 'done', promise: Promise.resolve() }) });
   if (at.error) notice('warn', `Voice message not transcribed (${at.error}): it is in the input as a file, to send as one or take off (×).`);
+  else if (target() !== to) notice('warn', `Voice message not sent: [${to}] is gone. It is in the input, to send or take off (×).`); // the bar left it meanwhile
   else submit(now);
 }
 
@@ -2169,8 +2171,7 @@ function SubAction({ s }) {
   const live = ['starting', 'working', 'compacting', 'resting'].includes(s.state);
   const act = e => {
     e.stopPropagation();
-    send({ t: live ? 'stopAgent' : 'clearAgent', name: s.name });
-    if (!live && S.full === s.name) leaveFull(true);
+    send({ t: live ? 'stopAgent' : 'clearAgent', name: s.name }); // full screen, checkFull goes back to Opt once it is gone
     if (!live && S.agent?.name === s.name) closeAgent();
   };
   return html`<button class=${'act' + (live ? ' stop' : '')} onClick=${act} onKeyDown=${e => e.stopPropagation()}
@@ -2249,7 +2250,8 @@ function AgentView({ a, s, now }) {
 let fullToEnd = false; // scroll the agent's view to its end at the next render
 
 function fullSub() { return S.full ? (S.status?.subs || []).find(s => s.name === S.full) : null; }
-function fullBusy() { const s = fullSub(); return !!s && (s.state === 'working' || s.state === 'starting'); }
+function atWork(s) { return s?.state === 'working' || s?.state === 'starting'; }
+function fullBusy() { return atWork(fullSub()); }
 function stopFull() { if (S.full) send({ t: 'stopAgent', name: S.full }); }
 
 function goFull(name) {
@@ -2257,7 +2259,7 @@ function goFull(name) {
   if (!(S.status?.subs || []).some(s => s.name === name)) { notice('warn', `[${name}] is not among this run's agents.`); return; }
   if (S.voice) { notice('warn', 'A voice message is recording: send it (Alt+K) or drop it (Esc) first.'); return; }
   saveDraft(target());
-  set({ full: name, ctx: null, drawer: false });
+  set({ full: name, ctx: null, drawer: false, askSel: 0 });
   if (S.agent?.name !== name) openAgent(name);
   loadDraft(name);
   fullToEnd = true;
@@ -2273,21 +2275,31 @@ function leaveFull(force) {
     stopVoice(false);
   }
   saveDraft(S.full);
-  set({ full: null, ctx: null });
+  set({ full: null, ctx: null, askSel: 0 });
   loadDraft('');
   try { sessionStorage.removeItem('full'); } catch {}
   return true;
 }
 
-// checkFull goes back to Opt when the agent full screen is gone (cleared).
+// checkFull goes back to Opt when the agent full screen is gone (cleared),
+// and forgets the drafts of agents gone.
 function checkFull() {
-  if (!S.full || !S.status || fullSub()) return;
+  if (!S.status) return;
+  const subs = S.status.subs || [], gone = name => name && !subs.some(s => s.name === name);
+  for (const name of drafts.keys()) if (gone(name)) dropDraft(name);
+  if (!gone(S.full)) return;
   const name = S.full;
   leaveFull(true);
-  const left = drafts.get(name)?.text.trim(); // nobody to send it to now: shown, to copy
+  const left = dropDraft(name); // nobody to send it to now: shown, to copy
+  notice('info', `[${name}] is gone from the agents (cleared): back to Opt.${left ? ` Your message to it, not sent:\n${left}` : ''}`);
+}
+
+// dropDraft forgets name's draft, and gives back its text.
+function dropDraft(name) {
+  const text = drafts.get(name)?.text.trim();
   drafts.delete(name);
   try { sessionStorage.removeItem('draft:' + name); } catch {}
-  notice('info', `[${name}] is gone from the agents (cleared): back to Opt.${left ? ` Your message to it, not sent:\n${left}` : ''}`);
+  return text;
 }
 
 // pickFull is the agent Alt+O puts full screen: the one open in the rail,
@@ -2295,7 +2307,7 @@ function checkFull() {
 function pickFull() {
   const subs = S.status?.subs || [];
   if (S.agent && subs.some(s => s.name === S.agent.name)) return S.agent.name;
-  const work = subs.filter(s => s.state === 'working' || s.state === 'starting');
+  const work = subs.filter(atWork);
   return (work.length ? work : subs).at(-1)?.name;
 }
 
@@ -2336,7 +2348,7 @@ function fullState(s, now) {
 // and its steps, in a scroller and messages like the chat's.
 function AgentFull({ a, s }) {
   const ref = useRef(), stick = useRef(true);
-  const busy = !!s && (s.state === 'working' || s.state === 'starting');
+  const busy = atWork(s);
   const now = useClock(!!s && (busy || s.state === 'resting'));
   const list = useMemo(() => agentRows(a, busy, S.notices.filter(n => n.who === a.name)), [a.steps, busy, S.notices]);
   const toBottom = () => { const el = ref.current; if (el) el.scrollTop = el.scrollHeight; };
@@ -2396,12 +2408,12 @@ function CtxSection({ x, k }) {
 // FullBar is the agent's state above the bar, in the spinner's place, and
 // a small word on Opt's: Opt goes on with its own work meanwhile.
 function FullBar({ s }) {
-  const busy = !!s && (s.state === 'working' || s.state === 'starting');
+  const busy = atWork(s);
   const optBusy = !!S.turn.phase, optAsks = S.asks.some(q => q.who !== S.full);
   const now = useClock(busy || s?.state === 'resting');
   const [cls, label, took] = s ? fullState(s, now) : ['done', 'not in this run'];
   const meta = busy ? [took, s.steps && count(s.steps, 'step'), s.context && `${k(s.context)} context`].filter(Boolean) : [];
-  const opt = optAsks ? '? Opt waits for your answer' : optBusy ? html`<${Glyph}/>Opt working` : '';
+  const opt = optAsks ? '? a question waits in Opt\'s chat' : optBusy ? html`<${Glyph}/>Opt working` : '';
   return html`<div class=${'spinner fullbar st-' + cls}>
     ${busy
       ? html`<span><${Glyph}/>[${S.full}] ${label}…</span><span class="meta">(${meta.map(x => x + ' · ')}<button title="stop it now" onClick=${stopFull}>esc to interrupt</button>)</span>`
@@ -2646,7 +2658,7 @@ addEventListener('keydown', e => {
   if (e.target === inputEl && e.key.length === 1) typedAt = performance.now();
   if (e.key === 'Tab' && !e.shiftKey && e.target === inputEl && shownAsk() && !S.picker && !S.mention?.items.length && !suggestions(inputEl).length) {
     e.preventDefault(); // to the question
-    document.querySelector('.ask')?.focus();
+    document.querySelector('.dock .ask')?.focus();
     return;
   }
   if (e.altKey && e.code === 'KeyK' && !e.metaKey && !e.ctrlKey) { // a voice message
@@ -2702,7 +2714,7 @@ addEventListener('keydown', e => {
     if (S.picker) closePicker(); else openPicker();
     return;
   }
-  const mine = e.target === inputEl || e.target === document.body || e.target.closest?.('.ask, .panel'); // not another field's
+  const mine = e.target === inputEl || e.target === document.body || e.target.closest?.('.dock .ask, .panel'); // not another field's
   if (e.key === 'Tab' && e.shiftKey && mine && !S.picker && !e.metaKey && !e.ctrlKey && !e.altKey) {
     e.preventDefault();
     e.stopPropagation();

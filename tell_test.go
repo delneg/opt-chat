@@ -310,3 +310,14 @@ func TestAgentContext(t *testing.T) {
 		t.Fatal("a context for no subagent")
 	}
 }
+
+// Each tell in one message says whose it is: Opt's after the user's gets
+// its head again.
+func TestTellBlocks(t *testing.T) {
+	ts := []tell{{text: "a"}, {user: true, text: "b", msg: []block{textBlock("b")}}, {text: "c"}, {text: "d"}}
+	got := tellBlocks(ts, "")
+	want := "a\n\n" + userHead + "b\n\n" + optHead + "c\n\nd"
+	if len(got) != 1 || got[0].Text != want {
+		t.Fatalf("got %+v", got)
+	}
+}

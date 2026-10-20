@@ -81,7 +81,8 @@ A turn's input may start with "[opt-chat] Subagents at work now:", which
 opt-chat adds, not the user: those are running, so never start one again for
 the same task. A message "[user → Name] ..." is one the user sent subagent
 [Name] directly, from the page: it starts no turn of yours, and [Name]
-answers the user, not you. Don't redo or undo what it asked.
+answers the user, though a task it was at work on still reports to you.
+Don't redo or undo what it asked.
 
 # Subagents
 
@@ -92,7 +93,8 @@ says, since Opt may have given you just part of the work. Your final reply is
 your report to Opt. Opt may send you more messages, even while you work:
 answer the last. The user may write to you directly, in a message starting
 "The user's message to you": do what it asks. One that comes after your
-report sets you to work for the user: your reply goes to them, not to Opt.
+report sets you to work for the user: your reply goes to them, not to Opt,
+unless Opt writes to you too.
 
 # Compactions
 

@@ -94,12 +94,8 @@ func claudeConfigDir() string {
 
 // resumeNote begins the message that resumes a subagent's session, its
 // record in state: one whose call ended after its report, or one stopped
-// mid-task.
-func resumeNote(state string) string { return resumeWhy(state) + "Opt's message:\n" }
-
-// resumeWhy is resumeNote without the head of the message that follows:
-// Opt's, or the user's.
-func resumeWhy(state string) string {
+// mid-task. Opt's message or the user's follows, with its head.
+func resumeNote(state string) string {
 	if state == "ended" || state == "resting" { // resting: its call ended before the record said so
 		return "Your call had ended after your report; opt-chat resumed it from its saved session. "
 	}
@@ -199,8 +195,10 @@ func (a *Agent) resumeCut(names []string) {
 		out, ok := a.resume(name, []tell{{text: note}}, true)
 		a.mu.Unlock()
 		switch {
-		case user: // the user's turn: the page alone hears of it
-			a.chat.hub.notice("info", "[%s] %s", name, out)
+		case user: // the user's turn: Opt never hears of it
+			if !ok {
+				a.chat.hub.notice("warn", "[%s] %s", name, out)
+			}
 		case ok:
 			back = append(back, "["+name+"]")
 		default:

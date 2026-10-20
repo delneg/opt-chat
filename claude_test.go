@@ -974,7 +974,7 @@ func TestTellResumes(t *testing.T) {
 	if got := a.Tell("Rest", "third"); !strings.HasPrefix(got, "Resuming [Rest]") { // its call ended: its saved session goes on
 		t.Fatal(got)
 	}
-	if got := report(); !strings.Contains(got, fmt.Sprintf("%q", resumeNote("ended")+"third")) {
+	if got := report(); !strings.Contains(got, fmt.Sprintf("%q", resumeNote("ended")+"Opt's message:\nthird")) {
 		t.Fatalf("third report: %q", got)
 	}
 	if all := calls(); len(all) != 2 || flagOf(all[1], "--resume") != flagOf(all[0], "--session-id") {
@@ -1015,7 +1015,7 @@ func TestResumeAgent(t *testing.T) {
 	}
 	select {
 	case got := <-reported:
-		if !strings.Contains(got, fmt.Sprintf("answer to %q", resumeNote("stopped")+"go on")) {
+		if !strings.Contains(got, fmt.Sprintf("answer to %q", resumeNote("stopped")+"Opt's message:\ngo on")) {
 			t.Fatalf("report: %q", got)
 		}
 	case <-time.After(10 * time.Second):

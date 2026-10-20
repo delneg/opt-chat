@@ -215,7 +215,7 @@ func (a *Agent) agentContext(name string) (contextReply, bool) {
 	if rec.Loop != nil {
 		m = append(m, fmt.Sprintf("Loop: %q in %s, at most %d turns", rec.Loop.Command, rec.Loop.Dir, rec.Loop.max()))
 	}
-	if user || rec.User {
+	if user {
 		m = append(m, "Its turn now answers the user, not Opt")
 	}
 	add("Model", strings.Join(m, "\n"))

@@ -141,8 +141,9 @@ const (
 	userHead = "The user's message to you, from the page:\n"
 )
 
-// tellBlocks is ts as one message: Opt's as they are, after head, and
-// each of the user's after userHead.
+// tellBlocks is ts as one message: each of the user's after userHead, and
+// Opt's as they are, the first after head, one after the user's after
+// optHead.
 func tellBlocks(ts []tell, head string) []block {
 	var out []block
 	for i, t := range ts {
@@ -152,8 +153,10 @@ func tellBlocks(ts []tell, head string) []block {
 		switch {
 		case t.user:
 			out = append(append(out, textBlock(userHead)), t.msg...)
-		case i == 0 || ts[i-1].user:
+		case i == 0:
 			out = append(out, textBlock(head+t.text))
+		case ts[i-1].user:
+			out = append(out, textBlock(optHead+t.text))
 		default:
 			out = append(out, textBlock(t.text))
 		}
@@ -276,6 +279,7 @@ func (a *Agent) tell(name string, ts ...tell) (string, bool) {
 	}
 	if !p.send(msg...) {
 		delete(a.running, name)
+		delete(a.userTurn, name)
 		return fmt.Sprintf("[%s] has just ended.", name), false
 	}
 	if resting {
@@ -319,7 +323,7 @@ func (a *Agent) resume(name string, ts []tell, auto bool) (string, bool) {
 	case a.life.Err() != nil || a.cutting:
 		return "opt-chat is quitting.", false
 	}
-	msg := joinText(append([]block{textBlock(resumeWhy(rec.State))}, tellBlocks(ts, "Opt's message:\n")...))
+	msg := joinText(append([]block{textBlock(resumeNote(rec.State))}, tellBlocks(ts, "Opt's message:\n")...))
 	if auto {
 		msg = tellBlocks(ts, "")
 	} else {
@@ -458,9 +462,6 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 			a.chat.hub.notice("info", "[%s] stopped", name)
 			a.chat.Log("work", fmt.Sprintf("[%s] stopped: the user stopped it from the page before it finished, so it sends no report. %s\n\nRan on %s. Full chat: zoom(%q)",
 				name, resumeHint(name), strings.TrimSpace(model+" "+effort), name))
-			return
-		case now.Cut: // the next start resumes it: no report
-			a.chat.hub.notice("info", "[%s] cut off: it goes on when opt-chat starts again", name)
 			return
 		case state == "stopped":
 			how, why := "quit", ""
@@ -664,8 +665,8 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 		}
 		user := a.userTurn[name]
 		delete(a.userTurn, name)
+		a.note(name, func(r *agentRecord) { r.State, r.Resumes, r.User = "resting", 0, false }) // under a.mu: a tell now comes after
 		a.mu.Unlock()
-		a.note(name, func(r *agentRecord) { r.State, r.Resumes, r.User = "resting", 0, false })
 		if user { // its reply was the user's, in its log: Opt gets no report
 			a.chat.hub.notice("info", "[%s] answered you", name)
 		} else {

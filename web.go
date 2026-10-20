@@ -7,6 +7,7 @@ import (
 	"crypto/subtle"
 	"embed"
 	"encoding/json/v2"
+	"errors"
 	"fmt"
 	"io/fs"
 	"net"
@@ -269,9 +270,9 @@ func (w *webServer) upload(rw http.ResponseWriter, r *http.Request) {
 
 // request is what a page sends on its WebSocket.
 type request struct {
-	T      string       `json:"t"` // send, edit, remove, pull, now, stop, history, paths, memview, zoom
+	T      string       `json:"t"` // send, tellAgent, edit, remove, pull, now, stop, history, paths, memview, zoom, steps, agentContext, ...
 	Text   string       `json:"text"`
-	Files  []attachment `json:"files"`  // send: uploaded
+	Files  []attachment `json:"files"`  // send: uploaded; tellAgent takes the fields of send it uses, as send means them
 	Paths  []string     `json:"paths"`  // send: typed, to attach; null: not looked for yet
 	Skip   []string     `json:"skip"`   // send: typed, not to attach
 	Chosen []string     `json:"chosen"` // send: typed and hidden, to attach
@@ -288,7 +289,7 @@ type request struct {
 	Allow  bool         `json:"allow"`  // answer: yes
 	Always bool         `json:"always"` // answer: yes, and don't ask again
 	Action string       `json:"action"` // mcp: on, off, reconnect, signin; skills: set; plugins: on, off; empty: list
-	Name   string       `json:"name"`   // mcp, skills: which; steps: the subagent's
+	Name   string       `json:"name"`   // mcp, skills: which; steps, tellAgent, agentContext: the subagent's
 	State  string       `json:"state"`  // skills: on, off, name-only, user-invocable-only
 }
 
@@ -446,33 +447,36 @@ func (w *webServer) serve(req request) any {
 		if reply, ok := w.command(h.agent, req); ok {
 			return reply
 		}
-		failed := func(err error) any { // not sent: sent again, it is tried again
-			w.forget(req.Key)
-			return failedReply{T: "failed", Seq: req.Seq, S: "Nothing sent: " + err.Error()}
-		}
-		ups, err := c.uploaded(req.Files)
+		ups, atts, err := w.attachments(&req)
 		if err != nil {
-			return failed(err)
+			return w.failed(req, err)
 		}
-		if req.Paths == nil { // sent before the page looked: the files it names, as the page would
-			req.Paths = slices.DeleteFunc(filePaths(req.Text), func(p string) bool {
-				return slices.Contains(req.Skip, p) || hidden(p) && !slices.Contains(req.Chosen, p)
-			})
-		}
-		typed, err := c.attachPaths(req.Paths)
-		if err != nil {
-			return failed(err)
-		}
-		if strings.TrimSpace(req.Text) == "" && len(ups)+len(typed) == 0 {
+		if strings.TrimSpace(req.Text) == "" && len(atts) == 0 {
 			return sentReply{T: "sent", Seq: req.Seq} // nothing to send
 		}
-		m := c.compose(req.Text, append(ups, typed...))
+		m := c.compose(req.Text, atts)
 		m.uploads = ups
 		if req.Now {
 			h.inputNow(m)
 		} else {
 			h.input(m)
 		}
+		return sentReply{T: "sent", Seq: req.Seq}
+	case "tellAgent": // the user talks to a subagent, as to Opt: a send's text and files, to it
+		if req.Key != "" && !w.firstSend(req.Key) {
+			return sentReply{T: "sent", Seq: req.Seq}
+		}
+		_, atts, err := w.attachments(&req)
+		if err != nil {
+			return w.failed(req, err)
+		}
+		if strings.TrimSpace(req.Text) == "" && len(atts) == 0 {
+			return sentReply{T: "sent", Seq: req.Seq}
+		}
+		if out, ok := h.agent.TellUser(req.Name, req.Text, atts); !ok {
+			return w.failed(req, errors.New(out))
+		}
+		c.hub.setStatus(currentStatus(c, h.agent))
 		return sentReply{T: "sent", Seq: req.Seq}
 	case "edit":
 		if !h.edit(req.ID, req.Text) { // the edit is not lost: back to the input
@@ -552,6 +556,31 @@ func (w *webServer) serve(req request) any {
 	return nil
 }
 
+// failed answers a send that sent nothing: sent again, it is tried again.
+func (w *webServer) failed(req request, err error) any {
+	w.forget(req.Key)
+	return failedReply{T: "failed", Seq: req.Seq, S: "Nothing sent: " + err.Error()}
+}
+
+// attachments are a send's: those uploaded, and with them those its typed
+// paths name.
+func (w *webServer) attachments(req *request) (ups, all []attachment, err error) {
+	c := w.c
+	if ups, err = c.uploaded(req.Files); err != nil {
+		return nil, nil, err
+	}
+	if req.Paths == nil { // sent before the page looked: the files it names, as the page would
+		req.Paths = slices.DeleteFunc(filePaths(req.Text), func(p string) bool {
+			return slices.Contains(req.Skip, p) || hidden(p) && !slices.Contains(req.Chosen, p)
+		})
+	}
+	typed, err := c.attachPaths(req.Paths)
+	if err != nil {
+		return nil, nil, err
+	}
+	return ups, append(slices.Clip(ups), typed...), nil
+}
+
 // command runs a send that is a command, its answer going to every page;
 // false: a message. One that failed comes back to the page's input.
 func (w *webServer) command(a *Agent, req request) (any, bool) {
@@ -570,7 +599,7 @@ func (w *webServer) command(a *Agent, req request) (any, bool) {
 // slow are the requests that ask Claude Code, which can take seconds.
 func slow(a *Agent, req request) bool {
 	switch req.T {
-	case "models", "mcp", "skills", "plugins", "files", "usage":
+	case "models", "mcp", "skills", "plugins", "files", "usage", "agentContext": // agentContext reads a session file, which can be big
 		return true
 	case "send":
 		return asks(a, req.Text)
@@ -581,6 +610,12 @@ func slow(a *Agent, req request) bool {
 func (w *webServer) serveSlow(ctx context.Context, req request) any {
 	a := w.h.agent
 	switch req.T {
+	case "agentContext": // the full-screen view's: what the subagent was given
+		name := agentName(req.Name)
+		if r, ok := a.agentContext(name); ok {
+			return r
+		}
+		return noticeUpdate{T: "notice", Level: "warn", S: fmt.Sprintf("No subagent [%s].", name)}
 	case "usage": // its answer goes in the bar
 		if err := a.askUsage(ctx); err != nil {
 			dim("usage: " + err.Error())

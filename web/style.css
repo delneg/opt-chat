@@ -63,7 +63,10 @@ a { color: var(--blue); }
 /* tool calls */
 .msg.tool { margin-bottom: .8em; }
 .msg.tool > .mark { color: var(--green); }
-.msg.tool.run > .mark { animation: blink 1s steps(2, start) infinite; color: var(--dim); }
+.msg.tool.run > .mark { color: var(--dim); }
+/* a mark moves only while its thing is in progress: a tool call with no
+   result yet, a reply streaming, a subagent at work; still once done */
+.msg.tool.run > .mark, .msg.opt.live > .mark, .dot.moving { animation: pulse 1s ease-in-out infinite; }
 .msg.tool.cut > .mark { color: var(--red); }
 .tool .head { cursor: pointer; }
 .tool .name { font-weight: 600; }
@@ -81,8 +84,8 @@ a { color: var(--blue); }
 .diff .del { color: var(--red); }
 .diff .add { color: var(--green); }
 .cut-note { color: var(--red); }
-@keyframes blink { to { visibility: hidden; } }
-@media (prefers-reduced-motion: reduce) { .msg.tool.run > .mark { animation: none; } }
+@keyframes pulse { 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) { .msg.tool.run > .mark, .msg.opt.live > .mark, .dot.moving { animation: none; } }
 
 /* markdown: a reply's own markup stays inside it (contain), whatever it is */
 .md { contain: paint; }
@@ -148,6 +151,17 @@ a { color: var(--blue); }
 .dock { flex: none; border-top: 1px solid transparent; padding-bottom: .4em; }
 .spinner { color: var(--accent); padding: .35em 0 .15em; display: flex; gap: 1ch; flex-wrap: wrap; }
 .spinner .glyph { display: inline-block; width: 1.5ch; }
+/* the spinner's star (Glyph): its glyphs stacked, each shown 120 ms in
+   turn, there and back, as Claude Code's; the colour shimmers gently */
+.spin { display: inline-grid; width: 1.5ch; animation: shimmer 2.4s ease-in-out infinite alternate; }
+.spin > i { grid-area: 1 / 1; font-style: normal; text-align: center; opacity: 0; animation: frame 1.2s linear infinite; animation-delay: calc(var(--k) * 120ms - 1.2s); }
+@keyframes frame { 0%, 9.99% { opacity: 1; } 10%, 100% { opacity: 0; } }
+@keyframes shimmer { to { color: color-mix(in srgb, currentColor 55%, var(--bg)); } }
+@media (prefers-reduced-motion: reduce) {
+  .spin { animation: none; }
+  .spin > i { animation: none; }
+  .spin > i.rest { opacity: 1; }
+}
 .spinner .meta { color: var(--dim); }
 .spinner .meta button:hover { color: var(--fg); }
 .queue { padding: .1em 0 .3em; }
@@ -190,7 +204,6 @@ a { color: var(--blue); }
 .rec .keys button:hover { color: var(--fg); }
 .rec kbd { font-family: inherit; background: var(--chip); border-radius: 3px; padding: 0 .5ch; color: var(--dim); }
 .rec .quiet { flex-basis: 100%; color: var(--yellow); font-size: .85em; }
-@keyframes pulse { 50% { opacity: .35; } }
 @media (prefers-reduced-motion: reduce) { .rec .dot { animation: none; } }
 /* a voice message in the chat: it plays, and its words follow */
 .voice .player { display: flex; align-items: center; gap: 1ch; color: var(--dim); font-size: .9em; }
@@ -320,11 +333,11 @@ a { color: var(--blue); }
 .rail-meta { color: var(--faint); padding: .45em 1.5ch; border-bottom: 1px solid var(--border); }
 .cards { overflow-y: auto; padding: .7em 1ch; display: flex; flex-direction: column; gap: .35em; }
 .card { display: block; width: 100%; text-align: left; padding: .55em 1.2ch .6em; border-radius: 6px; min-width: 0; cursor: pointer; }
-.rail .act { flex: none; color: var(--faint); font-size: .92em; padding: 0 .6ch; border-radius: 4px; box-shadow: 0 0 0 1px var(--border); }
-.rail .act:hover, .rail .act:focus-visible { color: var(--fg); background: var(--bg); }
-.rail .act.stop:hover, .rail .act.stop:focus-visible { color: var(--red); }
+:is(.rail, .full-head) .act { flex: none; color: var(--faint); font-size: .92em; padding: 0 .6ch; border-radius: 4px; box-shadow: 0 0 0 1px var(--border); }
+:is(.rail, .full-head) .act:hover, :is(.rail, .full-head) .act:focus-visible { color: var(--fg); background: var(--bg); }
+:is(.rail, .full-head) .act.stop:hover, :is(.rail, .full-head) .act.stop:focus-visible { color: var(--red); }
 .rail-head .act { margin-left: auto; }
-.rail-head .act + .x { margin-left: 0; }
+.rail-head .act + .x, .rail-head .act + .act { margin-left: 0; }
 .card:hover, .card:focus-visible { background: var(--bg); outline: none; box-shadow: 0 0 0 1px var(--border); }
 .card .top { display: flex; align-items: baseline; gap: 1ch; min-width: 0; }
 .card .name { font-weight: 600; }
@@ -334,20 +347,78 @@ a { color: var(--blue); }
 .card .now .tname { color: var(--fg); font-weight: 600; }
 .card .now .args { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .card .now .dim { color: var(--faint); flex: none; padding-left: 1ch; }
-.rail .dot { margin-right: 1ch; color: var(--faint); }
-.rail .work .dot { color: var(--accent); animation: blink 1s steps(2, start) infinite; }
-.rail .rest .dot { color: var(--blue); }
-.rail .ask .dot, .rail .state.ask, .card.ask .state, .rail .stop .dot { color: var(--yellow); }
-.rail .bad .dot, .rail .state.bad, .card.bad .state { color: var(--red); }
+:is(.rail, .full-head) .dot { margin-right: 1ch; color: var(--faint); }
+:is(.rail, .full-head) .work .dot { color: var(--accent); }
+:is(.rail, .full-head) .rest .dot { color: var(--blue); }
+:is(.rail, .full-head) .ask .dot, :is(.rail, .full-head) .state.ask, .card.ask .state, :is(.rail, .full-head) .stop .dot { color: var(--yellow); }
+:is(.rail, .full-head) .bad .dot, :is(.rail, .full-head) .state.bad, .card.bad .state { color: var(--red); }
 .card.done { opacity: .7; }
 .rail .empty { color: var(--faint); padding: .5em 1.2ch; }
 .rail-log { flex: 1; min-height: 0; overflow-y: auto; overflow-anchor: none; padding: .9em 1.5ch 1em; }
 .rail-log .edge { padding: 0 0 1em; }
 @media (prefers-reduced-motion: reduce) {
   .rail.drawer { animation: none; }
-  .rail .work .dot { animation: none; }
 }
 .card .now .el { flex: none; padding-right: 1ch; }
+.card.on { background: var(--bg); box-shadow: 0 0 0 1px var(--blue); cursor: default; }
+
+/* an agent full screen (AgentFull): over Opt's chat, which stays beneath
+   as it was, scrolled where it was; blue marks what is the agent's */
+.stage { flex: 1; min-height: 0; position: relative; display: flex; flex-direction: column; }
+.opt-pane { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.stage.behind > .opt-pane { visibility: hidden; }
+.full { position: absolute; inset: 0; display: flex; flex-direction: column; background: var(--bg); }
+.full-head { flex: none; border-bottom: 1px solid var(--border); }
+.full-head .column { display: flex; flex-wrap: wrap; align-items: baseline; gap: .2em 1.5ch; padding-top: .5em; padding-bottom: .5em; }
+.full-head .column.meta { color: var(--faint); font-size: .9em; padding-top: 0; }
+.full-head .back { color: var(--blue); font-weight: 600; }
+.full-head .back:hover { text-decoration: underline; text-underline-offset: .25em; }
+.full-head .agent-name { font-weight: 600; color: var(--blue); }
+.full-head .ask { border: 0; padding: 0; margin: 0; display: inline; } /* a state, not a question box */
+.full-head .state { color: var(--dim); }
+.full-head .acts { margin-left: auto; display: flex; gap: 1.2ch; }
+.full-head .act.on { color: var(--blue); box-shadow: 0 0 0 1px var(--blue); }
+.full :is(button, [role=button]):focus-visible, .msg.relay :is(button, [role=button]):focus-visible, .fullbar button:focus-visible {
+  outline: 2px solid var(--blue); outline-offset: 2px; border-radius: 3px;
+}
+.ctx { flex: none; max-height: 45vh; overflow-y: auto; border-bottom: 1px solid var(--border); padding-bottom: .5em; }
+.ctx-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 1.5ch; padding: .5em 0 .2em; }
+.ctx-head .title { font-weight: 600; }
+.ctx-head .dim, .ctx .dim { color: var(--faint); }
+.ctx-head .acts { margin-left: auto; display: flex; gap: 1.5ch; color: var(--dim); }
+.ctx-head .acts button:hover { color: var(--fg); }
+.ctx-sec { margin: .3em 0 .5em; }
+.ctx-sec .label { color: var(--faint); font-size: .85em; }
+.ctx-sec pre { background: var(--code-bg); border: 1px solid var(--border); border-radius: 4px; padding: .5em .8em; margin: .2em 0; white-space: pre-wrap; word-break: break-word; }
+.ctx-sec .more { color: var(--faint); font-size: .9em; }
+.ctx-sec .more:hover { color: var(--fg); }
+/* the bar, talking to the agent */
+.box.to-agent, .box.to-agent:focus-within { border-color: var(--blue); }
+.box.to-agent:focus-within { box-shadow: 0 0 0 1px color-mix(in srgb, var(--blue) 30%, transparent); }
+.box.to-agent .gt { color: var(--blue); }
+.box .to { grid-column: 1 / 4; display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 1.5ch; padding: 0 0 .35em 1ch; font-size: .85em; }
+.box .to .who { color: var(--bg); background: var(--blue); border-radius: 3px; padding: 0 .7ch; font-weight: 600; }
+.box .to .dim { color: var(--faint); }
+.fullbar { color: var(--blue); align-items: baseline; }
+.fullbar .still { color: var(--dim); }
+.fullbar .still .glyph { color: var(--faint); }
+.fullbar.st-rest .still .glyph { color: var(--blue); }
+.fullbar.st-ask .still, .fullbar.st-ask .still .glyph { color: var(--yellow); }
+.fullbar.st-bad .still .glyph { color: var(--red); }
+.fullbar .opt-note { margin-left: auto; color: var(--faint); font-size: .85em; }
+.fullbar .opt-note:hover { color: var(--fg); }
+/* a step of an agent's that Opt wrote: its task or a tell */
+.msg.user.from-opt { background: transparent; border-left: 2px solid var(--accent); border-radius: 0; padding-left: calc(.8ch - 2px); }
+.msg.user.from-opt > .mark { color: var(--accent); padding-left: .4ch; }
+.msg.user .from { color: var(--accent); font-size: .85em; font-weight: 600; }
+/* in Opt's chat, what the user said to an agent full screen: one line */
+.msg.relay { color: var(--dim); margin-bottom: .6em; }
+.msg.relay > .mark { color: var(--blue); }
+.msg.relay .who { color: var(--blue); font-weight: 600; margin-right: 1ch; }
+.msg.relay .who:hover { text-decoration: underline; text-underline-offset: .25em; }
+.msg.relay .text { white-space: pre-wrap; }
+.msg.relay .text[role=button] { cursor: pointer; }
+.msg.relay .files { color: var(--faint); }
 
 .mine {
   pointer-events: auto; width: 2.2em; height: 2.2em; display: grid; place-items: center;

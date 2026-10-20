@@ -143,6 +143,7 @@ func (w *webServer) routes() http.Handler {
 	mux.HandleFunc("GET /voice", w.voice)
 	mux.HandleFunc("POST /voice", w.voice)
 	mux.HandleFunc("GET /ws", w.ws)
+	mux.HandleFunc("GET /tree", w.tree)
 	return w.guard(mux)
 }
 
@@ -268,7 +269,7 @@ func (w *webServer) upload(rw http.ResponseWriter, r *http.Request) {
 
 // request is what a page sends on its WebSocket.
 type request struct {
-	T      string       `json:"t"` // send, edit, remove, pull, now, stop, history, paths
+	T      string       `json:"t"` // send, edit, remove, pull, now, stop, history, paths, memview, zoom
 	Text   string       `json:"text"`
 	Files  []attachment `json:"files"`  // send: uploaded
 	Paths  []string     `json:"paths"`  // send: typed, to attach; null: not looked for yet
@@ -276,6 +277,7 @@ type request struct {
 	Chosen []string     `json:"chosen"` // send: typed and hidden, to attach
 	Now    bool         `json:"now"`    // send: and stop the turn underway for it
 	ID     int          `json:"id"`
+	N      int          `json:"n"` // zoom: line id+n
 	Before int          `json:"before"`
 	Seq    int          `json:"seq"`
 	Key    string       `json:"key"`    // send: the same on a send again after a reconnect
@@ -518,6 +520,10 @@ func (w *webServer) serve(req request) any {
 		before := min(max(req.Before, 0), len(c.msgs))
 		from := c.whole(max(0, before-page))
 		return historyReply{T: "history", Msgs: c.msgs[from:before], Asides: c.asidesIn(from, before)}
+	case "memview": // the page shows the chat as Opt's view (tree.go)
+		return memViewReply{T: "memview", Lines: c.memView()}
+	case "zoom":
+		return c.memZoom(req.ID, req.N)
 	case "steps": // the agents rail opens one: its log, then each step as it comes
 		name := agentName(req.Name)
 		steps, cut, err := h.agent.steps(name)

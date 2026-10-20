@@ -29,6 +29,7 @@ land there. The web tests go through real HTTP and WebSocket connections.
 | `agents.go`, `subs.go`, `resume.go` | subagents, the page's agents rail, resuming saved sessions |
 | `mcp.go`, `wake.go` | the `zoom`, `date`, `search`, `spawn`, `tell` and `wake` tools over MCP; wake-ups |
 | `hub.go`, `web.go` | updates to pages and the terminal; the page's server and its guards |
+| `tree.go` | the page's view mode (the view, line by line, and its zooms) and `/tree`, the whole memory |
 | `attach.go`, `mention.go` | attachments; the `@` path menu |
 | `import.go` | importing past chats |
 | `ccconfig.go`, `control.go`, `perms.go`, `limits.go` | the user's Claude Code setup, Claude Code's own lists, permission modes, usage limits |

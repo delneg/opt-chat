@@ -342,3 +342,48 @@ a { color: var(--blue); }
   .rail .work .dot { animation: none; }
 }
 .card .now .el { flex: none; padding-right: 1ch; }
+
+/* up to the user's message (Scroller), after UniiChat's pull request 23: a
+   round button over the log's bottom right, while one is out of sight above */
+.up { position: sticky; bottom: .5em; height: 0; overflow: visible; display: flex; justify-content: flex-end; align-items: flex-end; pointer-events: none; }
+.mine {
+  pointer-events: auto; width: 2.2em; height: 2.2em; display: grid; place-items: center;
+  border: 1px solid var(--border); border-radius: 50%; background: var(--chip); color: var(--dim);
+}
+.mine:hover, .mine:focus-visible { color: var(--fg); background: var(--user-bg); }
+.mine svg { width: 1.1em; height: 1.1em; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+
+/* Opt's view (MemView): each line a block, "id+n" and its summary, opening
+   into its halves, after UniiChat's .block and .open */
+.footer .memv.on button { color: var(--accent); }
+.mem { overflow-anchor: auto; }
+.mem-bar { position: sticky; top: 0; z-index: 2; background: var(--bg); border-bottom: 1px solid var(--border); }
+.mem-bar .column { display: flex; flex-wrap: wrap; align-items: baseline; gap: .2em 2ch; padding-top: .5em; padding-bottom: .5em; }
+.mem-bar .title { font-weight: 600; }
+.mem-bar .dim { color: var(--faint); font-size: .9em; }
+.mem-bar .acts { margin-left: auto; display: flex; gap: 2ch; font-size: .9em; }
+.mem-bar .acts button, .mem-bar .acts a { color: var(--dim); text-decoration: none; }
+.mem-bar .acts button:hover, .mem-bar .acts a:hover { color: var(--fg); }
+.mem-bar .acts button:disabled { color: var(--border); cursor: default; }
+.mem-line { display: grid; grid-template-columns: 12ch 1fr; gap: 0 1ch; padding: .25em .8ch; border-radius: 4px; cursor: pointer; overflow-wrap: anywhere; }
+.mem-line:hover, .mem-line:focus-visible { background: var(--user-bg); outline: none; }
+.mem-line .lv { color: var(--faint); font-size: .85em; line-height: 1.76; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.mem-line.unbuilt .text { color: var(--dim); }
+.mem-line .tag { color: var(--yellow); font-size: .85em; }
+.mem-box { border-left: 2px solid var(--border); padding: 0 0 .2em 1.2ch; margin: .25em 0 .4em; }
+.mem-box > .fold { color: var(--faint); font-size: .85em; padding: .15em .8ch; }
+.mem-box > .fold:hover, .mem-box > .fold:focus-visible { color: var(--fg); }
+.mem-box.one > .msg { margin: .3em 0 .4em; }
+.mem-wait { color: var(--faint); padding: .25em .8ch; }
+@media (max-width: 640px) { .mem-line { grid-template-columns: 1fr; } } /* a phone: the line's name above its text */
+
+/* /tree (tree.go): the whole memory, a section at a time */
+html:has(body.tree), body.tree { height: auto; }
+body.tree { max-width: 128ch; padding: 1.5em 2ch 3em; }
+.tree-nav { display: flex; flex-wrap: wrap; gap: .2em 2ch; }
+.tree-nav a.on { color: var(--fg); font-weight: 600; text-decoration: none; }
+.tree-note { color: var(--dim); }
+.tree-pages { display: flex; flex-wrap: wrap; gap: .2em 2ch; color: var(--faint); margin: .8em 0; }
+.tree-item h4 { margin: .9em 0 .15em; color: var(--faint); font-weight: normal; font-size: .85em; }
+.tree-item.unbuilt h4 { color: var(--yellow); }
+.tree-item pre { margin: 0; font: inherit; white-space: pre-wrap; overflow-wrap: anywhere; }

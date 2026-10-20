@@ -55,6 +55,9 @@ const S = {
   railOff: (() => { try { const v = JSON.parse(localStorage.getItem('railOff')); return Array.isArray(v) ? v : null; } catch { return null; } })(), // hidden by the user: the subagents it had then
   drawer: false, // no room: the rail as a drawer, open
   agent: null, // the subagent the rail shows: { name, steps, off, cut, loading }
+  memView: false, // the chat shown as Opt's view (Alt+V, /view) instead of the log
+  mem: null, // the view's lines, once asked: { id, n, text, built, from, to }
+  memTick: 0, // a block opened, shut or zoomed: draw again
 };
 
 // set changes the state and renders it once per frame; in a tab in the
@@ -150,6 +153,7 @@ function onUpdate(u) {
       if (S.picker && (!S.models || S.modelsError)) send({ t: 'models' });
       if (S.panel?.kind !== 'skills') send({ t: 'skills' }); // for the / menu
       if (S.agent) openAgent(S.agent.name); // its steps meanwhile
+      if (S.memView) memAsk(true); // the view, and the blocks open, as they are now
       send({ t: 'usage' }); // the plan's limits, for the bar
       break;
     }
@@ -164,6 +168,7 @@ function onUpdate(u) {
       const typed = fresh.filter(m => m.kind === 'user' && !m.part).map(m => histText(m.text)).filter(Boolean);
       if (typed.length) patch.inputs = mergeInputs(S.inputs, typed);
       set(patch);
+      memAsk(false); // a new line, at the view's end
       break;
     }
     case 'delta':
@@ -181,7 +186,15 @@ function onUpdate(u) {
       break;
     }
     case 'thought': set({ thinking: '' }); break;
-    case 'status': set({ status: u.status }); break;
+    case 'status':
+      if (u.status.written !== S.status?.written || u.status.viewLines !== S.status?.viewLines) memAsk(false); // lines built, or merged
+      set({ status: u.status });
+      break;
+    case 'memview': memGot(u.lines); break;
+    case 'zoom':
+      if (u.error) { notice('warn', u.error); memOpen.delete(u.id + '+' + u.n); } else memZoom.set(u.id + '+' + u.n, u);
+      set({ memTick: S.memTick + 1 });
+      break;
     case 'steps': if (S.agent?.name === u.name) set({ agent: { name: u.name, steps: u.steps.slice(-agentStepsMax), off: 0, cut: u.cut || u.steps.length > agentStepsMax, loading: false } }); break;
     case 'step': addStep(u.name, u.step); break;
     case 'end': set({ last: u.end }); send({ t: 'usage' }); break;
@@ -409,6 +422,8 @@ const commands = [
   ['/status', 'Claude Code\'s version and account, this run\'s settings, the view and the plan\'s usage'],
   ['/usage', 'the plan\'s limits, what uses them, and what Opt\'s calls spent: day, week or run'],
   ['/btw', 'a side question: answered beside the chat, which never sees it'],
+  ['/view', 'the chat as Opt sees it, its view, each line opening into its halves; again: the log (Alt+V)'],
+  ['/tree', 'the whole memory, every level of the tree, in a new tab'],
   ['/help', 'list the commands'],
 ];
 
@@ -477,6 +492,8 @@ async function submit(now) {
   }
   if (S.conn !== 'open') { notice('warn', 'Not connected: your message stays in the input until opt-chat is back.'); return; }
   if (/^\/model\s*$/.test(inputEl.value) && !S.atts.length) { setInput(''); openPicker(); return; }
+  if (/^\/view\s*$/.test(inputEl.value) && !S.atts.length) { setInput(''); toggleMem(); return; }
+  if (/^\/tree\s*$/.test(inputEl.value) && !S.atts.length) { setInput(''); window.open('/tree', '_blank', 'noopener'); return; }
   const panel = inputEl.value.match(/^\/(mcp|skills|plugins)\s*$/);
   if (panel && !S.atts.length) { setInput(''); openPanel(panel[1]); return; }
   submitting = true;
@@ -951,8 +968,8 @@ function row(it) {
 // Log is the chat, virtualized: only the rows in view and near it are in
 // the page, so a log of days stays as quick as a fresh one. virtua measures
 // each row as it shows; shift keeps the place when rows come or go above.
-const Log = memo(function Log({ list, shift, margin, scroller, onResize }) {
-  return html`<${Virtualizer} data=${list} shift=${shift} startMargin=${margin} scrollRef=${scroller} bufferSize=${1200} onResize=${onResize}>${row}</${Virtualizer}>`;
+const Log = memo(function Log({ list, shift, margin, scroller, onResize, handle }) {
+  return html`<${Virtualizer} ref=${handle} data=${list} shift=${shift} startMargin=${margin} scrollRef=${scroller} bufferSize=${1200} onResize=${onResize}>${row}</${Virtualizer}>`;
 });
 
 function Notice({ n }) {
@@ -1022,7 +1039,7 @@ function UserMsg({ m }) {
   if (parts.length && body && !long) { // attachments alone show in a row, as ever
     const rest = splitMarks(tail);
     const inline = parts.filter(p => typeof p !== 'string');
-    return html`<div class="msg user" title=${when(m.date)}>
+    return html`<div class="msg user" title=${when(m.date)} data-i=${m.i}>
       <span class="mark" aria-hidden="true">▸</span>
       <div class="body">
         <div class="text">${parts.map((p, j) => typeof p === 'string' ? p : html`<${MarkView} mk=${p} images=${m.images} inline=${true} onOpen=${() => setShown(shown === j ? -1 : j)} open=${shown === j}/>`)}${rest.body}</div>
@@ -1032,7 +1049,7 @@ function UserMsg({ m }) {
       </div>
     </div>`;
   }
-  return html`<div class="msg user" title=${when(m.date)}>
+  return html`<div class="msg user" title=${when(m.date)} data-i=${m.i}>
     <span class="mark" aria-hidden="true">▸</span>
     <div class="body">
       ${body && html`<div class="text">${long && !open ? head : body}</div>`}
@@ -1633,6 +1650,7 @@ function Footer() {
   return html`<div class="footer"><div class="segs">
     ${mode && html`<span class=${'seg mode ' + mode}><button title="permission mode: Shift+Tab cycles manual, accept edits, auto" onClick=${cycleMode}>${modeNames[mode] || mode} <span class="hint">(shift+tab to cycle)</span></button></span>`}
     <span class="seg"><button onClick=${() => set({ help: !S.help })}>? for shortcuts</button></span>
+    <span class=${'seg memv' + (S.memView ? ' on' : '')}><button aria-pressed=${S.memView} title="the chat as Opt sees it: its view, each line opening into its halves, down to the message (Alt+V, /view)" onClick=${toggleMem}>${S.memView ? '◧ Opt\'s view: on' : '◧ Opt\'s view'}</button></span>
     <span class=${'seg conn ' + conn[0]}>${conn[1]}</span>
     ${right.map(x => html`<span class="seg">${x}</span>`)}
   </div></div>`;
@@ -1662,6 +1680,9 @@ function Help() {
     ['Shift+Tab', 'permission mode: manual, accept edits, auto'],
     ['/mcp · /skills · /plugins', 'your Claude Code MCP servers, skills and plugins: on or off'],
     ['Alt+A · /agents', 'the subagents: what each does now, and its steps'],
+    ['Alt+V · /view', 'the chat as Opt sees it: its view, each line opening into its halves; again: the log'],
+    ['Alt+U · ↑ button', 'up to your last message out of sight above'],
+    ['/tree', 'the whole memory, every level of the tree, in a new tab'],
     ['Alt+K', 'record a voice message; Alt+K or Enter sends it with the input, Esc drops it; type meanwhile, Shift+Enter breaks the line'],
     ['/help', 'the commands'],
   ];
@@ -2097,17 +2118,40 @@ function AgentView({ a, s, now }) {
 }
 
 function Scroller() {
-  const ref = useRef(), inner = useRef(), edge = useRef();
+  const ref = useRef(), inner = useRef(), edge = useRef(), vh = useRef();
   const stick = useRef(true), was = useRef({ first: -1, last: -1 });
   const [newer, setNewer] = useState(false);
+  const [up, setUp] = useState(false); // a message of the user's is above the screen
   const [margin, setMargin] = useState(0); // where the rows start: below the edge
   const toBottom = () => { const el = ref.current; if (el) el.scrollTop = el.scrollHeight; };
   const first = S.msgs.length ? S.msgs[0].i : -1, last = lastI;
   const shift = was.current.first >= 0 && first >= 0 && first !== was.current.first; // older came in above, or the oldest went
   const list = useMemo(() => rows(S.msgs, S.turn.phase, S.turn.from || 0, S.notices, S.asides), [S.msgs, S.turn.phase, S.turn.from, S.notices, S.asides]);
   const onResize = useMemo(() => () => { if (stick.current) toBottom(); }, []);
+  // Up to the user's message, after UniiChat's (its pull request 23,
+  // https://github.com/VictorTaelin/UniiChat/pull/23): the button goes up to
+  // the user's last message out of sight above, past a long reply or tool
+  // output, and each press after to the one before. The log is virtual, so
+  // the rows' places come from virtua, not from the page.
+  const users = useMemo(() => list.flatMap((it, j) => it.m?.kind === 'user' ? [j] : []), [list]);
+  const above = j => margin + vh.current.getItemOffset(j) < ref.current.scrollTop - 1; // wholly or in part
+  const checkUp = () => { const show = !!vh.current && users.length > 0 && above(users[0]); if (show !== up) setUp(show); };
+  const jumpUp = e => {
+    if (!vh.current) return;
+    const j = users.findLast(above);
+    if (j === undefined) return;
+    const focused = document.activeElement === e?.currentTarget;
+    stick.current = atEnd = false;
+    vh.current.scrollToIndex(j, { align: 'start', offset: -12 });
+    if (focused) requestAnimationFrame(() => requestAnimationFrame(() => { // the button gone: its focus goes to the message
+      if (users.some(above)) return;
+      const m = ref.current?.querySelector(`.msg.user[data-i="${list[j].m.i}"]`);
+      if (m) { m.tabIndex = -1; m.focus({ preventScroll: true }); }
+    }));
+  };
   useLayoutEffect(() => {
     const el = ref.current;
+    checkUp();
     if (toEnd) { toEnd = false; stick.current = atEnd = true; setNewer(false); toBottom(); }
     else if (stick.current) toBottom();
     else if (last > was.current.last && was.current.last >= 0) setNewer(true);
@@ -2128,16 +2172,124 @@ function Scroller() {
     stick.current = atEnd = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
     if (stick.current) setNewer(false);
     if (el.scrollTop < 600) loadOlder();
+    checkUp();
   };
   return html`<div class="scroll" ref=${ref} onScroll=${onScroll}>
     <div class="column log" ref=${inner} role="log" aria-live="polite" aria-busy=${!!S.live}>
       <div class="edge" ref=${edge}>${S.conn === 'connecting' ? 'Connecting…' : first > 0 ? (S.older ? 'Loading older messages…' : '↑ older messages') : S.msgs.length ? 'The beginning of the chat' : 'An empty chat: say something.'}</div>
-      <${Log} list=${list} shift=${shift} margin=${margin} scroller=${ref} onResize=${onResize}/>
+      <${Log} list=${list} shift=${shift} margin=${margin} scroller=${ref} onResize=${onResize} handle=${vh}/>
       ${S.thinking && (S.turn.phase === 'thinking') && html`<div class="thinking"><div>${S.thinking}</div></div>`}
       ${S.input && S.turn.phase === 'tool' && S.turn.tool && html`<${LiveTool} name=${S.turn.tool} raw=${S.input}/>`}
       ${S.live && html`<div class="msg opt live"><span class="mark" aria-hidden="true">●</span><div class="body"><${Markdown} text=${S.live} live=${true}/></div></div>`}
     </div>
     ${newer && html`<div class="newer"><button onClick=${() => { stick.current = atEnd = true; setNewer(false); toBottom(); }}>↓ new messages</button></div>`}
+    ${up && html`<div class="column up"><button class="mine" title="up to your message (Alt+U)" aria-label="up to your message" onClick=${jumpUp}>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 15l6-6 6 6"/></svg></button></div>`}
+  </div>`;
+}
+
+// ---------------------------------------------------------------- Opt's view
+
+// The chat as Opt sees it, after UniiChat's blocks (its View.ts part_rows
+// and web/src/Html.ts "Sum" and "Box"; its /open, /close and /fold in
+// Term.ts; https://github.com/VictorTaelin/UniiChat): each line of the view,
+// "id+n" and its summary, opens on a click into its two halves, as Opt's
+// zoom does, down to the message whole; "fold all" goes back to the view.
+// The halves are asked for as a line opens, so a chat of tens of thousands
+// of messages costs only its view.
+const memOpen = new Set(); // the lines open, as "id+n"
+const memZoom = new Map(); // "id+n" → its zoom: { lines } or { msg }
+let memTimer = 0;
+
+function toggleMem() {
+  const on = !S.memView;
+  set({ memView: on, mem: on ? S.mem : null });
+  if (on) memAsk(true);
+  else { memOpen.clear(); memZoom.clear(); toEnd = true; }
+}
+
+// memAsk asks for the view again: at once, or after a pause, so a burst of
+// messages or summaries asks once.
+function memAsk(now) {
+  if (!S.memView) return;
+  clearTimeout(memTimer);
+  memTimer = setTimeout(() => send({ t: 'memview' }), now ? 0 : 1500);
+}
+
+// memGot takes a new view; zooms that held lines not summarized yet are
+// asked again, for those open.
+function memGot(lines) {
+  for (const [k, z] of memZoom) {
+    if (!z.lines?.some(l => !l.built)) continue;
+    memZoom.delete(k);
+    if (memOpen.has(k)) send({ t: 'zoom', id: z.id, n: z.n });
+  }
+  set({ mem: lines, memTick: S.memTick + 1 });
+}
+
+function memToggle(l) {
+  const k = l.id + '+' + l.n;
+  if (memOpen.has(k)) memOpen.delete(k);
+  else {
+    memOpen.add(k);
+    if (!memZoom.has(k)) send({ t: 'zoom', id: l.id, n: l.n });
+  }
+  const keys = !!document.activeElement?.closest('.mem'); // the focus was on it: it follows, to the line or its fold
+  set({ memTick: S.memTick + 1 });
+  if (keys) requestAnimationFrame(() => requestAnimationFrame(() => {
+    if (document.activeElement === document.body) document.querySelector(`.mem [data-k="${k}"]`)?.focus();
+  }));
+}
+
+function memWhen(l) {
+  const a = when(l.from), b = when(l.to);
+  return a === b ? a : a + ' – ' + b;
+}
+
+// MemLine is a line folded (UniiChat's "Sum"), or open (its "Box"): its
+// halves, or the message whole.
+function MemLine({ l }) {
+  const k = l.id + '+' + l.n;
+  if (!memOpen.has(k)) {
+    return html`<div class=${'mem-line' + (l.built ? '' : ' unbuilt')} data-k=${k} role="button" tabindex="0" aria-expanded="false"
+      title=${memWhen(l) + (l.n > 1 ? `\n${l.n} messages: click to open into their two halves` : '\nclick for the message whole')} onClick=${() => { if (!getSelection().toString()) memToggle(l); }}>
+      <span class="lv">${k}</span><span class="text">${l.text}${!l.built && html`<span class="tag">${l.text ? ' ' : ''}not summarized yet</span>`}</span>
+    </div>`;
+  }
+  const z = memZoom.get(k);
+  return html`<div class=${'mem-box' + (l.n === 1 ? ' one' : '')}>
+    <button class="fold" data-k=${k} aria-expanded="true" title=${memWhen(l)} onClick=${() => memToggle(l)}>▾ ${k} · ${l.n > 1 ? count(l.n, 'message') + ' · fold' : 'fold'}</button>
+    ${!z ? html`<div class="mem-wait">Opening…</div>`
+      : z.msg ? html`<${MsgView} m=${z.msg} state=${z.msg.kind === 'tool' ? 'done' : ''}/>`
+      : z.lines.map(h => html`<${MemLine} key=${h.id + '+' + h.n} l=${h}/>`)}
+  </div>`;
+}
+
+function MemView() {
+  const ref = useRef(), seen = useRef(false), stick = useRef(true);
+  const lines = S.mem;
+  useLayoutEffect(() => { // at the view's end, as the log opens at its end; kept there as lines come
+    const el = ref.current;
+    if (!lines || !el) return;
+    if (!seen.current || stick.current) el.scrollTop = el.scrollHeight;
+    seen.current = true;
+  });
+  const foldAll = () => { memOpen.clear(); stick.current = true; set({ memTick: S.memTick + 1 }); };
+  const size = lines ? lines.reduce((t, l) => t + l.text.length, 0) : 0;
+  const unbuilt = lines ? lines.filter(l => !l.built).length : 0;
+  return html`<div class="scroll mem" ref=${ref} onScroll=${() => { const el = ref.current; stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80; }}>
+    <div class="mem-bar"><div class="column">
+      <span class="title">Opt's view</span>
+      ${lines && html`<span class="dim">${count(lines.length, 'line')}, about ${Math.round(size / 1000)} KB${unbuilt ? `, ${unbuilt} not summarized yet` : ''}: what each turn reads, oldest first</span>`}
+      <span class="acts">
+        <button disabled=${!memOpen.size} onClick=${foldAll} title="every line folded: the view as Opt sees it">fold all</button>
+        <a href="/tree" target="_blank" rel="noopener" title="the whole memory: every level of the tree">tree ↗</a>
+        <button onClick=${toggleMem} title="back to the log (Alt+V)">the log</button>
+      </span>
+    </div></div>
+    <div class="column log mem-lines">
+      ${!lines ? html`<div class="edge">Loading the view…</div>` : lines.map(l => html`<${MemLine} key=${l.id + '+' + l.n} l=${l}/>`)}
+    </div>
   </div>`;
 }
 
@@ -2150,7 +2302,7 @@ function App() {
   return html`<div class="shell"><div class="main">
     ${S.conn === 'denied' && html`<div class="banner">This page has no key to the chat: open the address opt-chat printed in the terminal.</div>`}
     ${S.conn === 'closed' && html`<div class="banner">Lost opt-chat: reconnecting…</div>`}
-    <${Scroller}/>
+    ${S.memView ? html`<${MemView}/>` : html`<${Scroller}/>`}
     <div class="dock"><div class="column">
       ${S.turn.phase && html`<${Spinner} turn=${S.turn} chars=${S.turnChars} queued=${S.queue.length > 0}/>`}
       <${Queue} queue=${S.queue}/>
@@ -2204,6 +2356,12 @@ addEventListener('keydown', e => {
     e.preventDefault();
     e.stopPropagation();
     if (S.voice !== 'sending') stopVoice(e.key === 'Enter', e.metaKey || e.ctrlKey);
+    return;
+  }
+  if (e.altKey && (e.code === 'KeyV' || e.code === 'KeyU') && !e.metaKey && !e.ctrlKey) { // Opt's view; up to the user's message
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.code === 'KeyV') toggleMem(); else document.querySelector('.mine')?.click();
     return;
   }
   if (e.altKey && e.code === 'KeyA' && !e.metaKey && !e.ctrlKey) { // the agents rail

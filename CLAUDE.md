@@ -4,6 +4,22 @@ Read [README.md](README.md) first, then the [design notes](docs/2026-10-12-desig
 for why the code does what it does. Dated docs in `docs/` record decisions
 as of their date; add a new dated file rather than rewriting history.
 
+## This repo is public
+
+Everything committed here, history included, is on public GitHub and stays
+there: a commit can't be taken back without rewriting history. Never commit:
+
+- anything from a real chat: messages, summary lines, imported sessions,
+  eval questions, gold answers or model answers, screenshots of the page,
+  project or people's names taken from it;
+- personal data: emails, phone numbers, home paths with a user name,
+  account ids;
+- secrets: API keys, tokens, cookies, the page's `?t=` key.
+
+Eval data and anything else drawn from a chat go in `private/`, which git
+ignores. Test fixtures are made up (`/Users/me`, `me@example.com`). Before
+a push, `gitleaks git .` must find nothing.
+
 ## Build and test
 
 ```sh

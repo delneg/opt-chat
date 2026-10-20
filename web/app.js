@@ -1304,10 +1304,13 @@ function ToolMsg({ m, echo, state }) {
   const cls = 'msg tool ' + (state === 'run' ? 'run' : state === 'cut' || failed ? 'cut' : '');
   const toggle = () => { if (!getSelection().toString()) setOpen(!open); }; // not when selecting its text
   const sum = echo && !failed && tool ? brief(tool.name, tool.input, lines, echo) : '';
+  // how long it ran, from its call to its result, or so far while it runs
+  const now = useClock(state === 'run' && !!m);
+  const ran = m ? (echo ? Date.parse(echo.date) : state === 'run' ? now : NaN) - Date.parse(m.date) : NaN;
   return html`<div class=${cls} title=${when((m || echo).date)}>
     <span class="mark" aria-hidden="true">●</span>
     <div class="body">
-      ${tool && html`<div class="head" role="button" tabindex="0" aria-expanded=${open} onClick=${toggle}><span class="name">${tool.name}</span><span class="args">(${toolArgs(tool.name, tool.input, tool.raw)})</span></div>`}
+      ${tool && html`<div class="head" role="button" tabindex="0" aria-expanded=${open} onClick=${toggle}><span class="name">${tool.name}</span><span class="args">(${toolArgs(tool.name, tool.input, tool.raw)})</span>${ran >= 1000 && html`<span class="took" title="how long it ran">${elapsed(ran)}</span>`}</div>`}
       ${echo && !open && sum && html`<div class="result" role="button" tabindex=${tool ? -1 : 0} onClick=${toggle}><span aria-hidden="true">  ⎿</span><span class="lines">${sum} <span class="more">(click to expand)</span></span></div>`}
       ${echo && !open && refused && html`<div class="result" role="button" tabindex=${tool ? -1 : 0} onClick=${toggle}><span aria-hidden="true">  ⎿</span><span class="cut-note">No (you said no)</span></div>`}
       ${echo && !open && !sum && !refused && html`<div class="result" role="button" tabindex=${tool ? -1 : 0} onClick=${toggle}><span aria-hidden="true">  ⎿</span><span class="lines">${lines.slice(0, 3).map(l => oneLine(l, 160)).join('\n') || '(no output)'}${lines.length > 3 && html`<span class="more">${'\n'}… +${lines.length - 3} lines (click to expand)</span>`}</span></div>`}

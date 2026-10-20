@@ -450,14 +450,21 @@ func (c *Chat) resetCview() {
 }
 
 // growCview appends to the compactions' view the messages built since its
-// end, up to the first one not built, while it stays within cviewHi: when
-// its batch waits for parents (an import's short messages, built at once,
-// outrun their merges), it waits with it, and compactions past its end see
-// the rest as compactTail allows.
+// end, up to the first one not built. One that would take it past cviewHi
+// starts a batch first; while the batch waits for parents (an import's
+// short messages, built at once, outrun their merges), the view waits with
+// it, and compactions past its end see the rest as compactTail allows.
 func (c *Chat) growCview() {
 	c.cview.check(c)
-	for i := c.cview.end(); i < len(c.msgs) && c.built(key{0, i}) && c.cview.bytes+cost(c, key{0, i}) <= cviewHi; i++ {
-		c.cview.push(key{0, i}, c)
+	for i := c.cview.end(); i < len(c.msgs) && c.built(key{0, i}); i++ {
+		k := key{0, i}
+		if c.cview.bytes+cost(c, k) > cviewHi {
+			c.cview.shrinking = true
+			if c.cview.fit(c); c.cview.bytes+cost(c, k) > cviewHi {
+				return
+			}
+		}
+		c.cview.push(k, c)
 	}
 }
 
@@ -542,16 +549,13 @@ func (c *Chat) need(k key) {
 // setNode keeps line k. It is written to the log at the next flushNodes:
 // an import's free lines come by the thousand, and were synced one by one.
 func (c *Chat) setNode(k key, text string) {
-	redo := c.built(k)
-	if redo { // the views drop its old size first
-		c.view.unbuilt(c, k)
-		c.cview.unbuilt(c, k)
-	}
+	was := cost(c, k) // its old size, none if not built: a view holding it counts the new one instead
 	c.tree[k] = text
 	delete(c.redo, k)
-	c.view.built(c, k)
-	if redo { // the compactions' view holds built lines alone: only a redone one can be in it
-		c.cview.built(c, k)
+	for _, v := range []*view{&c.view, &c.cview} {
+		if v.holds(k) {
+			v.bytes += cost(c, k) - was
+		}
 	}
 	c.unsaved = append(c.unsaved, Node{L: k.L, I: k.I, Text: text, Size: len(text)})
 	if c.queued[k] {
@@ -648,21 +652,16 @@ func (c *Chat) frontier(side, n int) int {
 // side, lines to redo go after the rest: their old text stands in.
 func (c *Chat) next() (key, bool) {
 	for side := range 2 {
-		if k, ok := c.nextOf(side); ok {
-			return k, true
+		for _, redo := range []bool{false, true} {
+			if k, ok := c.pick(side, redo); ok {
+				return k, true
+			}
 		}
 	}
 	return key{}, false
 }
 
-func (c *Chat) nextOf(side int) (key, bool) {
-	if k, ok := c.pick(side, false); ok {
-		return k, true
-	}
-	return c.pick(side, true)
-}
-
-// pick is nextOf among the side's lines to redo, or among the rest.
+// pick is next of a side, among its lines to redo, or among the rest.
 func (c *Chat) pick(side int, redo bool) (key, bool) {
 	end := c.frontier(side, c.jobs-1)
 	can := func(k key) bool { return c.side(k) == side && c.redo[k] == redo && !c.busy[k] && !c.cooling(k) }
@@ -792,9 +791,13 @@ var ruler = strings.Repeat("-", nodeMax)
 // not built as nothing, so the context held them all: at the start of an
 // import, merges far ahead saw 380 KB, hundreds of heads, against 16 to 32.
 func (c *Chat) compactInput(k key) ([]string, int, []block) {
-	ctx := c.compactContext(k)
+	keys := c.compactContext(k)
+	ctx, from := c.lines(keys), 0
+	if len(keys) > 0 {
+		from = keys[len(keys)-1].end()
+	}
 	stable := len(ctx)
-	ctx = append(ctx, c.compactTail(k, lo.SumBy(ctx, func(l string) int { return len(l) + 1 }))...)
+	ctx = append(ctx, c.compactTail(k, from, lo.SumBy(ctx, func(l string) int { return len(l) + 1 }))...)
 	if k.L == 0 {
 		m := c.msgs[k.I]
 		in := fmt.Sprintf("Compaction: compress message %d into one line of at most 512 bytes\n"+
@@ -815,38 +818,39 @@ func (c *Chat) compactInput(k key) ([]string, int, []block) {
 		a.name(), b.name(), ruler, k.start(), k.end()-1, c.line(a), c.line(b)))}
 }
 
-// compactContext is the compactions' view up to node k.
-func (c *Chat) compactContext(k key) []string {
-	var keys []key
-	for _, v := range c.cview.keys {
-		if v.end() > until(k) {
-			break
-		}
-		keys = append(keys, v)
+// compactContext is the compactions' view's lines up to node k.
+func (c *Chat) compactContext(k key) []key {
+	n := slices.IndexFunc(c.cview.keys, func(v key) bool { return v.end() > until(k) })
+	if n < 0 {
+		n = len(c.cview.keys)
 	}
-	return c.lines(keys)
+	return c.cview.keys[:n]
 }
 
-// compactTail is the view's lines from the end of node k's context to the
-// node, the newest that fit in cviewHi with size bytes before them. They
-// differ from one compaction to the next, so they come after the cached
-// part, and a node past the first message not summarized starts only when
-// it is near (see next): as its context, the chat's own lines see the
-// chat's latest messages even while an import is summarized.
-func (c *Chat) compactTail(k key, size int) []string {
-	from := c.cview.end()
-	if from >= until(k) {
+// compactTail is the view's lines from the end of node k's context, message
+// from, to the node, the newest that fit in cviewHi with size bytes before
+// them. They differ from one compaction to the next, so they come after the
+// cached part, and a node past the first message not summarized starts only
+// when it is near (see next): as its context, the chat's own lines see the
+// chat's latest messages even while an import is summarized. A line to redo
+// can come before the compactions' view's end, inside a line of either view.
+func (c *Chat) compactTail(k key, from, size int) []string {
+	to := until(k)
+	if from >= to {
 		return nil
 	}
-	at := func(s int) int {
-		j, _ := slices.BinarySearchFunc(c.view.keys, s, func(v key, s int) int { return cmp.Compare(v.start(), s) })
-		return j
+	// A view's line that holds message from, or the node's end, can be a
+	// merge begun in the compactions' view, which grows by message, or one
+	// over the line to redo: of it, only the nodes between, so no message is
+	// missed or seen twice, and none past the node.
+	j, _ := slices.BinarySearchFunc(c.view.keys, from+1, func(v key, s int) int { return cmp.Compare(v.start(), s) })
+	var keys []key
+	for _, v := range c.view.keys[j-1:] {
+		if v.start() >= to {
+			break
+		}
+		keys = append(keys, cover(max(v.start(), from), min(v.end(), to))...)
 	}
-	// The view's line that holds message from can be a merge begun in the
-	// compactions' view, which grows by message: of it, only the nodes from
-	// there on, so no message is missed or seen twice.
-	j := at(from+1) - 1
-	keys := slices.Concat(cover(from, c.view.keys[j].end()), c.view.keys[j+1:at(until(k))])
 	var tail []string
 	for _, v := range slices.Backward(keys) {
 		l := c.callLine(v)

@@ -37,20 +37,10 @@ func (v *view) push(k key, c *Chat) bool {
 // recount measures the view anew, once its keys are set.
 func (v *view) recount(c *Chat) { v.bytes = lo.SumBy(v.keys, func(k key) int { return cost(c, k) }) }
 
-// built counts line k, built now, if the view holds it.
-func (v *view) built(c *Chat, k key) {
+// holds reports whether line k is one of the view's.
+func (v *view) holds(k key) bool {
 	j, ok := slices.BinarySearchFunc(v.keys, k.start(), func(x key, s int) int { return cmp.Compare(x.start(), s) })
-	if ok && v.keys[j] == k {
-		v.bytes += cost(c, k)
-	}
-}
-
-// unbuilt uncounts line k, about to be built again, if the view holds it.
-func (v *view) unbuilt(c *Chat, k key) {
-	j, ok := slices.BinarySearchFunc(v.keys, k.start(), func(x key, s int) int { return cmp.Compare(x.start(), s) })
-	if ok && v.keys[j] == k {
-		v.bytes -= cost(c, k)
-	}
+	return ok && v.keys[j] == k
 }
 
 // check starts a batch once the view is past hi, goes on with one cut short,

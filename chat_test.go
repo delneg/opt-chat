@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"maps"
@@ -882,7 +883,7 @@ func TestCompactTailInMerge(t *testing.T) {
 	c.view.keys = []key{{2, 0}, {0, 4}, {0, 5}, {0, 6}, {0, 7}}
 	c.cview.keys = []key{{0, 0}, {0, 1}}
 	var names []string
-	for _, l := range c.compactTail(key{0, 6}, 0) {
+	for _, l := range c.compactTail(key{0, 6}, 2, 0) {
 		names = append(names, strings.SplitN(l, "|", 2)[0])
 	}
 	if want := []string{"2+2", "4+1", "5+1"}; !slices.Equal(names, want) {
@@ -890,5 +891,154 @@ func TestCompactTailInMerge(t *testing.T) {
 	}
 	if got := cover(5, 16); !slices.Equal(got, []key{{0, 5}, {1, 3}, {3, 1}}) {
 		t.Fatalf("cover(5, 16) = %v", got)
+	}
+}
+
+// The compactions' view batches on its own as it passes cviewHi: messages
+// built one after another past 32 KB still see the chat up to their own.
+// It froze at its cap until the chat's view batched, and with no budget
+// left for a tail, message 300 saw context ending at message 78.
+func TestCviewBatches(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds 160 lines, synced one by one")
+	}
+	c, _ := fakeChat(t, t.TempDir(), 400)
+	inner := c.compact
+	c.mu.Lock()
+	c.compact = nil
+	c.mu.Unlock()
+	for range 160 {
+		c.Log("user", strings.Repeat("u", 600))
+	}
+	var mu sync.Mutex
+	ends := map[int]int{} // message compressed: where its context ends
+	c.mu.Lock()
+	c.jobs = 1
+	c.compact = func(ctx context.Context, lines []string, stable int, task []block) (string, error) {
+		if m := regexp.MustCompile(`compress message (\d+) `).FindStringSubmatch(task[0].Text); m != nil && len(lines) > 0 {
+			i, _ := strconv.Atoi(m[1])
+			h := lineHead.FindStringSubmatch(lines[len(lines)-1])
+			id, _ := strconv.Atoi(h[1])
+			n, _ := strconv.Atoi(h[2])
+			mu.Lock()
+			ends[i] = id + n
+			mu.Unlock()
+		}
+		return inner(ctx, lines, stable, task)
+	}
+	c.pump()
+	c.mu.Unlock()
+	waitIdle(t, c)
+	mu.Lock()
+	defer mu.Unlock()
+	for _, i := range []int{100, 150} {
+		if ends[i] != i {
+			t.Errorf("compressing message %d saw context ending at message %d", i, ends[i])
+		}
+	}
+}
+
+// A line to redo before the compactions' view's end sees, past its
+// context, the view's lines up to it, split where they reach past it.
+// Its context was only the compactions' view's lines ending before it.
+func TestCompactTailRedo(t *testing.T) {
+	c, err := openChat(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 8 {
+		c.Log("user", strings.Repeat("u", 600))
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for l := range 3 {
+		for i := range 8 >> l {
+			c.tree[key{l, i}] = "line " + key{l, i}.name()
+		}
+	}
+	c.view.keys = []key{{2, 0}, {2, 1}}
+	c.cview.keys = []key{{2, 0}, {2, 1}}
+	for k, want := range map[key][]string{{0, 5}: {"4+1"}, {0, 2}: {"0+2"}, {0, 6}: {"4+2"}} {
+		c.redo[k] = true
+		ctx, _, _ := c.compactInput(k)
+		var names []string
+		for _, l := range ctx {
+			names = append(names, strings.SplitN(l, "|", 2)[0])
+		}
+		if want = append([]string{"0+4"}, want...); k.start() < 4 {
+			want = want[1:]
+		}
+		if !slices.Equal(names, want) {
+			t.Errorf("redo %s: context %q, want %q", k.name(), names, want)
+		}
+		delete(c.redo, k)
+	}
+}
+
+// For a line not to redo, the tail is as before lines to redo got one:
+// the view's lines from the compactions' view's end on.
+func TestCompactTailUnchanged(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds 200 lines, synced one by one")
+	}
+	c, _ := fakeChat(t, t.TempDir(), 400)
+	inner := c.compact
+	c.mu.Lock()
+	c.compact = nil
+	c.mu.Unlock()
+	var imp []Msg
+	for i := range 150 {
+		imp = append(imp, Msg{Kind: kindAI, Text: strings.Repeat("i", lo.Ternary(i%3 == 0, 600, 100)), Imported: true})
+	}
+	c.logMsgs(imp)
+	for range 50 {
+		c.Log("user", strings.Repeat("u", 600))
+	}
+	old := func(k key, size int) []string { // compactTail of f46c515
+		from := c.cview.end()
+		if from >= until(k) {
+			return nil
+		}
+		at := func(s int) int {
+			j, _ := slices.BinarySearchFunc(c.view.keys, s, func(v key, s int) int { return cmp.Compare(v.start(), s) })
+			return j
+		}
+		j := at(from+1) - 1
+		keys := slices.Concat(cover(from, c.view.keys[j].end()), c.view.keys[j+1:at(until(k))])
+		var tail []string
+		for _, v := range slices.Backward(keys) {
+			l := c.callLine(v)
+			if size += len(l) + 1; size > cviewHi {
+				break
+			}
+			tail = append(tail, l)
+		}
+		slices.Reverse(tail)
+		return tail
+	}
+	checked, tails := 0, 0
+	c.mu.Lock()
+	c.compact = func(ctx context.Context, lines []string, stable int, task []block) (string, error) {
+		c.mu.Lock()
+		for _, k := range slices.Concat(lo.Map(c.ready0, func(i int, _ int) key { return key{0, i} }), c.readyM) {
+			keys := c.compactContext(k)
+			from, size := 0, lo.SumBy(c.lines(keys), func(l string) int { return len(l) + 1 })
+			if len(keys) > 0 {
+				from = keys[len(keys)-1].end()
+			}
+			got, want := c.compactTail(k, from, size), old(k, size)
+			if !slices.Equal(got, want) {
+				t.Errorf("%s: tail of %d lines, before %d", k.name(), len(got), len(want))
+			}
+			checked, tails = checked+1, tails+min(len(got), 1)
+		}
+		c.mu.Unlock()
+		return inner(ctx, lines, stable, task)
+	}
+	c.pump()
+	c.mu.Unlock()
+	waitIdle(t, c)
+	if checked < 1000 || tails < 100 {
+		t.Fatalf("checked %d tails, %d of them not empty", checked, tails)
 	}
 }

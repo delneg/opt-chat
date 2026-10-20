@@ -122,21 +122,24 @@ func (a *Agent) writeOnce(ctx context.Context, prefix string) (release func()) {
 const cachedFor = 4 * time.Minute
 
 // inCache reports whether the cache holds a compaction's first message,
-// waiting for a call that is writing it to begin its response; a call that
-// goes on to read it keeps it there (noteCached).
+// waiting for a call that is writing it to begin its response, or to fail
+// before it, which leaves nothing cached; a call that goes on to read it
+// keeps it there (noteCached).
 func (a *Agent) inCache(ctx context.Context, prefix string) bool {
+	h := sha256.Sum256([]byte(prefix))
 	a.mu.Lock()
 	ch, writing := a.writing[prefix]
-	at, ok := a.cached[sha256.Sum256([]byte(prefix))]
 	a.mu.Unlock()
 	if writing {
 		select {
 		case <-ch:
-			return true
 		case <-ctx.Done():
 			return false
 		}
 	}
+	a.mu.Lock()
+	at, ok := a.cached[h]
+	a.mu.Unlock()
 	return ok && time.Since(at) < cachedFor
 }
 
@@ -466,7 +469,10 @@ func (a *Agent) start(ctx context.Context, model, effort string, r role, extra .
 			cmd.Env = append(cmd.Env, "CLAUDE_CODE_DISABLE_CLAUDE_MDS=1")
 		}
 	}
-	p = &proc{prefix: model + " " + effort, ctx: ctx, cmd: cmd, done: done, onLimits: a.noteLimits}
+	// The system prompt and tools head the cache prefix: a change to
+	// AGENTS.md leaves no entry cached for the old one.
+	prefix := fmt.Sprintf("%s %s %x", model, effort, sha256.Sum256([]byte(system+"\x00"+tools)))
+	p = &proc{prefix: prefix, ctx: ctx, cmd: cmd, done: done, onLimits: a.noteLimits}
 	cmd.Stderr = &p.stderr
 	if p.stdin, err = cmd.StdinPipe(); err != nil {
 		return nil, err
@@ -736,8 +742,10 @@ func (a *Agent) compactView(ctx context.Context, prefix string, lines []string, 
 		return first, rest
 	}
 	cut := viewCut(lines, stable, ccheckpoint)
-	for n := cut; n > 0 && n >= cut-creuse; n -= ccheckpoint {
-		f, r := splitView(lines, n, ccheckpoint, task)
+	for n, f, r := cut, first, rest; n > 0 && n >= cut-creuse; n -= ccheckpoint {
+		if n < cut {
+			f, r = splitView(lines, n, ccheckpoint, task)
+		}
 		if key := prefix + "\x00" + f[0].Text; a.inCache(ctx, key) {
 			a.noteCached(key)
 			return nil, slices.Concat(f, []block{textBlock(viewHere)}, r)
@@ -749,17 +757,20 @@ func (a *Agent) compactView(ctx context.Context, prefix string, lines []string, 
 // ack sends the view's first message and waits out the model's "ok",
 // handing each other event to each (nil: drop them). Calls waiting to write
 // the same first message go on as its response begins: the cache holds it
-// from then on, as UniiChat's single flight has it (AskAI.ts wait).
+// from then on (noteCached), as UniiChat's single flight has it (AskAI.ts
+// wait). A call that fails before lets them go with nothing cached.
 func (a *Agent) ack(p *proc, first []block, u *usage, each func(event)) error {
 	if first == nil {
 		return nil
 	}
-	release := sync.OnceFunc(a.writeOnce(p.ctx, p.prefix+"\x00"+first[0].Text))
+	key := p.prefix + "\x00" + first[0].Text
+	release := sync.OnceFunc(a.writeOnce(p.ctx, key))
 	defer release()
+	began := sync.OnceFunc(func() { a.noteCached(key); release() })
 	p.send(first...)
 	return awaitResult(p, u, func(e event) {
 		if e.Type == "stream_event" || e.Type == "assistant" { // the response; not its own events, nor a mode switch's answer
-			release()
+			began()
 		}
 		if each != nil {
 			each(e)
@@ -806,9 +817,6 @@ func (a *Agent) Compact(ctx context.Context, lines []string, stable int, task []
 	first, rest := a.compactView(p.ctx, p.prefix, lines, stable, task)
 	if err := a.ack(p, first, &u, nil); err != nil {
 		return "", err
-	}
-	if first != nil {
-		a.noteCached(p.prefix + "\x00" + first[0].Text)
 	}
 	p.send(rest...)
 	best, acks := "", 0

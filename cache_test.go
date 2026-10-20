@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"crypto/sha256"
 	"fmt"
@@ -94,25 +95,24 @@ func (f *fakeCache) ask(kind string, msgs [][]string, own int, ack bool) {
 func texts(bs []block) []string { return lo.Map(bs, func(b block, _ int) string { return b.Text }) }
 
 // call makes a call's requests as Agent.ack and the call after it do: the
-// first message alone, written once while others wait, then with the rest.
+// first message alone, written once while others wait and noted cached as
+// its response begins, then with the rest. Its kind stands for its prefix.
 func (f *fakeCache) call(a *Agent, kind string, first, second []block, own int) {
 	if first == nil {
 		f.ask(kind, [][]string{texts(second)}, own, false)
 		return
 	}
-	release := a.writeOnce(context.Background(), "\x00"+first[0].Text)
+	release := a.writeOnce(context.Background(), kind+"\x00"+first[0].Text)
 	f.ask(kind, [][]string{texts(first)}, 0, true)
+	a.noteCached(kind + "\x00" + first[0].Text)
 	release()
 	f.ask(kind, [][]string{texts(first), {"ok"}, texts(second)}, own, false)
 }
 
 // compact makes a compaction's requests as Agent.Compact does.
 func (f *fakeCache) compact(a *Agent, lines []string, stable int, task []block, own int) {
-	first, rest := a.compactView(context.Background(), "", lines, stable, task)
+	first, rest := a.compactView(context.Background(), "compaction", lines, stable, task)
 	f.call(a, "compaction", first, rest, own)
-	if first != nil {
-		a.noteCached("\x00" + first[0].Text)
-	}
 }
 
 // A few thousand messages, with an import of 1,500 in the middle and the
@@ -294,8 +294,34 @@ func TestCompactView(t *testing.T) {
 		t.Fatal("went on while another call wrote the first message")
 	case <-time.After(50 * time.Millisecond):
 	}
+	a.noteCached("m\x00" + first[0].Text) // its response begins, as ack has it
 	release()
 	if f := <-done; f != nil {
 		t.Fatal("wrote the first message another call had just written")
+	}
+}
+
+// An ack notes its first message cached as its response begins, and only
+// then: a call that waited on one that failed before it writes it anew.
+func TestAckNotesCached(t *testing.T) {
+	a := &Agent{writing: map[string]chan struct{}{}}
+	ack := func(out ...string) error {
+		p := &proc{prefix: "m", ctx: t.Context(), out: bufio.NewScanner(strings.NewReader(strings.Join(out, "\n")))}
+		return a.ack(p, []block{textBlock("view")}, &usage{}, nil)
+	}
+	if err := ack(`{"type":"result","is_error":true,"result":"overloaded"}`); err == nil || a.inCache(t.Context(), "m\x00view") {
+		t.Fatalf("a failed ack left its first message cached: %v", err)
+	}
+	if err := ack(`{"type":"stream_event","event":{"type":"message_start"}}`, `{"type":"result","result":"ok"}`); err != nil || !a.inCache(t.Context(), "m\x00view") {
+		t.Fatalf("an ack's first message not cached: %v", err)
+	}
+	// A call waiting on a writer that fails finds nothing cached.
+	release := a.writeOnce(t.Context(), "m\x00other")
+	done := make(chan bool)
+	go func() { done <- a.inCache(t.Context(), "m\x00other") }()
+	time.Sleep(20 * time.Millisecond)
+	release()
+	if <-done {
+		t.Fatal("a writer that failed left its first message cached")
 	}
 }

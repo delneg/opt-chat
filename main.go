@@ -43,7 +43,8 @@ func main() {
 	ownConfig := flag.Bool("claude-config", true, "give turns and subagents your Claude Code skills, plugins, MCP servers and settings (never its hooks, CLAUDE.md or memory)")
 	claudeMd := flag.Bool("claude-md", true, "with -claude-config, give turns and subagents the CLAUDE.md files of the folders they work in (never ~/.claude/CLAUDE.md)")
 	wake := flag.Bool("wake", true, "let Opt set wake-ups: messages to itself at a time, kept in <dir>/wake.jsonl")
-	autoResume := flag.Bool("auto-resume", true, fmt.Sprintf("as opt-chat starts, resume the subagents a quit, a crash or /reload cut off mid-task, under a day ago, up to %d times in a row", resumeMax))
+	autoResume := flag.Bool("auto-resume", true, fmt.Sprintf("as opt-chat starts, resume Opt's turn and the subagents a quit, a crash or /reload cut off mid-task, under a day ago, up to %d times in a row", resumeMax))
+	hideEmail := flag.Bool("hide-email", true, "drop your Claude account's email from the context Claude Code adds to calls, where it can (see email.go)")
 	importPath := flag.String("import", "", "import past chats, then chat: a ~/.claude or ~/.codex directory, a session's .jsonl, a Claude or ChatGPT export (.zip), or a text file whose lines become notes")
 	importSince := flag.String("import-since", "", "import only messages from this day on (YYYY-MM-DD)")
 	importTools := flag.Bool("import-tools", false, "import tool calls and results too")
@@ -115,6 +116,11 @@ func main() {
 		running: map[string]*proc{}, writing: map[string]chan struct{}{}, report: func(text string) { h.input(message{kind: "work", text: text}) }, autoResume: *autoResume}
 	a.life, a.stop = context.WithCancel(context.Background())
 	h.agent = a
+	if *hideEmail {
+		if a.noEmail, err = writeEmailPlugin(*dir); err != nil {
+			warn("the plugin that hides your email: %v", err)
+		}
+	}
 	if a.mcpConfig, a.agentMCP, err = serveMCP(a); err != nil {
 		fatal("mcp: %v", err)
 	}
@@ -148,6 +154,11 @@ func main() {
 	c.pump()
 	c.mu.Unlock()
 	a.resumeCut(cut)
+	if note, resume := a.recoverTurn(); resume { // a turn starts on it
+		h.input(message{kind: "work", text: note})
+	} else if note != "" {
+		c.Log("work", note)
+	}
 	rl, err := newReloader(flag.CommandLine)
 	if err != nil {
 		warn("reload: %v", err)
@@ -552,11 +563,18 @@ func (h *harness) loop() {
 		h.turn = t
 		h.mu.Unlock()
 		h.agent.setWoken(wakeOnly(msgs))
-		if err := t.Run(ctx, msgs); err != nil && ctx.Err() == nil {
+		h.agent.turnBegan()
+		err := t.Run(ctx, msgs)
+		if err != nil && ctx.Err() == nil {
 			c.hub.notice("warn", "turn: %v", err)
 		}
 		h.agent.setWoken(false)
 		h.mu.Lock()
+		quitting := h.quitting
+		h.agent.turnEnded(quitting)
+		if note := endNote(err, ctx.Err() != nil, h.stopped, quitting); note != "" { // for Opt's next turn
+			c.Log("work", note)
+		}
 		h.turn = nil
 		var left []queued
 		for _, m := range t.detach() { // taken, and logged, but the call ended before it got them

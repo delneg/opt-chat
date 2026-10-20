@@ -73,6 +73,7 @@ var (
 			"each with a snippet, its date, and the view's line that holds it, to zoom into; when none does, the 10 that best share its words. before: go on from this message id.",
 			schema([]string{"text"}, map[string]any{"text": str, "before": num})),
 		tool("spawn", `Start a subagent on a task, in the background, and return at once. Its report comes back as a message starting "[Name]". Never wait for it. `+
+			"A subagent sees the view and the user's instructions, but knows what you want only from its task. "+
 			"effort: how long it thinks first; more is smarter and slower. Leave it out for the default. "+
 			"model: the Claude it runs on: opus (the default), fable, sonnet, haiku, or a full model name; leave it out unless the user asks for one. "+
 			"autocompact: for a long task, a context size in tokens: once the subagent has reported past it, opt-chat compacts it at rest, never mid-step, and its next message (a tell) brings the view and its task again; leave it out for the user's setting (/autocompact). "+

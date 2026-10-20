@@ -71,7 +71,7 @@ cache over.
 | `-tools` | `Bash,Read,Edit,Write,WebSearch,WebFetch` | Claude Code tools |
 | `-claude-config` | on | your skills, plugins, MCP servers and settings |
 | `-claude-md`, `-wake` | on | the CLAUDE.md files of the folders Opt works in; wake-ups |
-| `-auto-resume` | on | resume cut-off subagents at start |
+| `-auto-resume` | on | resume a cut-off turn and subagents at start |
 | `-import` | | import past chats first; see `-import-since`, `-import-tools`, `-import-skip` in the guide |
 | `-addr` | last run's port | `127.0.0.1:port` |
 | `-open` | `true` | open the page in the browser |

@@ -52,6 +52,7 @@ type Agent struct {
 	autoResume bool              // a start resumes the subagents a quit, crash or reload cut off: see resume.go
 	onReload   func()            // /reload's: see reload.go; nil: none
 	wakes      *waker            // the wake tool's (-wake); nil: off
+	noEmail    string            // the plugin that drops the account's email from calls' context, by folder; "": none. See email.go
 
 	life  context.Context // canceled at quit: every call stops
 	stop  context.CancelFunc
@@ -384,6 +385,9 @@ func (a *Agent) start(ctx context.Context, model, effort string, r role, extra .
 	} else {
 		// Nothing of the user's Claude Code setup leaks in: no hooks, plugins, CLAUDE.md or MCP servers.
 		args = append(args, "--setting-sources", "", "--strict-mcp-config", "--disable-slash-commands")
+		if a.noEmail != "" { // under disableAllHooks, with the user's setup, it can't run
+			args = append(args, "--plugin-dir", a.noEmail)
+		}
 		if r != roleCompact { // noTools says it for compactions
 			args = append(args, "--settings", `{"autoCompactEnabled":false}`)
 		}
@@ -1080,6 +1084,7 @@ func (t *Turn) Run(ctx context.Context, msgs []message) error {
 	}
 	t.p, t.pending = p, nil
 	t.mu.Unlock()
+	failed := "" // what its result said went wrong
 	for {
 		e, ok := p.next()
 		if !ok {
@@ -1091,7 +1096,7 @@ func (t *Turn) Run(ctx context.Context, msgs []message) error {
 		}
 		u.add(e.Usage)
 		if e.IsError && ctx.Err() == nil && !p.declined.Load() {
-			h.notice("warn", "turn: %s", e.failure())
+			failed = e.failure()
 		}
 		// Claude Code delivers a message sent mid-run into this same result,
 		// so the call is done: close it to new messages and let it exit.
@@ -1101,6 +1106,8 @@ func (t *Turn) Run(ctx context.Context, msgs []message) error {
 	err = p.wait()
 	if p.declined.Load() { // the user said no, which ends the turn: no failure
 		err = nil
+	} else if failed != "" { // said better than by its exit status
+		err = errors.New(failed)
 	}
 	if s := written.String(); s != "" { // stopped mid-reply: what it said stays in the chat
 		h.clearText()

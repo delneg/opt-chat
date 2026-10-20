@@ -63,7 +63,10 @@ a { color: var(--blue); }
 /* tool calls */
 .msg.tool { margin-bottom: .8em; }
 .msg.tool > .mark { color: var(--green); }
-.msg.tool.run > .mark { animation: blink 1s steps(2, start) infinite; color: var(--dim); }
+.msg.tool.run > .mark { color: var(--dim); }
+/* a mark moves only while its thing is in progress: a tool call with no
+   result yet, a reply streaming, a subagent at work; still once done */
+.msg.tool.run > .mark, .msg.opt.live > .mark, .dot.moving { animation: pulse 1s ease-in-out infinite; }
 .msg.tool.cut > .mark { color: var(--red); }
 .tool .head { cursor: pointer; }
 .tool .name { font-weight: 600; }
@@ -81,8 +84,8 @@ a { color: var(--blue); }
 .diff .del { color: var(--red); }
 .diff .add { color: var(--green); }
 .cut-note { color: var(--red); }
-@keyframes blink { to { visibility: hidden; } }
-@media (prefers-reduced-motion: reduce) { .msg.tool.run > .mark { animation: none; } }
+@keyframes pulse { 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) { .msg.tool.run > .mark, .msg.opt.live > .mark, .dot.moving { animation: none; } }
 
 /* markdown: a reply's own markup stays inside it (contain), whatever it is */
 .md { contain: paint; }
@@ -148,6 +151,17 @@ a { color: var(--blue); }
 .dock { flex: none; border-top: 1px solid transparent; padding-bottom: .4em; }
 .spinner { color: var(--accent); padding: .35em 0 .15em; display: flex; gap: 1ch; flex-wrap: wrap; }
 .spinner .glyph { display: inline-block; width: 1.5ch; }
+/* the spinner's star (Glyph): its glyphs stacked, each shown 120 ms in
+   turn, there and back, as Claude Code's; the colour shimmers gently */
+.spin { display: inline-grid; width: 1.5ch; animation: shimmer 2.4s ease-in-out infinite alternate; }
+.spin > i { grid-area: 1 / 1; font-style: normal; text-align: center; opacity: 0; animation: frame 1.2s linear infinite; animation-delay: calc(var(--k) * 120ms - 1.2s); }
+@keyframes frame { 0%, 9.99% { opacity: 1; } 10%, 100% { opacity: 0; } }
+@keyframes shimmer { to { color: color-mix(in srgb, currentColor 55%, var(--bg)); } }
+@media (prefers-reduced-motion: reduce) {
+  .spin { animation: none; }
+  .spin > i { animation: none; }
+  .spin > i.rest { opacity: 1; }
+}
 .spinner .meta { color: var(--dim); }
 .spinner .meta button:hover { color: var(--fg); }
 .queue { padding: .1em 0 .3em; }
@@ -190,7 +204,6 @@ a { color: var(--blue); }
 .rec .keys button:hover { color: var(--fg); }
 .rec kbd { font-family: inherit; background: var(--chip); border-radius: 3px; padding: 0 .5ch; color: var(--dim); }
 .rec .quiet { flex-basis: 100%; color: var(--yellow); font-size: .85em; }
-@keyframes pulse { 50% { opacity: .35; } }
 @media (prefers-reduced-motion: reduce) { .rec .dot { animation: none; } }
 /* a voice message in the chat: it plays, and its words follow */
 .voice .player { display: flex; align-items: center; gap: 1ch; color: var(--dim); font-size: .9em; }
@@ -335,7 +348,7 @@ a { color: var(--blue); }
 .card .now .args { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .card .now .dim { color: var(--faint); flex: none; padding-left: 1ch; }
 :is(.rail, .full-head) .dot { margin-right: 1ch; color: var(--faint); }
-:is(.rail, .full-head) .work .dot { color: var(--accent); animation: blink 1s steps(2, start) infinite; }
+:is(.rail, .full-head) .work .dot { color: var(--accent); }
 :is(.rail, .full-head) .rest .dot { color: var(--blue); }
 :is(.rail, .full-head) .ask .dot, :is(.rail, .full-head) .state.ask, .card.ask .state, :is(.rail, .full-head) .stop .dot { color: var(--yellow); }
 :is(.rail, .full-head) .bad .dot, :is(.rail, .full-head) .state.bad, .card.bad .state { color: var(--red); }
@@ -345,7 +358,6 @@ a { color: var(--blue); }
 .rail-log .edge { padding: 0 0 1em; }
 @media (prefers-reduced-motion: reduce) {
   .rail.drawer { animation: none; }
-  :is(.rail, .full-head) .work .dot { animation: none; }
 }
 .card .now .el { flex: none; padding-right: 1ch; }
 .card.on { background: var(--bg); box-shadow: 0 0 0 1px var(--blue); cursor: default; }

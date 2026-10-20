@@ -1620,16 +1620,14 @@ function Panel() {
 
 // ---------------------------------------------------------------- the page
 
-const still = matchMedia('(prefers-reduced-motion: reduce)'); // then the glyph stays put
+// Glyph is the spinner's star, as Claude Code's: its glyphs there and back,
+// 120 ms each. CSS turns them (style.css, .spin), so no frame renders the
+// page; with reduced motion it is a still ✻.
 const glyphs = ['·', '✢', '✳', '✶', '✻', '✽', '✻', '✶', '✳', '✢'];
+const Glyph = memo(() => html`<span class="spin" aria-hidden="true">${glyphs.map((g, j) => html`<i class=${j === 4 ? 'rest' : ''} style=${{ '--k': j }}>${g}</i>`)}</span>`);
 
 function Spinner({ turn, chars, queued }) {
-  const [, tick] = useState(0);
-  useEffect(() => {
-    const t = setInterval(() => tick(n => n + 1), 120);
-    return () => clearInterval(t);
-  }, []);
-  const g = still.matches ? '✻' : glyphs[Math.floor(Date.now() / 120) % glyphs.length];
+  useClock(true); // its time, each second
   let verb = 'Thinking';
   switch (S.asks.length ? 'asks' : turn.phase) {
     case 'asks': verb = 'Waiting for your permission'; break;
@@ -1645,7 +1643,7 @@ function Spinner({ turn, chars, queued }) {
   if (turn.phase === 'settling' && turn.written) meta.push(`${count(turn.written, 'line')} written`);
   meta.push(html`<button title="stop the turn" onClick=${() => send({ t: 'stop' })}>esc to interrupt</button>`);
   if (queued || turn.phase === 'settling') meta.push(html`<button title="stop the turn and send the queue now" onClick=${() => send({ t: 'now' })}>⌘⏎ send now</button>`);
-  return html`<div class="spinner"><span><span class="glyph" aria-hidden="true">${g}</span>${verb}…</span><span class="meta">(${meta.map((x, j) => html`${j ? ' · ' : ''}${x}`)})</span>
+  return html`<div class="spinner"><span><${Glyph}/>${verb}…</span><span class="meta">(${meta.map((x, j) => html`${j ? ' · ' : ''}${x}`)})</span>
     ${turn.partial > 0 && html`<span class="meta">memory partial: ${count(turn.partial, 'message')} not summarized yet</span>`}</div>`;
 }
 
@@ -2055,6 +2053,11 @@ function subState(s, now) {
   }
 }
 
+// moving is a sub in progress, whose dot pulses: at work, starting or
+// compacting, and not waiting on the user.
+function moving(s) { return ['working', 'starting', 'compacting'].includes(s?.state) && !S.asks.some(q => q.who === s.name); }
+function Dot({ s }) { return html`<span class=${'dot' + (moving(s) ? ' moving' : '')} aria-hidden="true">●</span>`; }
+
 function subMeta(s) {
   return [s.model, s.effort, s.context && `${k(s.context)} context${s.window ? ` of ${k(s.window)} before it compacts` : ''}`, s.steps && count(s.steps, 'step')].filter(Boolean).join(' · ');
 }
@@ -2151,7 +2154,7 @@ function AgentCard({ s, now }) {
   const on = S.full === s.name;
   return html`<div class=${'card ' + cls + (on ? ' on' : '')} role="button" tabindex="0" aria-current=${on ? 'true' : undefined} onClick=${open} onKeyDown=${e => e.target === e.currentTarget && open(e)}
       title=${on ? 'full screen now' : S.full ? 'full screen instead' : 'open its steps'}>
-    <div class="top"><span class="dot" aria-hidden="true">●</span><span class="name">[${s.name}]</span><span class="state">${label}</span>
+    <div class="top"><${Dot} s=${s}/><span class="name">[${s.name}]</span><span class="state">${label}</span>
       ${!on && html`<${FullButton} name=${s.name}/>`}<${SubAction} s=${s}/></div>
     <div class="meta">${subMeta(s)}</div>
     ${tool && cls !== 'done' && html`<div class="now"><span class="el" aria-hidden="true">⎿</span><span class="tname">${tool.name}</span><span class="args">(${toolArgs(tool.name, tool.input, tool.raw)})</span>${cls === 'work' && s.stepAt ? html`<span class="dim">· ${elapsed(now - s.stepAt)}</span>` : ''}</div>`}
@@ -2222,7 +2225,7 @@ function AgentView({ a, s, now }) {
   const [cls, label] = s ? subState(s, now) : ['done', 'not in this run'];
   return html`<div class="rail-head">
       <button class="back" title="all agents (Esc)" onClick=${closeAgent}>←</button>
-      <span class=${'agent-name ' + cls}><span class="dot" aria-hidden="true">●</span>[${a.name}]</span>
+      <span class=${'agent-name ' + cls}><${Dot} s=${s}/>[${a.name}]</span>
       <span class=${'state ' + cls}>${label}</span>
       ${s && html`<${FullButton} name=${a.name}/><${SubAction} s=${s}/>`}
       <button class="x" title=${S.wide ? 'hide until a new subagent starts (Alt+A or the bar\'s agents show it again)' : 'close (Esc)'} onClick=${() => toggleRail()}>×</button>
@@ -2346,7 +2349,7 @@ function AgentFull({ a, s }) {
   return html`<section class="full" aria-label=${`[${a.name}] full screen`}>
     <div class="full-head"><div class="column">
       <button class="back" title="back to Opt's chat (Alt+O; Esc while it is not at work)" onClick=${() => leaveFull()}>← Opt</button>
-      <span class=${'agent-name ' + cls}><span class="dot" aria-hidden="true">●</span>[${a.name}]</span>
+      <span class=${'agent-name ' + cls}><${Dot} s=${s}/>[${a.name}]</span>
       <span class=${'state ' + cls}>${label}${took ? ' · ' + took : ''}</span>
       <span class="acts">
         <button class=${'act' + (S.ctx ? ' on' : '')} aria-pressed=${!!S.ctx} title="what it reads: its model, effort and context" onClick=${() => S.ctx ? set({ ctx: null }) : askCtx(a.name)}>context</button>
@@ -2395,19 +2398,13 @@ function CtxSection({ x, k }) {
 function FullBar({ s }) {
   const busy = !!s && (s.state === 'working' || s.state === 'starting');
   const optBusy = !!S.turn.phase, optAsks = S.asks.some(q => q.who !== S.full);
-  const [, tick] = useState(0);
-  useEffect(() => {
-    if (!busy && !optBusy && s?.state !== 'resting') return;
-    const t = setInterval(() => tick(n => n + 1), busy || optBusy ? 120 : 1000);
-    return () => clearInterval(t);
-  }, [busy, optBusy, s?.state]);
-  const now = Date.now(), g = still.matches ? '✻' : glyphs[Math.floor(now / 120) % glyphs.length];
+  const now = useClock(busy || s?.state === 'resting');
   const [cls, label, took] = s ? fullState(s, now) : ['done', 'not in this run'];
   const meta = busy ? [took, s.steps && count(s.steps, 'step'), s.context && `${k(s.context)} context`].filter(Boolean) : [];
-  const opt = optAsks ? '? Opt waits for your answer' : optBusy ? `${g} Opt working` : '';
+  const opt = optAsks ? '? Opt waits for your answer' : optBusy ? html`<${Glyph}/>Opt working` : '';
   return html`<div class=${'spinner fullbar st-' + cls}>
     ${busy
-      ? html`<span><span class="glyph" aria-hidden="true">${g}</span>[${S.full}] ${label}…</span><span class="meta">(${meta.map(x => x + ' · ')}<button title="stop it now" onClick=${stopFull}>esc to interrupt</button>)</span>`
+      ? html`<span><${Glyph}/>[${S.full}] ${label}…</span><span class="meta">(${meta.map(x => x + ' · ')}<button title="stop it now" onClick=${stopFull}>esc to interrupt</button>)</span>`
       : html`<span class="still"><span class="glyph" aria-hidden="true">●</span>[${S.full}] ${label}</span>`}
     ${(opt || S.queue.length > 0) && html`<button class="opt-note" title="back to Opt's chat (Alt+O)" onClick=${() => leaveFull()}>${opt}${opt && S.queue.length ? ' · ' : ''}${S.queue.length ? count(S.queue.length, 'message') + ' queued for Opt' : ''}</button>`}
   </div>`;

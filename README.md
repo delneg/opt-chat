@@ -91,17 +91,8 @@ never edit the logs: they're the chat's history.
   Claude Code setup, subagents, and who can reach the page.
 - [Design notes](docs/2026-10-12-design.md): where opt-chat departs from the
   recipe and why, with what was measured.
-- [CLAUDE.md](CLAUDE.md): notes for working on the code.
-
-## Test
-
-```sh
-go test ./...          # a few minutes: some tests fsync thousands of writes
-go test -short ./...   # skips those
-```
-
-The tests run against a fake `claude`: the test binary itself, speaking
-stream-json.
+- [CLAUDE.md](CLAUDE.md): notes for working on the code, and how to test
+  it: the tests run against a fake `claude`, never the real one.
 
 ## License
 

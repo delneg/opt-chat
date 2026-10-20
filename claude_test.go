@@ -326,6 +326,10 @@ func fakeClaude() {
 			say(textBlock("working"))
 			<-stop
 			os.Exit(143)
+		case strings.Contains(in, "answer-then-linger"): // as Claude Code, slow to exit after its result
+			result("answered")
+			<-stop
+			os.Exit(143)
 		case strings.Contains(in, "stream-reply"):
 			emit(map[string]any{"type": "rate_limit_event", "rate_limit_info": map[string]any{"status": "allowed", "unifiedWindows": map[string]any{
 				"five_hour": map[string]any{"utilization": 0.09, "resetsAt": 1_800_010_000}, "seven_day": map[string]any{"utilization": 0.31, "resetsAt": 1_800_500_000}}}})

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"os"
 	"path/filepath"
 )
@@ -44,7 +43,7 @@ func writeEmailPlugin(dir string) (string, error) {
 	root := filepath.Join(dir, "claude-plugin")
 	for name, body := range emailPlugin {
 		path := filepath.Join(root, name)
-		if b, err := os.ReadFile(path); err == nil && bytes.Equal(b, []byte(body)) {
+		if b, err := os.ReadFile(path); err == nil && string(b) == body {
 			continue
 		}
 		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {

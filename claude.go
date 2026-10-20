@@ -957,13 +957,14 @@ func (c *Chat) interleave(text string, names []string) []block {
 // Turn is one fresh `claude -p` call: [system] [view] [message], logging
 // each reply, tool call and result as it happens.
 type Turn struct {
-	agent   *Agent
-	onTool  func() // called as each tool call starts: queued messages join the turn then
-	mu      sync.Mutex
-	open    bool      // taking messages: from its own until its result
-	p       *proc     // set once the view and input are sent
-	pending []message // taken while the view was being sent
-	tools   int       // tool calls started and not answered
+	agent    *Agent
+	onTool   func() // called as each tool call starts: queued messages join the turn then
+	mu       sync.Mutex
+	open     bool      // taking messages: from its own until its result
+	p        *proc     // set once the view and input are sent
+	pending  []message // taken while the view was being sent
+	tools    int       // tool calls started and not answered
+	answered bool      // its last result went well: set by Run, read once it returns
 }
 
 // inTool reports whether a tool call is running: a message sent now reaches
@@ -1205,6 +1206,7 @@ func (t *Turn) Run(ctx context.Context, msgs []message) error {
 			continue
 		}
 		u.add(e.Usage)
+		t.answered = !e.IsError
 		if !e.IsError {
 			failed = "" // a later result went well: the turn did not fail
 		} else if ctx.Err() == nil && !p.declined.Load() {
@@ -1216,10 +1218,13 @@ func (t *Turn) Run(ctx context.Context, msgs []message) error {
 	}
 	t.detach()
 	err = p.wait()
-	if p.declined.Load() { // the user said no, which ends the turn: no failure
+	switch {
+	case p.declined.Load(): // the user said no, which ends the turn: no failure
 		err = nil
-	} else if failed != "" { // said better than by its exit status
+	case failed != "": // said better than by its exit status
 		err = errors.New(failed)
+	case t.answered && ctx.Err() != nil: // stopped as it exited after its answer: no failure
+		err = nil
 	}
 	if s := written.String(); s != "" { // stopped mid-reply: what it said stays in the chat
 		h.clearText()

@@ -44,7 +44,7 @@ func main() {
 	claudeMd := flag.Bool("claude-md", true, "with -claude-config, give turns and subagents the CLAUDE.md files of the folders they work in (never ~/.claude/CLAUDE.md)")
 	wake := flag.Bool("wake", true, "let Opt set wake-ups: messages to itself at a time, kept in <dir>/wake.jsonl")
 	autoResume := flag.Bool("auto-resume", true, fmt.Sprintf("as opt-chat starts, resume Opt's turn and the subagents a quit, a crash or /reload cut off mid-task, under a day ago, up to %d times in a row", resumeMax))
-	hideEmail := flag.Bool("hide-email", true, "drop your Claude account's email from the context Claude Code adds to calls, where it can (see email.go)")
+	hideEmail := flag.Bool("hide-email", true, "drop your Claude account's email from the context Claude Code adds to calls: always in compactions, and in turns and subagents with -claude-config=false")
 	importPath := flag.String("import", "", "import past chats, then chat: a ~/.claude or ~/.codex directory, a session's .jsonl, a Claude or ChatGPT export (.zip), or a text file whose lines become notes")
 	importSince := flag.String("import-since", "", "import only messages from this day on (YYYY-MM-DD)")
 	importTools := flag.Bool("import-tools", false, "import tool calls and results too")
@@ -516,6 +516,7 @@ func (h *harness) loop() {
 		h.mu.Lock()
 		if len(h.queue) == 0 || h.quitting {
 			logAll(c, h.take()) // stays in the log, unanswered
+			h.agent.turnUnbegun(h.quitting)
 			h.running, h.cancel, h.stopped, h.hurry = false, nil, false, false
 			h.publish()
 			c.hub.setTurn(func(lt *liveTurn) { *lt = liveTurn{} })
@@ -570,9 +571,10 @@ func (h *harness) loop() {
 		}
 		h.agent.setWoken(false)
 		h.mu.Lock()
-		quitting := h.quitting
+		cut := ctx.Err() != nil && !t.answered // stopped after its answer, as it exited: not cut
+		quitting := h.quitting && cut && !h.stopped
 		h.agent.turnEnded(quitting)
-		if note := endNote(err, ctx.Err() != nil, h.stopped, quitting); note != "" { // for Opt's next turn
+		if note := endNote(err, cut, h.stopped, quitting); note != "" { // for Opt's next turn
 			c.Log("work", note)
 		}
 		h.turn = nil

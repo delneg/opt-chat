@@ -19,7 +19,7 @@ import (
 
 // turnRecord is the turn underway, as turn.json keeps it.
 type turnRecord struct {
-	State   string `json:"state"`            // running; quit: a quit cut it off
+	State   string `json:"state"`            // running; resumed: by a start, its turn not begun yet; quit: a quit cut it off
 	Resumes int    `json:"resumes,omitzero"` // times a start resumed it since a turn last ended
 }
 
@@ -64,14 +64,15 @@ func (a *Agent) turnEnded(quit bool) {
 
 // endNote is what the chat says of a turn that ended short, in a way Opt
 // reads at its next turn; "" when it ended as it should, or a quit cut it
-// off (the next start says so). cut: its call was stopped; stopped: by the
-// user's stop; else by a message they sent at once.
+// off (the next start says so). cut: its call was stopped before its
+// answer; stopped: by the user's stop, even with a quit after it; else by
+// a message they sent at once.
 func endNote(err error, cut, stopped, quitting bool) string {
 	switch {
-	case quitting:
-		return ""
 	case cut && stopped:
 		return "[opt-chat] Stopped by the user."
+	case quitting:
+		return ""
 	case cut:
 		return "[opt-chat] Stopped by the user, who sent the next message at once."
 	case err != nil:
@@ -80,25 +81,35 @@ func endNote(err error, cut, stopped, quitting bool) string {
 	return ""
 }
 
+// turnUnbegun, as the turns' loop ends, settles a resumed turn that never
+// began: a quit leaves it for the next start; a stop ends it.
+func (a *Agent) turnUnbegun(quit bool) {
+	if r, ok := a.loadTurn(); ok && r.State == "resumed" {
+		if quit {
+			r.State = "quit"
+			a.saveTurn(r)
+		} else {
+			a.turnEnded(false)
+		}
+	}
+}
+
 // recoverTurn, as opt-chat starts, finds the turn a quit or a crash cut
 // off, and gives the note that says so; resume: start a turn on it. One is
 // resumed while -auto-resume is on, under a day after it was cut off, and
 // fewer than resumeMax times in a row: one that ends opt-chat each time
-// stops. A quit with no turn underway leaves none.
+// stops. A crash before a resumed turn began cuts it as one underway. A
+// quit with no turn underway leaves none.
 func (a *Agent) recoverTurn() (note string, resume bool) {
 	r, ok := a.loadTurn()
-	if !ok {
-		os.Remove(a.turnPath())
-		return "", false
-	}
 	fi, err := os.Stat(a.turnPath())
-	if err != nil || (r.State != "running" && r.State != "quit") {
+	if !ok || err != nil || (r.State != "running" && r.State != "resumed" && r.State != "quit") {
 		os.Remove(a.turnPath())
 		return "", false
 	}
-	how := "quit"
-	if r.State == "running" {
-		how = "ended without quitting (a crash?)"
+	how := "Quit"
+	if r.State != "quit" {
+		how = "Ended without quitting (a crash?)"
 	}
 	why := ""
 	switch {
@@ -110,8 +121,8 @@ func (a *Agent) recoverTurn() (note string, resume bool) {
 	}
 	if !a.autoResume || why != "" {
 		os.Remove(a.turnPath())
-		return fmt.Sprintf("[opt-chat] opt-chat %s while Opt's turn was underway, cutting it off.%s", how, why), false
+		return fmt.Sprintf("[opt-chat] %s while Opt's turn was underway, cutting it off.%s", how, why), false
 	}
 	a.saveTurn(turnRecord{State: "resumed", Resumes: r.Resumes + 1})
-	return fmt.Sprintf("[opt-chat] opt-chat %s while Opt's turn was underway, cutting it off, and has started again: nothing was lost, go on with that turn. %s", how, cutShort), true
+	return fmt.Sprintf("[opt-chat] %s while Opt's turn was underway, cutting it off, and has started again: nothing was lost, go on with that turn. %s", how, cutShort), true
 }

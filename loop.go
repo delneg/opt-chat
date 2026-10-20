@@ -91,10 +91,10 @@ func (l *loopHook) stop(ctx context.Context, session, last string, again bool) (
 // loopState is a subagent's loop, in its call.
 type loopState struct {
 	hook       *loopHook
-	turns      int      // started by the hook since the last report
-	again      bool     // the turn ending now was the hook's
-	compacting bool     // between turns: next goes after
-	next       []string // the next message's texts
+	turns      int    // started by the hook since the last report
+	again      bool   // the turn ending now was the hook's
+	compacting bool   // between turns: next goes after
+	next       []tell // the next message's
 }
 
 // looping says whether name is in a loop; a.mu held.
@@ -104,22 +104,20 @@ func (a *Agent) looping(name string) bool {
 }
 
 // takeHeld gives the tells held for name, logged now, as it gets them.
-func (a *Agent) takeHeld(name string) []string {
+func (a *Agent) takeHeld(name string) []tell {
 	a.mu.Lock()
 	q := a.held[name]
 	if len(q) > 0 {
 		a.held[name] = nil
 	}
 	a.mu.Unlock()
-	for _, t := range q {
-		a.agentWrite(name, "opt", t)
-	}
+	a.logTells(name, q)
 	return q
 }
 
-// loopStep, as a turn ends, gives the next message's texts, or none for a
-// report, with what to add to it: Opt's tells first, then the hook's.
-func (a *Agent) loopStep(name string, h *halt, lp *loopState, session string, e event) ([]string, string) {
+// loopStep, as a turn ends, gives the next message's tells, or none for a
+// report, with what to add to it: Opt's and the user's first, then the hook's.
+func (a *Agent) loopStep(name string, h *halt, lp *loopState, session string, e event) ([]tell, string) {
 	if q := a.takeHeld(name); len(q) > 0 {
 		lp.again = false
 		return q, ""
@@ -146,7 +144,7 @@ func (a *Agent) loopStep(name string, h *halt, lp *loopState, session string, e 
 			lp.turns++
 			lp.again = true
 			a.agentWrite(name, "loop", reason)
-			return []string{loopFeedback + reason}, ""
+			return []tell{{text: loopFeedback + reason}}, ""
 		case lp.turns == 0: // the hook never held it: this was its report
 			return nil, ""
 		default:

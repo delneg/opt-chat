@@ -72,7 +72,8 @@ type Agent struct {
 	planRaw     jsontext.Value           // and its answer, for /usage
 	subs        map[string]*sub          // this run's subagents, as the page's rail shows them: see subs.go
 	halts       map[string]*halt         // each subagent's call underway, at work or at rest, by name: see StopAgent
-	held        map[string][]string      // tells for a subagent in a loop, at work: sent as its turn ends; see loop.go
+	held        map[string][]tell        // tells for a subagent in a loop, at work: sent as its turn ends; see loop.go
+	userTurn    map[string]bool          // a subagent's turn underway is the user's: it reports to no one; see tell
 	recMu       sync.Mutex               // agents/<Name>.json: see resume.go
 	live        map[*proc]struct{}       // turns and subagents underway: a mode switch reaches them
 	asks        []*ask                   // tool calls waiting for the user's yes or no

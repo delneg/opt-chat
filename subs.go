@@ -1,12 +1,17 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"cmp"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
+	"fmt"
 	"io"
 	"os"
 	"regexp"
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -73,8 +78,9 @@ func (a *Agent) subsLocked() []sub {
 	})
 }
 
-// step is one entry of a subagent's log: task, on, opt (a tell), agent (its
-// text), tool, echo (a tool's output) or compacted.
+// step is one entry of a subagent's log: task, on, opt (a tell), user (the
+// user's message, from the page), agent (its text), tool, echo (a tool's
+// output), loop (its Stop hook's reason) or compacted.
 type step struct {
 	Kind string `json:"kind"`
 	Text string `json:"text"`
@@ -97,7 +103,7 @@ type (
 // stepsMax is how much of a log the rail gets at first: its end.
 const stepsMax = 512 << 10
 
-var stepStart = regexp.MustCompile(`(?m)^(task|on|opt|agent|tool|echo|compacted): `)
+var stepStart = regexp.MustCompile(`(?m)^(task|on|opt|user|agent|tool|echo|loop|compacted): `)
 
 // steps reads the log of the subagent name: its end, at most stepsMax.
 func (a *Agent) steps(name string) ([]step, bool, error) {
@@ -152,3 +158,147 @@ func parseSteps(b []byte) []step {
 }
 
 func nowMs() int64 { return time.Now().UnixMilli() }
+
+type (
+	section struct {
+		Title string `json:"title"`
+		Text  string `json:"text"`
+	}
+	contextReply struct {
+		T        string    `json:"t"` // agentContext
+		Name     string    `json:"name"`
+		Sections []section `json:"sections"`
+	}
+)
+
+// agentContext is what the page's full-screen view of the subagent name
+// shows of its context, as far as opt-chat knows it: its task, model and
+// size, the first message it was given and, once compacted, its summary
+// and the message after it, from its Claude Code session, and where its
+// files are. False when there is no such subagent.
+func (a *Agent) agentContext(name string) (contextReply, bool) {
+	rec, err := a.loadRecord(name)
+	a.mu.Lock()
+	var s sub
+	live := a.subs[name] != nil
+	if live {
+		s = *a.subs[name]
+	}
+	user := a.userTurn[name]
+	a.mu.Unlock()
+	if name == "" || err != nil && !live {
+		return contextReply{}, false
+	}
+	out := contextReply{T: "agentContext", Name: name, Sections: []section{}}
+	add := func(title, text string) {
+		if text = strings.TrimSpace(text); text != "" {
+			out.Sections = append(out.Sections, section{title, text})
+		}
+	}
+	add("Task", rec.Task)
+	on := cmp.Or(rec.Model, s.Model)
+	if e := cmp.Or(rec.Effort, s.Effort); e != "" {
+		on += ", effort " + e
+	}
+	m := []string{on, "State: " + cmp.Or(s.State, rec.State)}
+	if s.Context > 0 {
+		m = append(m, fmt.Sprintf("Context: %s tokens, as its latest request read", k(s.Context)))
+	}
+	if w := cmp.Or(s.Window, rec.Window); w > 0 {
+		m = append(m, fmt.Sprintf("Autocompact: at rest, past %s tokens", k(w)))
+	} else {
+		m = append(m, "Autocompact: off")
+	}
+	if rec.Compacted {
+		m = append(m, "Compacted: its next message brings the chat's view and its task again")
+	}
+	if rec.Loop != nil {
+		m = append(m, fmt.Sprintf("Loop: %q in %s, at most %d turns", rec.Loop.Command, rec.Loop.Dir, rec.Loop.max()))
+	}
+	if user || rec.User {
+		m = append(m, "Its turn now answers the user, not Opt")
+	}
+	add("Model", strings.Join(m, "\n"))
+	path := ""
+	if rec.Session != "" {
+		path = sessionPath(rec.Session)
+	}
+	if path != "" {
+		first, summary, after := sessionContext(path, name)
+		add("First message", first)
+		add("Compacted summary", summary)
+		add("After its compaction", after)
+	}
+	f := []string{"Log: " + a.agentLog(name), "Record: " + a.recordPath(name)}
+	if rec.Session != "" {
+		f = append([]string{"Session: " + rec.Session, "Session file: " + cmp.Or(path, "gone from Claude Code's")}, f...)
+	}
+	add("Files", strings.Join(f, "\n"))
+	return out, true
+}
+
+// sessionContext reads a subagent's Claude Code session, saved at path:
+// the first message it was given (the chat's view, then its task), and
+// the latest summary of a compaction, with the message that came after it.
+func sessionContext(path, name string) (first, summary, after string) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", "", ""
+	}
+	defer f.Close()
+	r := bufio.NewReader(f)
+	var start []string
+	found, users, next := false, 0, false
+	for {
+		line, err := r.ReadBytes('\n')
+		if len(line) > 0 {
+			user := bytes.Contains(line, []byte(`"type":"user"`))
+			switch {
+			case bytes.Contains(line, []byte(`"isCompactSummary":true`)):
+				summary, after, next = entryText(line), "", true
+			case user && next && !bytes.Contains(line, []byte(`"tool_result"`)):
+				after, next = entryText(line), false
+			case user && !found && users < 10: // the view's first part, then the rest and the task
+				users++
+				text := entryText(line)
+				start = append(start, text)
+				found = strings.Contains(text, "You are subagent ["+name+"]")
+			}
+		}
+		if err != nil {
+			break
+		}
+	}
+	if found {
+		first = strings.Join(start, "\n\n")
+	}
+	return first, summary, after
+}
+
+// entryText is the text of a message in a session file: its text blocks,
+// and each other block as its type.
+func entryText(line []byte) string {
+	var e struct {
+		Message struct {
+			Content jsontext.Value `json:"content"`
+		} `json:"message"`
+	}
+	if json.Unmarshal(line, &e) != nil {
+		return ""
+	}
+	var s string
+	if json.Unmarshal(e.Message.Content, &s) == nil {
+		return s
+	}
+	var bs []block
+	json.Unmarshal(e.Message.Content, &bs)
+	var out strings.Builder
+	for _, b := range bs {
+		if b.Type == "text" {
+			out.WriteString(b.Text)
+		} else {
+			out.WriteString("[" + b.Type + "]")
+		}
+	}
+	return out.String()
+}

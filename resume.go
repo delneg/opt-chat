@@ -32,6 +32,7 @@ type agentRecord struct {
 	Cut       bool      `json:"cut,omitzero"`       // cut off mid-task by a quit, a crash or a reload: the next start resumes it
 	Resumes   int       `json:"resumes,omitzero"`   // times a start resumed it since its last result
 	Pid       int       `json:"pid,omitzero"`       // its Claude Code's, while at work: after a crash, stopped before it is resumed
+	User      bool      `json:"user,omitzero"`      // its turn underway is the user's, from the page: its end reports nothing to Opt
 }
 
 func (a *Agent) recordPath(name string) string {
@@ -94,22 +95,31 @@ func claudeConfigDir() string {
 // resumeNote begins the message that resumes a subagent's session, its
 // record in state: one whose call ended after its report, or one stopped
 // mid-task.
-func resumeNote(state string) string {
+func resumeNote(state string) string { return resumeWhy(state) + "Opt's message:\n" }
+
+// resumeWhy is resumeNote without the head of the message that follows:
+// Opt's, or the user's.
+func resumeWhy(state string) string {
 	if state == "ended" || state == "resting" { // resting: its call ended before the record said so
-		return "Your call had ended after your report; opt-chat resumed it from its saved session. Opt's message:\n"
+		return "Your call had ended after your report; opt-chat resumed it from its saved session. "
 	}
 	if state == "halted" {
-		return "The user stopped you while you worked, and opt-chat has now resumed your call from its saved session. " + cutShort + " Opt's message:\n"
+		return "The user stopped you while you worked, and opt-chat has now resumed your call from its saved session. " + cutShort + " "
 	}
-	return "opt-chat stopped while you worked, and resumed your call from its saved session. " + cutShort + " Opt's message:\n"
+	return "opt-chat stopped while you worked, and resumed your call from its saved session. " + cutShort + " "
 }
 
 const cutShort = "Your last tool call may have been cut off: check its effect before redoing it."
 
 // restartNote is the whole message that resumes a subagent cut off
-// mid-task, as opt-chat starts again: see resumeCut.
-const restartNote = "opt-chat restarted while you worked, and resumed your call from its saved session on its own: Opt sent no message. " +
-	cutShort + " Then go on with your task."
+// mid-task, as opt-chat starts again: see resumeCut. restartUserNote is
+// for one cut off as it answered the user's message.
+const (
+	restartNote = "opt-chat restarted while you worked, and resumed your call from its saved session on its own: Opt sent no message. " +
+		cutShort + " Then go on with your task."
+	restartUserNote = "opt-chat restarted while you worked, and resumed your call from its saved session on its own: no one sent a message. " +
+		cutShort + " Then go on with what the user asked."
+)
 
 // resumeMax is how many times in a row a start resumes a subagent that
 // gets no result in between: one that ends opt-chat each time stops.
@@ -156,9 +166,11 @@ func (a *Agent) recoverAgents() (out []message, cut []string) {
 			if crash {
 				how = "ended without quitting (a crash?)"
 			}
-			if resume {
+			switch {
+			case resume:
 				cut = append(cut, name)
-			} else {
+			case r.User: // the user's turn: Opt never hears of it
+			default:
 				out = append(out, message{kind: "work", text: fmt.Sprintf("[%s] stopped: opt-chat %s before this subagent finished.%s %s\n\nRan on %s. Full chat: zoom(%q)",
 					name, how, why, resumeHint(name), strings.TrimSpace(r.Model+" "+r.Effort), name)})
 			}
@@ -177,13 +189,21 @@ func (a *Agent) recoverAgents() (out []message, cut []string) {
 func (a *Agent) resumeCut(names []string) {
 	var back []string
 	for _, name := range names {
-		a.note(name, func(r *agentRecord) { r.Cut, r.Resumes = false, r.Resumes+1 })
+		var user bool
+		a.note(name, func(r *agentRecord) { r.Cut, r.Resumes, user = false, r.Resumes+1, r.User })
+		note := restartNote
+		if user {
+			note = restartUserNote
+		}
 		a.mu.Lock()
-		out := a.resume(name, restartNote, true)
+		out, ok := a.resume(name, []tell{{text: note}}, true)
 		a.mu.Unlock()
-		if strings.HasPrefix(out, "Resuming") {
+		switch {
+		case user: // the user's turn: the page alone hears of it
+			a.chat.hub.notice("info", "[%s] %s", name, out)
+		case ok:
 			back = append(back, "["+name+"]")
-		} else {
+		default:
 			a.chat.Log("work", "[opt-chat] "+out)
 		}
 	}

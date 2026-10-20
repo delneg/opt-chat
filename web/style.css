@@ -270,7 +270,13 @@ a { color: var(--blue); }
 .panel .row .st.dim { color: var(--faint); }
 .panel .row .desc { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .banner { background: var(--red); color: var(--bg); padding: .25em 2ch; font-size: .9em; }
-.newer { position: sticky; bottom: .5em; display: flex; padding-left: 2ch; align-items: flex-end; pointer-events: none; height: 0; overflow: visible; }
+/* over the log's bottom: .newer, a pill at the left while new messages
+   are out of sight below; .up, a round button (.mine) at the right while
+   the user's message is out of sight above (Scroller, after UniiChat's
+   pull request 23) */
+.newer, .up { position: sticky; bottom: .5em; height: 0; overflow: visible; display: flex; align-items: flex-end; pointer-events: none; }
+.newer { padding-left: 2ch; }
+.up { justify-content: flex-end; }
 .newer button { pointer-events: auto; background: var(--chip); border: 1px solid var(--border); border-radius: 999px; padding: .2em 1.5ch; color: var(--fg); font-size: .9em; }
 
 /* overlays */
@@ -343,9 +349,6 @@ a { color: var(--blue); }
 }
 .card .now .el { flex: none; padding-right: 1ch; }
 
-/* up to the user's message (Scroller), after UniiChat's pull request 23: a
-   round button over the log's bottom right, while one is out of sight above */
-.up { position: sticky; bottom: .5em; height: 0; overflow: visible; display: flex; justify-content: flex-end; align-items: flex-end; pointer-events: none; }
 .mine {
   pointer-events: auto; width: 2.2em; height: 2.2em; display: grid; place-items: center;
   border: 1px solid var(--border); border-radius: 50%; background: var(--chip); color: var(--dim);
@@ -380,10 +383,10 @@ a { color: var(--blue); }
 /* /tree (tree.go): the whole memory, a section at a time */
 html:has(body.tree), body.tree { height: auto; }
 body.tree { max-width: 128ch; padding: 1.5em 2ch 3em; }
-.tree-nav { display: flex; flex-wrap: wrap; gap: .2em 2ch; }
+.tree-nav, .tree-pages { display: flex; flex-wrap: wrap; gap: .2em 2ch; }
 .tree-nav a.on { color: var(--fg); font-weight: 600; text-decoration: none; }
 .tree-note { color: var(--dim); }
-.tree-pages { display: flex; flex-wrap: wrap; gap: .2em 2ch; color: var(--faint); margin: .8em 0; }
+.tree-pages { color: var(--faint); margin: .8em 0; }
 .tree-item h4 { margin: .9em 0 .15em; color: var(--faint); font-weight: normal; font-size: .85em; }
 .tree-item.unbuilt h4 { color: var(--yellow); }
 .tree-item pre { margin: 0; font: inherit; white-space: pre-wrap; overflow-wrap: anywhere; }

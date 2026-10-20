@@ -60,14 +60,14 @@ def fmt(m, n):
 
 
 def ok(m, lo, hi):
-    return lo <= len(m["text"]) <= hi and not lookup(m) and m["kind"] in ("opt", "user", "work", "echo", "note")
+    return lo <= len(m["text"]) <= hi and not lookup(m) and m["kind"] in ("opt", "user", "work", "echo", "note", "ai")
 
 
 COMMON = """A user has one endless chat with an AI assistant called Opt. Later, the user asks Opt about the past, and Opt must answer from its memory of the chat. You write one test question for that memory.
 
 Rules for every question:
 - It must make sense on its own, weeks later: name the project, tool or topic so that one answer fits across months of chat.
-- Phrase it as the user would, in the user's register and language (mostly English, sometimes Russian).
+- Phrase it as the user would, in the user's register and language.
 - The gold answer must follow from the messages you are given. If they do not support a good question of the kind asked, output {"ok": false}.
 - Prefer lasting facts (decisions, settings, causes, names, numbers, outcomes) over trivia.
 
@@ -128,7 +128,13 @@ def ask(job):
             ids = sorted([i] + related(i))
             q = claude(COMMON % TASKS[kind][1] + TASKS[kind][0],
                        "MESSAGES, oldest first:\n\n" + "\n\n".join(fmt(msgs[j], 2500) for j in ids))
-            q["msg"] = max(q.get("evidence") or [i])
+            ev = []
+            for x in q.get("evidence") or []:  # the model may send ids as strings
+                try:
+                    ev.append(int(x))
+                except (ValueError, TypeError):
+                    pass
+            q.update(evidence=ev, msg=max(ev or [i]))
     except Exception as e:
         return {"ok": False, "err": str(e)[:200], "type": kind}
     q["type"] = kind
@@ -147,10 +153,11 @@ for m in msgs:
         last = m["i"]
     if m["kind"] == "tool" and m["text"].startswith("zoom "):
         try:
-            old = int(json.loads(m["text"][5:])["id"])
+            a = json.loads(m["text"][5:])
+            old = int(a["id"])
         except (ValueError, KeyError, TypeError):
             continue
-        if last is not None and old < last - 20 and ok(msgs[old], 1, 10**6):
+        if a.get("n") in (None, 0, 1) and last is not None and old < last - 20 and ok(msgs[old], 1, 10**6):
             jobs.append(("real", (last, old)))
 
 with ThreadPoolExecutor(8) as ex:

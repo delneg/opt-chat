@@ -192,6 +192,7 @@ function onUpdate(u) {
       break;
     case 'memview': memGot(u.lines); break;
     case 'zoom':
+      if (!S.memView) break; // view mode went off meanwhile
       if (u.error) { notice('warn', u.error); memOpen.delete(u.id + '+' + u.n); } else memZoom.set(u.id + '+' + u.n, u);
       set({ memTick: S.memTick + 1 });
       break;
@@ -1630,7 +1631,7 @@ function Footer() {
   if (s) {
     right.push(html`<button title="choose the model and effort (Alt+P)" onClick=${openPicker}>${s.model} · ${s.effort}</button>`);
     right.push(html`<span title="every message in the chat, kept for good">${count(s.msgs, 'message')}</span>`,
-      html`<span title="the view: what each turn reads instead of the whole chat, every message summarized in a tree of about this size">view ${count(s.viewLines, 'line')}, ${Math.round(s.viewBytes / 1000)} KB</span>`);
+      html`<span title="the view as kept: the chat as lines of the summary tree, merged as it grows to stay about this size; its KB count summarized lines only. A turn reads it as is once every line is summarized, until then merged further: Opt's view (Alt+V) shows what a turn reads now">view ${count(s.viewLines, 'line')}, ${Math.round(s.viewBytes / 1000)} KB</span>`);
     if (s.backlog || s.merges) right.push(html`<span class="busy" title=${count(s.running, 'compaction') + ' running'}>summarizing ${[s.backlog && count(s.backlog, 'message'), s.merges && count(s.merges, 'merge')].filter(Boolean).join(' + ')}</span>`);
     if (s.written) right.push(html`<span title="summary lines the view's compactions wrote since opt-chat started">${count(s.written, 'summary line')} written</span>`);
     if (s.failing) right.push(html`<span class="conn bad">${s.failing} failing, retrying</span>`);
@@ -2203,22 +2204,25 @@ let memTimer = 0;
 
 function toggleMem() {
   const on = !S.memView;
-  set({ memView: on, mem: on ? S.mem : null });
+  set({ memView: on, mem: null });
   if (on) memAsk(true);
-  else { memOpen.clear(); memZoom.clear(); toEnd = true; }
+  else { clearTimeout(memTimer); memTimer = 0; memOpen.clear(); memZoom.clear(); toEnd = true; }
 }
 
 // memAsk asks for the view again: at once, or after a pause, so a burst of
-// messages or summaries asks once.
+// messages or summaries asks once. An ask waiting is not put off again: a
+// steady stream, an import's or a busy turn's, still asks once a pause.
 function memAsk(now) {
-  if (!S.memView) return;
+  if (!S.memView || (memTimer && !now)) return;
   clearTimeout(memTimer);
-  memTimer = setTimeout(() => send({ t: 'memview' }), now ? 0 : 1500);
+  memTimer = setTimeout(() => { memTimer = 0; if (S.memView) send({ t: 'memview' }); }, now ? 0 : 1500);
 }
 
 // memGot takes a new view; zooms that held lines not summarized yet are
-// asked again, for those open.
+// asked again, for those open. A view that comes after view mode went off
+// is dropped.
 function memGot(lines) {
+  if (!S.memView) return;
   for (const [k, z] of memZoom) {
     if (!z.lines?.some(l => !l.built)) continue;
     memZoom.delete(k);
@@ -2265,9 +2269,10 @@ function MemLine({ l }) {
   </div>`;
 }
 
-function MemView() {
+// MemView draws only as its lines, the blocks open (tick) or the view's
+// size (stored) change: not at each frame of a turn streaming.
+const MemView = memo(function MemView({ lines, tick, stored }) {
   const ref = useRef(), seen = useRef(false), stick = useRef(true);
-  const lines = S.mem;
   useLayoutEffect(() => { // at the view's end, as the log opens at its end; kept there as lines come
     const el = ref.current;
     if (!lines || !el) return;
@@ -2275,12 +2280,12 @@ function MemView() {
     seen.current = true;
   });
   const foldAll = () => { memOpen.clear(); stick.current = true; set({ memTick: S.memTick + 1 }); };
-  const size = lines ? lines.reduce((t, l) => t + l.text.length, 0) : 0;
+  const size = lines ? lines.reduce((t, l) => t + l.bytes, 0) : 0; // UTF-8 bytes, as the footer's view
   const unbuilt = lines ? lines.filter(l => !l.built).length : 0;
   return html`<div class="scroll mem" ref=${ref} onScroll=${() => { const el = ref.current; stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80; }}>
     <div class="mem-bar"><div class="column">
       <span class="title">Opt's view</span>
-      ${lines && html`<span class="dim">${count(lines.length, 'line')}, about ${Math.round(size / 1000)} KB${unbuilt ? `, ${unbuilt} not summarized yet` : ''}: what each turn reads, oldest first</span>`}
+      ${lines && html`<span class="dim">${count(lines.length, 'line')}, ${Math.round(size / 1000)} KB${unbuilt ? `, ${unbuilt} not summarized yet` : ''}: what a turn reads now, oldest first${stored && stored !== lines.length ? `; the view's ${count(stored, 'line')} merged down until they are summarized` : ''}</span>`}
       <span class="acts">
         <button disabled=${!memOpen.size} onClick=${foldAll} title="every line folded: the view as Opt sees it">fold all</button>
         <a href="/tree" target="_blank" rel="noopener" title="the whole memory: every level of the tree">tree ↗</a>
@@ -2291,7 +2296,7 @@ function MemView() {
       ${!lines ? html`<div class="edge">Loading the view…</div>` : lines.map(l => html`<${MemLine} key=${l.id + '+' + l.n} l=${l}/>`)}
     </div>
   </div>`;
-}
+});
 
 function App() {
   useStore();
@@ -2302,7 +2307,7 @@ function App() {
   return html`<div class="shell"><div class="main">
     ${S.conn === 'denied' && html`<div class="banner">This page has no key to the chat: open the address opt-chat printed in the terminal.</div>`}
     ${S.conn === 'closed' && html`<div class="banner">Lost opt-chat: reconnecting…</div>`}
-    ${S.memView ? html`<${MemView}/>` : html`<${Scroller}/>`}
+    ${S.memView ? html`<${MemView} lines=${S.mem} tick=${S.memTick} stored=${S.status?.viewLines}/>` : html`<${Scroller}/>`}
     <div class="dock"><div class="column">
       ${S.turn.phase && html`<${Spinner} turn=${S.turn} chars=${S.turnChars} queued=${S.queue.length > 0}/>`}
       <${Queue} queue=${S.queue}/>

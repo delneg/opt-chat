@@ -67,7 +67,8 @@ for m in msgs:
             old = int(a["id"])  # the model sends it as a number or a string
         except (ValueError, KeyError, TypeError):
             continue
-        if a.get("n") == 1 and last is not None and old < last - 20:
+        # a message opened: in mcp.go, n left out or 0 opens it too
+        if a.get("n") in (None, 0, 1) and last is not None and old < last - 20:
             real.setdefault(last, set()).add(old)
 real = [(msgs[u]["text"], g, u) for u, g in real.items()]
 

@@ -29,6 +29,16 @@ func TestMemViewZoom(t *testing.T) {
 	if end := v[len(v)-1].ID + v[len(v)-1].N; end != 3 {
 		t.Fatalf("the view covers %d messages, want 3", end)
 	}
+	bytes := 0
+	for _, l := range v {
+		bytes += l.Bytes
+	}
+	c.mu.Lock()
+	want := len(strings.Join(c.callView(), "\n")) + 1
+	c.mu.Unlock()
+	if bytes != want {
+		t.Fatalf("the lines' bytes add up to %d, a call's view is %d", bytes, want)
+	}
 	z := c.memZoom(0, 2)
 	if z.Error != "" || len(z.Lines) != 2 || z.Lines[0].Text != "user: hi" || !z.Lines[0].Built || z.Lines[1].ID != 1 || z.Lines[1].N != 1 {
 		t.Fatalf("zoom(0, 2) = %+v", z)

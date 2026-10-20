@@ -119,13 +119,13 @@ type queueItem struct {
 
 type status struct {
 	Msgs      int      `json:"msgs"`
-	ViewLines int      `json:"viewLines"`
-	ViewBytes int      `json:"viewBytes"`
-	Backlog   int      `json:"backlog"` // messages to summarize
-	Merges    int      `json:"merges"`  // merges to build
-	Running   int      `json:"running"` // compactions running
-	Failing   int      `json:"failing"` // waiting to be tried again
-	Written   int      `json:"written"` // lines built in this run
+	ViewLines int      `json:"viewLines"` // the view as kept, not as a turn behind a backlog reads it (callKeys)
+	ViewBytes int      `json:"viewBytes"` // its summarized lines' bytes
+	Backlog   int      `json:"backlog"`   // messages to summarize
+	Merges    int      `json:"merges"`    // merges to build
+	Running   int      `json:"running"`   // compactions running
+	Failing   int      `json:"failing"`   // waiting to be tried again
+	Written   int      `json:"written"`   // lines built in this run
 	Model     string   `json:"model"`
 	Effort    string   `json:"effort"`
 	Mode      string   `json:"mode"` // the permission mode

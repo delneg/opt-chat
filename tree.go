@@ -23,6 +23,7 @@ type memLine struct {
 	N     int       `json:"n"`
 	Text  string    `json:"text"`  // as a call sees it; a message not summarized yet: its head
 	Built bool      `json:"built"` // false: not summarized yet
+	Bytes int       `json:"bytes"` // its share of a call's view: the whole line, name and newline too
 	From  time.Time `json:"from"`  // its first message's date
 	To    time.Time `json:"to"`    // its last's
 }
@@ -44,9 +45,10 @@ type (
 
 // memLine is line k as callLine has it, its name apart. Caller holds c.mu.
 func (c *Chat) memLine(k key) memLine {
-	_, text, _ := strings.Cut(c.callLine(k), "|")
+	line := c.callLine(k)
+	_, text, _ := strings.Cut(line, "|")
 	text = strings.TrimSuffix(strings.TrimSuffix(text, unbuilt), " ")
-	return memLine{ID: k.start(), N: 1 << k.L, Text: text, Built: c.built(k),
+	return memLine{ID: k.start(), N: 1 << k.L, Text: text, Built: c.built(k), Bytes: len(line) + 1,
 		From: c.msgs[k.start()].Date, To: c.msgs[min(k.end(), len(c.msgs))-1].Date}
 }
 
@@ -110,7 +112,7 @@ type treeData struct {
 	PageOf   string
 }
 
-var treeTmpl = template.Must(template.New("tree").Parse(`<!doctype html>
+var treeTmpl = template.Must(template.New("tree").Parse(`{{define "pages"}}{{if .Pages}}<nav class="tree-pages">{{range .Pages}}{{if .Href}}<a href="{{.Href}}">{{.Name}}</a>{{else}}<span>{{.Name}}</span>{{end}} {{end}}<span class="dim">{{.PageOf}}</span></nav>{{end}}{{end}}<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light">
@@ -120,10 +122,10 @@ var treeTmpl = template.Must(template.New("tree").Parse(`<!doctype html>
 </head><body class="tree">
 <nav class="tree-nav"><a href="/">← the chat</a>{{range .Sections}} <a href="{{.Href}}"{{if .On}} class="on" aria-current="page"{{end}}>{{.Name}}</a>{{end}}</nav>
 <p class="tree-note">{{.Note}}</p>
-{{if .Pages}}<nav class="tree-pages">{{range .Pages}}{{if .Href}}<a href="{{.Href}}">{{.Name}}</a>{{else}}<span>{{.Name}}</span>{{end}} {{end}}<span class="dim">{{.PageOf}}</span></nav>{{end}}
+{{template "pages" .}}
 <main>{{range .Items}}<section class="tree-item{{if not .Built}} unbuilt{{end}}"><h4>{{.Head}}{{if not .Built}} · not summarized yet{{end}}</h4><pre>{{.Text}}</pre></section>
 {{end}}</main>
-{{if .Pages}}<nav class="tree-pages">{{range .Pages}}{{if .Href}}<a href="{{.Href}}">{{.Name}}</a>{{else}}<span>{{.Name}}</span>{{end}} {{end}}<span class="dim">{{.PageOf}}</span></nav>{{end}}
+{{template "pages" .}}
 </body></html>
 `))
 
@@ -208,8 +210,7 @@ func (c *Chat) treeData(s, p string) (treeData, bool) {
 		lines := c.viewLines()
 		d.Note = fmt.Sprintf("What each turn reads instead of the whole chat: %d lines, oldest first, as a call sees it now. Opt opens any line into its two halves with zoom.", len(lines))
 		for _, l := range lines {
-			k, _ := c.keyOf(l.ID, l.N)
-			d.Items = append(d.Items, treeItem{Head: fmt.Sprintf("%s · %s · %d B", k.name(), treeWhen(l.From, l.To), len(l.Text)), Text: l.Text, Built: l.Built})
+			d.Items = append(d.Items, treeItem{Head: fmt.Sprintf("%d+%d · %s · %d B", l.ID, l.N, treeWhen(l.From, l.To), len(l.Text)), Text: l.Text, Built: l.Built})
 		}
 	case "msgs":
 		d.Title = "the messages"

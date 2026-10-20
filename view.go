@@ -45,6 +45,14 @@ func (v *view) built(c *Chat, k key) {
 	}
 }
 
+// unbuilt uncounts line k, about to be built again, if the view holds it.
+func (v *view) unbuilt(c *Chat, k key) {
+	j, ok := slices.BinarySearchFunc(v.keys, k.start(), func(x key, s int) int { return cmp.Compare(x.start(), s) })
+	if ok && v.keys[j] == k {
+		v.bytes -= cost(c, k)
+	}
+}
+
 // check starts a batch once the view is past hi, goes on with one cut short,
 // and reports whether the view merged.
 func (v *view) check(c *Chat) bool {

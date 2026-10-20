@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"maps"
 	"math"
 	"os"
 	"path/filepath"
@@ -767,5 +768,97 @@ func TestImportSide(t *testing.T) {
 	}
 	if most > cviewHi {
 		t.Fatalf("a compaction saw %d bytes of context", most)
+	}
+}
+
+// A line that is only "ok" (a compaction that answered the view's first
+// message) is built again at load, and so is every line built on it, their
+// old text standing in until then; a reload after that redoes nothing.
+func TestRedoAcks(t *testing.T) {
+	dir := t.TempDir()
+	c, _ := fakeChat(t, dir, 300)
+	for range 4 {
+		c.Log("echo", strings.Repeat("x", 600))
+	}
+	c.mu.Lock()
+	c.pump()
+	c.mu.Unlock()
+	waitIdle(t, c)
+	if !c.built(key{2, 0}) {
+		t.Fatal("tree not built")
+	}
+	copyDir := t.TempDir()
+	if err := os.CopyFS(copyDir, os.DirFS(dir)); err != nil {
+		t.Fatal(err)
+	}
+	files, _ := filepath.Glob(filepath.Join(copyDir, "tree", "*.jsonl"))
+	if err := appendRaw(files[len(files)-1], []byte(`{"l":0,"i":1,"text":"ok","size":2}`+"\n")); err != nil {
+		t.Fatal(err)
+	}
+	os.Remove(filepath.Join(copyDir, "lock"))
+	r, err := openChat(copyDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[key]bool{{0, 1}: true, {1, 0}: true, {2, 0}: true}
+	if !maps.Equal(r.redo, want) {
+		t.Fatalf("redo = %v, want %v", r.redo, want)
+	}
+	if r.text(key{2, 0}) != strings.Repeat("s", 300) {
+		t.Fatal("a line to redo lost its old text before it was built again")
+	}
+	// Lines to redo hold no call back, and a new message goes before them.
+	start := time.Now()
+	if err := r.settle(context.Background(), func(int, int) {}); err != nil || time.Since(start) > time.Second || r.unsummarized() != 0 {
+		t.Fatalf("settle waited for lines to redo: %v after %s", err, time.Since(start))
+	}
+	r.Log("user", strings.Repeat("n", 600))
+	var mu sync.Mutex
+	var order []string
+	r.mu.Lock()
+	r.jobs = 1
+	r.compact = func(_ context.Context, _ []string, _ int, task []block) (string, error) {
+		mu.Lock()
+		order = append(order, strings.Join(strings.Fields(task[0].Text)[1:5], " "))
+		mu.Unlock()
+		return strings.Repeat("f", 300), nil
+	}
+	r.pump()
+	r.mu.Unlock()
+	waitIdle(t, r)
+	if mu.Lock(); !slices.Equal(order, []string{"compress message 4 into", "compress message 1 into", "merge lines 0+1 and", "merge lines 0+2 and"}) {
+		t.Fatalf("compactions: %q", order)
+	}
+	mu.Unlock()
+	if r.tree[key{0, 4}] != strings.Repeat("f", 300) {
+		t.Fatal("the new message was not built")
+	}
+	if want := lo.SumBy(r.cview.keys, func(k key) int { return cost(r, k) }); r.cview.bytes != want {
+		t.Fatalf("compaction view size %d after redo, want %d", r.cview.bytes, want)
+	}
+	f := strings.Repeat("f", 300)
+	if len(r.redo) != 0 || r.tree[key{0, 1}] != f || r.tree[key{1, 0}] != f || r.tree[key{2, 0}] != f {
+		t.Fatalf("not redone: redo %v, %.3q %.3q %.3q", r.redo, r.tree[key{0, 1}], r.tree[key{1, 0}], r.tree[key{2, 0}])
+	}
+	if r.tree[key{0, 0}] != strings.Repeat("s", 300) || r.tree[key{1, 1}] != strings.Repeat("s", 300) {
+		t.Fatal("a sound line was built again")
+	}
+	if want := lo.SumBy(r.view.keys, func(k key) int { return cost(r, k) }); r.view.bytes != want {
+		t.Fatalf("view size %d after redo, want %d", r.view.bytes, want)
+	}
+	r.mu.Lock()
+	r.compact = nil
+	r.mu.Unlock()
+	again := t.TempDir()
+	if err := os.CopyFS(again, os.DirFS(copyDir)); err != nil {
+		t.Fatal(err)
+	}
+	os.Remove(filepath.Join(again, "lock"))
+	r2, err := openChat(again)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r2.redo) != 0 || r2.tree[key{2, 0}] != f {
+		t.Fatalf("reload redoes again: %v", r2.redo)
 	}
 }

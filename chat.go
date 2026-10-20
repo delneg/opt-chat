@@ -78,6 +78,10 @@ type Node struct {
 	I    int    `json:"i"`
 	Text string `json:"text"`
 	Size int    `json:"size"`
+	// Redo marks a line to build again, its text kept until then: one a
+	// model wrote wrong, or one made from such a line. A later entry for
+	// the same node clears it.
+	Redo bool `json:"redo,omitzero"`
 }
 
 // failure is a line's compactions that failed: n in a row, the strikes among
@@ -96,6 +100,7 @@ type Chat struct {
 	msgs    []Msg
 	asides  []Aside // side questions: never in msgs, see btw.go
 	tree    map[key]string
+	redo    map[key]bool     // built lines to build again: see Node.Redo
 	view    view             // what turns see
 	cview   view             // what compactions see
 	queued  map[key]bool     // waiting in ready0/readyM or running
@@ -129,7 +134,7 @@ func openChat(dir string) (*Chat, error) {
 		return nil, fmt.Errorf("another opt-chat owns %s", dir)
 	}
 	c := &Chat{
-		dir: dir, lock: lock, tree: map[key]string{}, queued: map[key]bool{}, busy: map[key]bool{},
+		dir: dir, lock: lock, tree: map[key]string{}, redo: map[key]bool{}, queued: map[key]bool{}, busy: map[key]bool{},
 		failing: map[key]*failure{}, changed: make(chan struct{}), jobs: defaultJobs,
 		view: view{lo: viewLo, hi: viewHi}, cview: view{lo: cviewLo, hi: cviewHi},
 	}
@@ -150,9 +155,18 @@ func openChat(dir string) (*Chat, error) {
 		return nil, err
 	}
 	slices.SortStableFunc(c.asides, func(a, b Aside) int { return a.Date.Compare(b.Date) }) // kept as answered
-	if err := load(filepath.Join(dir, "tree"), func(n Node) { c.tree[key{n.L, n.I}] = n.Text }); err != nil {
+	if err := load(filepath.Join(dir, "tree"), func(n Node) {
+		k := key{n.L, n.I}
+		c.tree[k] = n.Text
+		if n.Redo {
+			c.redo[k] = true
+		} else {
+			delete(c.redo, k)
+		}
+	}); err != nil {
 		return nil, err
 	}
+	c.markAcks()
 	// The view is kept, never rebuilt: a rebuilt view differs and kills every cache entry.
 	if b, err := os.ReadFile(filepath.Join(dir, "view.json")); err == nil {
 		saved, err := readView(b)
@@ -482,10 +496,36 @@ func (c *Chat) freeText(k key) (string, bool) {
 	return s, len(s) <= nodeMax
 }
 
-// need queues node k, or builds it at once when it is free.
+// markAcks marks for redo each line that is only "ok" (a compaction that
+// answered the view's first message instead of its input, before Compact
+// caught that) and every line built on it, which lost what it held.
+func (c *Chat) markAcks() {
+	var marks []any
+	for k, t := range c.tree {
+		if !isAck(t) {
+			continue
+		}
+		for p := k; c.built(p) && !c.redo[p]; p = p.parent() {
+			c.redo[p] = true
+			marks = append(marks, Node{L: p.L, I: p.I, Text: c.tree[p], Size: len(c.tree[p]), Redo: true})
+		}
+	}
+	if len(marks) > 0 {
+		warn("%d summary lines were \"ok\" or built on one: building them again", len(marks))
+		c.appendDay("tree", marks...)
+	}
+}
+
+// need queues node k, or builds it at once when it is free. A line to
+// redo waits for its halves to be redone first.
 func (c *Chat) need(k key) {
-	if c.built(k) || c.queued[k] {
+	if (c.built(k) && !c.redo[k]) || c.queued[k] {
 		return
+	}
+	if k.L > 0 {
+		if a, b := k.kids(); c.redo[a] || c.redo[b] {
+			return
+		}
 	}
 	if t, ok := c.freeText(k); ok {
 		c.setNode(k, t)
@@ -502,8 +542,17 @@ func (c *Chat) need(k key) {
 // setNode keeps line k. It is written to the log at the next flushNodes:
 // an import's free lines come by the thousand, and were synced one by one.
 func (c *Chat) setNode(k key, text string) {
+	redo := c.built(k)
+	if redo { // the views drop its old size first
+		c.view.unbuilt(c, k)
+		c.cview.unbuilt(c, k)
+	}
 	c.tree[k] = text
+	delete(c.redo, k)
 	c.view.built(c, k)
+	if redo { // the compactions' view holds built lines alone: only a redone one can be in it
+		c.cview.built(c, k)
+	}
 	c.unsaved = append(c.unsaved, Node{L: k.L, I: k.I, Text: text, Size: len(text)})
 	if c.queued[k] {
 		delete(c.queued, k)
@@ -569,11 +618,17 @@ func until(k key) int {
 	return k.end()
 }
 
+// unsummarized counts the messages with no line yet: one to redo has its old one.
+func (c *Chat) unsummarized() int {
+	return lo.CountBy(c.ready0, func(i int) bool { return !c.redo[key{0, i}] })
+}
+
 // frontier is the side's (n+1)th message not summarized yet, leaving out
-// those waiting after a failure; the chat's end when there is none.
+// those waiting after a failure, and those to redo: their old lines stand
+// in, so no context has a hole there. The chat's end when there is none.
 func (c *Chat) frontier(side, n int) int {
 	for _, i := range c.ready0 {
-		if k := (key{0, i}); c.side(k) == side && !c.cooling(k) {
+		if k := (key{0, i}); c.side(k) == side && !c.cooling(k) && !c.redo[k] {
 			if n == 0 {
 				return i
 			}
@@ -589,7 +644,8 @@ func (c *Chat) frontier(side, n int) int {
 // context ends first, a merge first at a tie, as UniiChat's do (Memory.ts
 // starts). A merge far ahead waits for the messages before it: an import's
 // short messages are built at once, for free, and their merges, built
-// first, saw hundreds of messages not summarized in their context.
+// first, saw hundreds of messages not summarized in their context. Of a
+// side, lines to redo go after the rest: their old text stands in.
 func (c *Chat) next() (key, bool) {
 	for side := range 2 {
 		if k, ok := c.nextOf(side); ok {
@@ -600,8 +656,16 @@ func (c *Chat) next() (key, bool) {
 }
 
 func (c *Chat) nextOf(side int) (key, bool) {
+	if k, ok := c.pick(side, false); ok {
+		return k, true
+	}
+	return c.pick(side, true)
+}
+
+// pick is nextOf among the side's lines to redo, or among the rest.
+func (c *Chat) pick(side int, redo bool) (key, bool) {
 	end := c.frontier(side, c.jobs-1)
-	can := func(k key) bool { return c.side(k) == side && !c.busy[k] && !c.cooling(k) }
+	can := func(k key) bool { return c.side(k) == side && c.redo[k] == redo && !c.busy[k] && !c.cooling(k) }
 	best, found := key{}, false
 	for _, i := range c.ready0 { // in order
 		if i > end {
@@ -878,24 +942,24 @@ var retryIn = 10 * time.Second // a failed compaction's first wait, doubled at e
 // settle waits until the chat's messages are summarized, so that no call
 // sees a placeholder, as the recipe says, when that is a short wait. An
 // import's are not waited for: they are a side of their own, as in UniiChat
-// (Memory.ts settle). Behind a bigger backlog, or after settleWait, it
-// returns at once, and the call sees the tree as far as it is built
-// (callView), as in UniiChat: the chat never waits hours. It tells waiting
-// how many messages are left, and how many lines a model has written since
-// it began, at each change.
+// (Memory.ts settle). Nor are lines to redo: their old text stands in.
+// Behind a bigger backlog, or after settleWait, it returns at once, and the
+// call sees the tree as far as it is built (callView), as in UniiChat: the
+// chat never waits hours. It tells waiting how many messages are left, and
+// how many lines a model has written since it began, at each change.
 func (c *Chat) settle(ctx context.Context, waiting func(n, written int)) error {
 	c.mu.Lock()
 	from := c.written
 	c.mu.Unlock()
 	timeout := time.NewTimer(settleWait)
 	defer timeout.Stop()
-	own := func(k key) bool { return c.side(k) == 0 }
+	own := func(k key) bool { return c.side(k) == 0 && !c.redo[k] }
 	for {
 		c.mu.Lock()
 		n := lo.CountBy(c.ready0, func(i int) bool { return own(key{0, i}) })
 		written, ch := c.written-from, c.changed
 		big := n+lo.CountBy(c.readyM, own) > settleMax
-		_, more := c.nextOf(0)
+		_, more := c.pick(0, false)
 		running := slices.ContainsFunc(slices.Collect(maps.Keys(c.busy)), own)
 		failing := !running && !more && c.compact != nil // all that is left failed: no wait for its next try
 		c.mu.Unlock()

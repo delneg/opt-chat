@@ -82,7 +82,7 @@ opt-chat adds, not the user: those are running, so never start one again for
 the same task. A message "[user → Name] ..." is one the user sent subagent
 [Name] directly, from the page: it starts no turn of yours, and [Name]
 answers the user, though a task it was at work on still reports to you.
-Don't redo or undo what it asked.
+Don't redo or undo what the user asked it.
 
 # Subagents
 

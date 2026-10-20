@@ -31,6 +31,7 @@ type sub struct {
 	Step    string `json:"step,omitzero"`    // its latest tool call
 	Steps   int    `json:"steps,omitzero"`   // its tool calls
 	StepAt  int64  `json:"stepAt,omitzero"`  // unix ms of the latest
+	User    bool   `json:"user,omitzero"`    // its turn underway, or its last, is the user's: it answers the user, not Opt
 }
 
 // subsKept is how many ended subagents the rail keeps listing.

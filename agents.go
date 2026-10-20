@@ -188,6 +188,7 @@ func (a *Agent) userTurnLocked(name string, user bool) {
 		a.userTurn = map[string]bool{}
 	}
 	a.userTurn[name] = user
+	a.subLocked(name, func(s *sub) { s.User = user })
 	a.note(name, func(r *agentRecord) { r.User = user })
 }
 

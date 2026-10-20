@@ -2321,10 +2321,10 @@ function FullButton({ name }) {
     onClick=${e => { e.stopPropagation(); goFull(name); }} onKeyDown=${e => e.stopPropagation()}>⤢</button>`;
 }
 
-// lastFrom is who set the agent to work last: 'user', 'opt' (a tell),
-// 'task' or 'loop' (its Stop hook).
+// lastFrom is who wrote to the agent last, of Opt and its Stop hook: 'opt'
+// (a tell), 'task' or 'loop'. Whether the user set it to work, s.user says.
 function lastFrom(steps) {
-  for (let j = steps.length - 1; j >= 0; j--) if (['user', 'opt', 'task', 'loop'].includes(steps[j].kind)) return steps[j].kind;
+  for (let j = steps.length - 1; j >= 0; j--) if (['opt', 'task', 'loop'].includes(steps[j].kind)) return steps[j].kind;
   return '';
 }
 
@@ -2333,11 +2333,11 @@ function lastFrom(steps) {
 function fullState(s, now) {
   const [cls, label] = subState(s, now);
   if (cls === 'ask') return [cls, label];
-  const from = lastFrom(S.agent?.name === s.name ? S.agent.steps : []);
-  const whose = from === 'user' ? 'your message' : from === 'opt' ? 'Opt\'s message' : from === 'loop' ? 'its Stop hook\'s reason' : 'Opt\'s task';
+  const from = lastFrom(S.agent?.name === s.name ? S.agent.steps : []); // the user's mid-task message leaves it Opt's task
+  const whose = s.user ? 'your message' : from === 'opt' ? 'Opt\'s message' : from === 'loop' ? 'its Stop hook\'s reason' : 'Opt\'s task';
   switch (s.state) {
     case 'working': return [cls, `working on ${whose}`, elapsed(now - s.started)];
-    case 'resting': return [cls, `${from === 'user' ? 'replied to you' : 'reported to Opt'} · at rest${s.until > now ? `, its call open ${Math.ceil((s.until - now) / 60000)}m more` : ''}`];
+    case 'resting': return [cls, `${s.user ? 'replied to you' : 'reported to Opt'} · at rest${s.until > now ? `, its call open ${Math.ceil((s.until - now) / 60000)}m more` : ''}`];
     case 'halted': case 'stopped': return [cls, label.replace('a tell resumes it', 'a message resumes it')];
     case 'ended': return [cls, 'its call ended · a message resumes it'];
   }

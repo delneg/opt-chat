@@ -2358,7 +2358,7 @@ function AgentFull({ a, s }) {
     if (stick.current) toBottom();
   });
   const [cls, label, took] = s ? fullState(s, now) : ['done', 'not in this run'];
-  return html`<section class="full" aria-label=${`[${a.name}] full screen`}>
+  return html`<section class="agent-full" aria-label=${`[${a.name}] full screen`}>
     <div class="full-head"><div class="column">
       <button class="back" title="back to Opt's chat (Alt+O; Esc while it is not at work)" onClick=${() => leaveFull()}>← Opt</button>
       <span class=${'agent-name ' + cls}><${Dot} s=${s}/>[${a.name}]</span>

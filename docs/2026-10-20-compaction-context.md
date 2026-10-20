@@ -73,11 +73,14 @@ middle with the chat going on, through the chat's own scheduling and views
 against a fake cache with Claude Code's marks (no lookback, which never
 read back through Claude Code). Before: compactions read 37% of their
 input from the cache, one saw 527 KB of context, and 42 turns saw the
-latest reply merged into a line with others. After: compactions read
-about 83%, none saw over 32 KB, and every turn sees the latest reply as
-its own line. Turns read about 70% either way: without lookback, a turn
-writes the lines after its first message's 64-line checkpoint anew.
-UniiChat, with lookback, asks 95% of both.
+latest reply merged into a line with others. After: none saw over 32 KB,
+and every turn sees the latest reply as its own line. Compactions read
+83% at first; since the compactions' view batches on its own (a later
+fix: it had frozen at 32 KB until the chat's view batched, and context
+ended far before the node) and calls skip the ack when their first
+message is cached (below), they read 72%, at $102 against $124 for an ack
+every time. Turns read about 79%. UniiChat, with lookback, asks 95% of
+both.
 
 ## The ack, priced
 

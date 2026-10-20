@@ -281,9 +281,9 @@ func TestSendNowWhileSettling(t *testing.T) {
 	release := make(chan struct{})
 	inner := c.compact
 	c.mu.Lock()
-	c.compact = func(ctx context.Context, lines []string, task []block) (string, error) {
+	c.compact = func(ctx context.Context, lines []string, stable int, task []block) (string, error) {
 		<-release
-		return inner(ctx, lines, task)
+		return inner(ctx, lines, stable, task)
 	}
 	c.mu.Unlock()
 	defer close(release)
@@ -394,7 +394,7 @@ func TestProcessGroup(t *testing.T) {
 	a, _ := fakeAgent(t, c)
 	f := t.TempDir() + "/pgid"
 	t.Setenv("OPT_FAKE_PGID", f)
-	if _, err := a.Compact(context.Background(), nil, []block{textBlock("Compaction: x")}); err != nil {
+	if _, err := a.Compact(context.Background(), nil, 0, []block{textBlock("Compaction: x")}); err != nil {
 		t.Fatal(err)
 	}
 	b, err := os.ReadFile(f)
@@ -404,7 +404,7 @@ func TestProcessGroup(t *testing.T) {
 	if pgid, _ := strconv.Atoi(strings.TrimSpace(string(b))); pgid == 0 || pgid == syscall.Getpgrp() {
 		t.Fatalf("the call shares opt-chat's process group %d", pgid)
 	}
-	_, err = a.Compact(context.Background(), nil, []block{textBlock("Compaction: empty-error")})
+	_, err = a.Compact(context.Background(), nil, 0, []block{textBlock("Compaction: empty-error")})
 	if err == nil || err.Error() != "compaction: error_during_execution" {
 		t.Fatalf("an empty error result: %v", err)
 	}

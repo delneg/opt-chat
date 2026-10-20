@@ -89,10 +89,10 @@ type Agent struct {
 }
 
 // writeOnce lets one call at a time write a prefix to the cache: a call
-// whose first message another call is writing waits until that call has its
-// reply, then reads the entry instead of paying to write it too (gist §3.3;
-// compactions start up to 8 at once on one prefix). The first caller gets
-// a release func to call once its reply is in; the others get a no-op.
+// whose first message another call is writing waits until that call's
+// response begins, then reads the entry instead of paying to write it too
+// (gist §3.3; compactions start up to 8 at once on one prefix). The first
+// caller gets a release func to call then; the others get a no-op.
 func (a *Agent) writeOnce(ctx context.Context, prefix string) (release func()) {
 	a.mu.Lock()
 	if ch, ok := a.writing[prefix]; ok {
@@ -398,8 +398,8 @@ func (a *Agent) start(ctx context.Context, model, effort string, r role, extra .
 		}
 	}
 	switch r {
-	case roleCompact:
-		args = append(args, "--settings", noTools)
+	case roleCompact: // partial messages: its response's start lets the calls waiting on its prefix go (ack)
+		args = append(args, "--settings", noTools, "--include-partial-messages")
 	case roleTurn: // the reply streams to the pages as it is written
 		args = append(args, "--include-partial-messages")
 	}
@@ -631,16 +631,33 @@ const checkpoint = 64
 // acts on it instead of answering "ok".
 const viewGoesOn = `The view goes on in the next message, with the input: reply only "ok" to this one.`
 
+// ccheckpoint is checkpoint for compactions. Their view is a few dozen lines,
+// under one checkpoint as often as not, and those running at once share it
+// to its end (compactInput): it changes as messages get built, so a finer
+// step leaves less to write anew each time. Measured by TestCacheReplay.
+const ccheckpoint = 8
+
 // viewMessages renders the view's two messages around input. A nil first
 // message: fewer lines than one checkpoint.
 func viewMessages(lines []string, input []block) (first, second []block) {
+	return splitView(lines, len(lines), checkpoint, input)
+}
+
+// splitView is viewMessages with the first message ending at a multiple of
+// every lines, within the first stable lines, and before the first line
+// not summarized yet: once built, it would read otherwise, and the first
+// message with it.
+func splitView(lines []string, stable, every int, input []block) (first, second []block) {
 	chat := func(ls []string) string {
 		if len(ls) == 0 {
 			return "<chat>\n</chat>"
 		}
 		return "<chat>\n" + strings.Join(ls, "\n") + "\n</chat>"
 	}
-	base := len(lines) / checkpoint * checkpoint
+	if j := slices.IndexFunc(lines[:min(stable, len(lines))], func(l string) bool { return strings.HasSuffix(l, unbuilt) }); j >= 0 {
+		stable = j
+	}
+	base := min(stable, len(lines)) / every * every
 	if base > 0 {
 		first = []block{textBlock(chat(lines[:base]) + "\n" + viewGoesOn)}
 	}
@@ -648,14 +665,24 @@ func viewMessages(lines []string, input []block) (first, second []block) {
 }
 
 // ack sends the view's first message and waits out the model's "ok",
-// handing each other event to each (nil: drop them).
+// handing each other event to each (nil: drop them). Calls waiting to write
+// the same first message go on as its response begins: the cache holds it
+// from then on, as UniiChat's single flight has it (AskAI.ts wait).
 func (a *Agent) ack(p *proc, first []block, u *usage, each func(event)) error {
 	if first == nil {
 		return nil
 	}
-	defer a.writeOnce(p.ctx, p.prefix+"\x00"+first[0].Text)()
+	release := sync.OnceFunc(a.writeOnce(p.ctx, p.prefix+"\x00"+first[0].Text))
+	defer release()
 	p.send(first...)
-	return awaitResult(p, u, each)
+	return awaitResult(p, u, func(e event) {
+		if e.Type != "system" { // its own events come before the request
+			release()
+		}
+		if each != nil {
+			each(e)
+		}
+	})
 }
 
 func awaitResult(p *proc, u *usage, each func(event)) error {
@@ -678,8 +705,10 @@ func awaitResult(p *proc, u *usage, each func(event)) error {
 	}
 }
 
-// Compact builds one tree line, enforcing the size with the ruler, the cut, and retries.
-func (a *Agent) Compact(ctx context.Context, lines []string, task []block) (string, error) {
+// Compact builds one tree line, enforcing the size with the ruler, the cut,
+// and retries. The first stable lines of its context are the same for the
+// compactions running meanwhile.
+func (a *Agent) Compact(ctx context.Context, lines []string, stable int, task []block) (string, error) {
 	p, err := a.start(ctx, a.cmodel, a.ceffort, roleCompact)
 	if err != nil {
 		return "", err
@@ -692,7 +721,7 @@ func (a *Agent) Compact(ctx context.Context, lines []string, task []block) (stri
 		a.cusage.add(u)
 		a.mu.Unlock()
 	}()
-	first, second := viewMessages(lines, task)
+	first, second := splitView(lines, stable, ccheckpoint, task)
 	if err := a.ack(p, first, &u, nil); err != nil {
 		return "", err
 	}

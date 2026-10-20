@@ -23,7 +23,9 @@ import (
 // Claude and ChatGPT exports. Each session goes into the log, oldest first,
 // headed by a note naming it, each message at its own date. The user's and
 // the assistant's words come in, with their images; tool calls and results
-// only when asked for. Thinking never does, as in the live chat.
+// only when asked for. Thinking never does, as in the live chat. The
+// assistant's words are of kind ai, not opt: another AI's, which Opt must
+// not take for its own; the session's note names the app.
 
 // session is one past chat.
 type session struct {
@@ -256,7 +258,7 @@ func readSessionFile(path string, keep func(*session, pastMsg) bool) (session, e
 		if j.Type == "user" {
 			kind = "user"
 		} else if j.Type == "assistant" {
-			kind = "opt"
+			kind = kindAI
 		}
 		at := j.Attachment
 		switch {
@@ -270,7 +272,7 @@ func readSessionFile(path string, keep func(*session, pastMsg) bool) (session, e
 			handed, queued = append(handed, queued...), nil
 		case kind != "" && !j.IsMeta && !j.IsSidechain && !j.IsCompactSummary:
 			ms := withID(j.UUID, blocksMsgs(kind, contentBlocks(j.Message.Content), date, claudeSkip))
-			if kind == "opt" {
+			if kind == kindAI {
 				s.add(keep, queued)
 				queued = nil
 			} else if len(ms) > 0 && ms[0].kind == "user" {
@@ -346,7 +348,7 @@ func codexLine(s *session, typ string, payload jsontext.Value, date time.Time) [
 		case "user":
 			return blocksMsgs("user", p.Content, date, codexSkip)
 		case "assistant":
-			return blocksMsgs("opt", p.Content, date, codexSkip)
+			return blocksMsgs(kindAI, p.Content, date, codexSkip)
 		}
 	case "function_call":
 		return withRef(p.CallID, pastMsgs("tool", p.Name+" "+p.Arguments, nil, date))
@@ -502,7 +504,7 @@ func readExport(path string, keep func(*session, pastMsg) bool) ([]session, erro
 			for _, f := range slices.Concat(m.Attach, m.Files) {
 				bs = append(bs, textBlock("[file "+f.Name+"]"))
 			}
-			kind := "opt"
+			kind := kindAI
 			if m.Sender == "human" {
 				kind = "user"
 			}
@@ -571,7 +573,7 @@ func chatGPTMsgs(mapping map[string]chatGPTNode, current string, date time.Time)
 		case m.Author.Role == "user":
 			out = append(out, pastMsgs("user", text, nil, date)...)
 		case m.Author.Role == "assistant" && m.Recipient == "all":
-			out = append(out, pastMsgs("opt", text, nil, date)...)
+			out = append(out, pastMsgs(kindAI, text, nil, date)...)
 		case m.Author.Role == "assistant":
 			out = append(out, pastMsgs("tool", m.Recipient+" "+text, nil, date)...)
 		case m.Author.Role == "tool":
@@ -646,7 +648,7 @@ func keeper(done map[string]time.Time, o importOpts) func(*session, pastMsg) boo
 func (c *Chat) logSessions(sessions []session, out io.Writer) {
 	var told time.Time
 	for i, s := range sessions {
-		ms := []Msg{{Kind: "note", Text: s.note(), Date: time.Now()}}
+		ms := []Msg{{Kind: "note", Text: s.note(), Date: time.Now(), Imported: true}}
 		for _, m := range s.msgs {
 			var names []string
 			for _, img := range m.images {
@@ -656,7 +658,7 @@ func (c *Chat) logSessions(sessions []session, out io.Writer) {
 					m.text += "\n[image not kept: " + err.Error() + "]"
 				}
 			}
-			ms = append(ms, Msg{Kind: m.kind, Text: m.text, Date: m.date, Images: names, Ref: m.ref})
+			ms = append(ms, Msg{Kind: m.kind, Text: m.text, Date: m.date, Images: names, Ref: m.ref, Imported: true})
 		}
 		c.logMsgs(ms)
 		if time.Since(told) >= time.Second || i == len(sessions)-1 {
@@ -762,7 +764,7 @@ func importChats(c *Chat, path string, o importOpts, in io.Reader, out io.Writer
 		var notes []Msg
 		for line := range strings.Lines(string(b)) {
 			if line = strings.TrimSpace(line); line != "" {
-				notes = append(notes, Msg{Kind: "note", Text: line, Date: time.Now()})
+				notes = append(notes, Msg{Kind: "note", Text: line, Date: time.Now(), Imported: true})
 			}
 		}
 		fmt.Fprintf(out, "%s, one per line.\n", count(len(notes), "note"))

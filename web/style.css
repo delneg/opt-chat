@@ -51,6 +51,7 @@ a { color: var(--blue); }
 .msg.user .more { color: var(--faint); font-size: .9em; }
 .msg.user .more:hover { color: var(--fg); }
 .msg.opt > .mark { color: var(--fg); }
+.msg.ai > .mark { color: var(--dim); }
 .msg.work > .mark { color: var(--accent); }
 .msg.work .who { color: var(--accent); font-weight: 600; }
 .msg.note { color: var(--dim); }

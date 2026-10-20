@@ -899,7 +899,7 @@ function items(msgs) {
   for (const m of joined) {
     if (m.kind === 'tool') {
       if (m.ref) byRef.set(m.ref, m); else open.push(m);
-    } else if (m.kind === 'opt') {
+    } else if (m.kind === 'opt' || m.kind === 'ai') {
       open.length = 0; // unanswered calls before a reply were cut short
     } else if (m.kind === 'echo') {
       const t = m.ref ? byRef.get(m.ref) : open.shift();
@@ -980,6 +980,8 @@ const MsgView = memo(({ m, echo, state }) => {
       return html`<div class="msg opt" title=${when(m.date)}><span class="mark" aria-hidden="true">●</span><div class="body"><${Markdown} text=${cut ? m.text.slice(0, -14) : m.text}/>
         ${cut && html`<div class="result"><span aria-hidden="true">  ⎿</span><span class="cut-note">Interrupted</span></div>`}</div></div>`;
     }
+    case 'ai': // an imported chat's AI: its words, set apart from Opt's
+      return html`<div class="msg ai" title=${when(m.date)}><span class="mark" aria-hidden="true">○</span><div class="body"><${Markdown} text=${m.text}/></div></div>`;
     case 'tool': return html`<${ToolMsg} m=${m} echo=${echo} state=${state}/>`;
     case 'echo': return html`<${ToolMsg} echo=${m} state="done"/>`;
     case 'work': return html`<${WorkMsg} m=${m}/>`;

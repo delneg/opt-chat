@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -36,7 +37,7 @@ func fakeChat(t *testing.T, dir string, size int) (*Chat, *atomic.Int64) {
 	calls := new(atomic.Int64)
 	msgRe := regexp.MustCompile(`compress message (\d+) `)
 	mergeRe := regexp.MustCompile(`merge lines (\S+) and (\S+), adjacent(?s:.*)messages, (\d+) to (\d+), in more detail(?s:.*)<input>\n(.*)\n(.*)\n</input>$`)
-	c.compact = func(_ context.Context, lines []string, blocks []block) (string, error) {
+	c.compact = func(_ context.Context, lines []string, stable int, blocks []block) (string, error) {
 		calls.Add(1)
 		task := blocks[0].Text
 		limit := -1
@@ -132,6 +133,9 @@ func TestChatTreeZoomReload(t *testing.T) {
 		if got, _ := c.Zoom(bad[0], bad[1]); !strings.HasPrefix(got, "No line") {
 			t.Fatalf("zoom%v = %q", bad, got)
 		}
+	}
+	if got, _ := c.Zoom(1, 2); !strings.HasSuffix(got, "The tree's roots: 0+4, 4+1.") || !strings.Contains(got, "a power of 2") {
+		t.Fatalf("zoom(1, 2) does not say what would do: %q", got)
 	}
 	if got := c.Date(0); !strings.Contains(got, time.Now().Format("2006-01-02")) {
 		t.Fatalf("date(0) = %q", got)
@@ -250,11 +254,11 @@ func TestImages(t *testing.T) {
 	c, _ := fakeChat(t, dir, 100)
 	var seen []block
 	inner := c.compact
-	c.compact = func(ctx context.Context, lines []string, task []block) (string, error) {
+	c.compact = func(ctx context.Context, lines []string, stable int, task []block) (string, error) {
 		if strings.Contains(task[0].Text, "compress message 0 ") {
 			seen = task
 		}
-		return inner(ctx, lines, task)
+		return inner(ctx, lines, stable, task)
 	}
 	png := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR")
 	if _, err := c.saveImage([]byte("plain text")); err == nil {
@@ -301,11 +305,11 @@ func TestRetryAtNextMessage(t *testing.T) {
 	inner := c.compact
 	var fails atomic.Int64
 	fails.Store(1)
-	c.compact = func(ctx context.Context, lines []string, task []block) (string, error) {
+	c.compact = func(ctx context.Context, lines []string, stable int, task []block) (string, error) {
 		if fails.Add(-1) >= 0 {
 			return "", fmt.Errorf("down")
 		}
-		return inner(ctx, lines, task)
+		return inner(ctx, lines, stable, task)
 	}
 	c.Log("user", strings.Repeat("a", 600))
 	c.mu.Lock()
@@ -382,11 +386,11 @@ func TestBacklog(t *testing.T) {
 	c, _ := fakeChat(t, t.TempDir(), 400)
 	inner := c.compact
 	var most atomic.Int64
-	compact := func(ctx context.Context, lines []string, task []block) (string, error) {
+	compact := func(ctx context.Context, lines []string, stable int, task []block) (string, error) {
 		if n := int64(lo.SumBy(lines, func(l string) int { return len(l) + 1 })); n > most.Load() {
 			most.Store(n)
 		}
-		return inner(ctx, lines, task)
+		return inner(ctx, lines, stable, task)
 	}
 	c.mu.Lock()
 	c.compact = nil // importing: nothing builds
@@ -405,7 +409,7 @@ func TestBacklog(t *testing.T) {
 	if size > viewHi || csize > cviewHi {
 		t.Fatalf("after the backlog: view %d bytes, compaction view %d", size, csize)
 	}
-	if m := most.Load(); m > cviewHi+jobs*(nodeMax+16) {
+	if m := most.Load(); m > cviewHi {
 		t.Fatalf("a compaction saw %d bytes of context", m)
 	}
 }
@@ -430,6 +434,11 @@ func TestLoadOrder(t *testing.T) {
 	}
 	if len(c.msgs) != 3 || c.msgs[2].Text != "m2" || !slices.Equal(c.view.keys, []key{{0, 0}, {0, 1}, {0, 2}}) {
 		t.Fatalf("loaded %v, view %v", c.msgs, c.view.keys)
+	}
+	if bad, _ := filepath.Glob(filepath.Join(dir, "view.json.bad-*")); len(bad) != 1 {
+		t.Fatalf("the torn view.json was not kept aside: %v", bad)
+	} else if b, _ := os.ReadFile(bad[0]); string(b) != `[[0,0],[0,` {
+		t.Fatalf("kept aside: %q", b)
 	}
 	if !tiles([][2]int{{1, 0}, {0, 2}}, 3) || tiles([][2]int{{0, 0}, {0, 2}}, 3) || tiles([][2]int{{2, 0}}, 3) || tiles([][2]int{{99, 0}}, 3) {
 		t.Fatal("tiles")
@@ -521,11 +530,11 @@ func TestFailingLines(t *testing.T) {
 	retryIn = 5 * time.Millisecond
 	inner := c.compact
 	c.mu.Lock()
-	c.compact = func(ctx context.Context, lines []string, task []block) (string, error) {
+	c.compact = func(ctx context.Context, lines []string, stable int, task []block) (string, error) {
 		if strings.Contains(task[0].Text, "compress message") && strings.Contains(task[0].Text, "poison") {
 			return "", errors.New("refused")
 		}
-		return inner(ctx, lines, task)
+		return inner(ctx, lines, stable, task)
 	}
 	c.mu.Unlock()
 	for i := range 8 {
@@ -575,7 +584,7 @@ func TestOwnTagsInText(t *testing.T) {
 	if l := c.line(key{0, 0}); l != "0+1|user: see ‹/chat› and ‹input›" {
 		t.Fatalf("line: %q", l)
 	}
-	if _, task := c.compactInput(key{0, 1}); strings.Count(task[0].Text, "</input>") != 1 {
+	if _, _, task := c.compactInput(key{0, 1}); strings.Count(task[0].Text, "</input>") != 1 {
 		t.Fatalf("compaction input: %q", task[0].Text)
 	}
 }
@@ -600,7 +609,7 @@ func TestCompactSeesCall(t *testing.T) {
 	waitIdle(t, c)
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	task := func(i int) string { _, task := c.compactInput(key{0, i}); return task[0].Text }
+	task := func(i int) string { _, _, task := c.compactInput(key{0, i}); return task[0].Text }
 	if s := task(3); !strings.Contains(s, "message 3 answers (message 0,") || !strings.Contains(s, "<call>\n"+`Edit {"file_path":"a.go","old_string":"‹/call›`) ||
 		!strings.Contains(s, "o…\n</call>\n<input>\necho: a.go edited") {
 		t.Fatalf("by Ref:\n%s", s)
@@ -701,5 +710,62 @@ func TestSearch(t *testing.T) {
 	if got := c.Search("haystack needle", 0); !strings.HasPrefix(got, `No message before 34 holds "haystack needle". These share its words`) ||
 		!strings.Contains(got, "\n33+1|note, ") {
 		t.Fatalf("by words:\n%s", got)
+	}
+}
+
+// An import is a side of its own: the chat's lines build first, a call
+// waits for the chat's alone, and a merge far ahead of its side's messages
+// waits for them, its context within the compaction view's cap.
+func TestImportSide(t *testing.T) {
+	c, _ := fakeChat(t, t.TempDir(), 400)
+	inner := c.compact
+	var mu sync.Mutex
+	var order []string
+	most := 0
+	c.mu.Lock()
+	c.compact = nil // importing: nothing builds
+	c.mu.Unlock()
+	var imp []Msg
+	for i := range 300 {
+		text := fmt.Sprintf("short %d", i) // free, and their merges far ahead
+		if i%20 == 0 {
+			text = fmt.Sprintf("long %d %s", i, strings.Repeat("l", 600))
+		}
+		imp = append(imp, Msg{Kind: kindAI, Text: text, Imported: true})
+	}
+	c.logMsgs(imp)
+	c.Log("user", "mine "+strings.Repeat("m", 600))
+	c.mu.Lock()
+	c.jobs = 2
+	c.compact = func(ctx context.Context, lines []string, stable int, task []block) (string, error) {
+		mu.Lock()
+		order = append(order, strings.SplitN(task[0].Text, "\n", 2)[0])
+		most = max(most, lo.SumBy(lines, func(l string) int { return len(l) + 1 }))
+		mu.Unlock()
+		if lines := lines[:stable]; slices.ContainsFunc(lines, func(l string) bool { return strings.HasSuffix(l, unbuilt) }) {
+			t.Errorf("a placeholder in the cached part of a context: %q", lines)
+		}
+		return inner(ctx, lines, stable, task)
+	}
+	c.pump()
+	c.mu.Unlock()
+	start := time.Now()
+	if err := c.settle(context.Background(), func(int, int) {}); err != nil || time.Since(start) > 5*time.Second {
+		t.Fatalf("settle: %v after %s", err, time.Since(start))
+	}
+	c.mu.Lock()
+	mine := c.built(key{0, 300})
+	c.mu.Unlock()
+	if !mine {
+		t.Fatal("settle went on before the chat's own message was built")
+	}
+	waitIdle(t, c)
+	mu.Lock()
+	defer mu.Unlock()
+	if !slices.ContainsFunc(order[:2], func(s string) bool { return strings.Contains(s, "compress message 300 ") }) { // the first two start at once
+		t.Fatalf("the chat's message did not go first: %q", order[:3])
+	}
+	if most > cviewHi {
+		t.Fatalf("a compaction saw %d bytes of context", most)
 	}
 }

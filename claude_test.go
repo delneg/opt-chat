@@ -432,12 +432,12 @@ func TestCompact(t *testing.T) {
 	for i := range lines {
 		lines[i] = fmt.Sprintf("%d+1|note: %d", i, i)
 	}
-	got, err := a.Compact(context.Background(), lines, []block{textBlock("Compaction: make-it-long")})
+	got, err := a.Compact(context.Background(), lines, len(lines), []block{textBlock("Compaction: make-it-long")})
 	if err != nil || got != "short line" {
 		t.Fatalf("Compact = %q, %v", got, err)
 	}
 	img, _ := c.saveImage([]byte(pngHead))
-	got, err = a.Compact(context.Background(), nil, append([]block{textBlock("Compaction: x")}, c.fileBlocks([]string{img})...))
+	got, err = a.Compact(context.Background(), nil, 0, append([]block{textBlock("Compaction: x")}, c.fileBlocks([]string{img})...))
 	if err != nil || got != "line with 1 images" {
 		t.Fatalf("Compact = %q, %v", got, err)
 	}
@@ -446,12 +446,12 @@ func TestCompact(t *testing.T) {
 		flagOf(args, "--tools") != "Read" || flagOf(args, "--system-prompt") != "system" || flagOf(args, "--settings") != noTools {
 		t.Fatalf("compaction args: %q", args)
 	}
-	got, err = a.Compact(context.Background(), nil, []block{textBlock("Compaction: make-it-long then-fail")})
+	got, err = a.Compact(context.Background(), nil, 0, []block{textBlock("Compaction: make-it-long then-fail")})
 	if err != nil || got != strings.Repeat("x", 600) {
 		t.Fatalf("a failed retry lost the line in hand: %q, %v", got, err)
 	}
 	// Five tries, the shortest line kept, without a head it echoed.
-	got, err = a.Compact(context.Background(), nil, []block{textBlock("Compaction: always-long")})
+	got, err = a.Compact(context.Background(), nil, 0, []block{textBlock("Compaction: always-long")})
 	if err != nil || got != strings.Repeat("y", 696) {
 		t.Fatalf("Compact = %d bytes %.8q, %v; want the fifth try's 696", len(got), got, err)
 	}

@@ -37,6 +37,7 @@ func main() {
 	aeffort := flag.String("agent-effort", "high", "effort for subagents")
 	cmodel := flag.String("compact-model", "sonnet", "model for compactions (the recipe's: haiku)")
 	ceffort := flag.String("compact-effort", "medium", "effort for compactions")
+	jobs := flag.Int("jobs", defaultJobs, "compactions running at once, the chat's before an import's")
 	perm := flag.String("permission-mode", "auto", "Claude Code permission mode to start in: manual, acceptEdits or auto (Shift+Tab cycles them)")
 	tools := flag.String("tools", "Bash,Read,Edit,Write,WebSearch,WebFetch", "Claude Code tools")
 	ownConfig := flag.Bool("claude-config", true, "give turns and subagents your Claude Code skills, plugins, MCP servers and settings (never its hooks, CLAUDE.md or memory)")
@@ -66,6 +67,9 @@ func main() {
 	}
 	if !given["effort"] && validEffort(saved.Effort) {
 		*effort = saved.Effort
+	}
+	if *jobs < 1 {
+		fatal("-jobs must be 1 or more")
 	}
 	if !validMode(*perm) {
 		fatal("-permission-mode must be one of %s", strings.Join(modes, ", "))
@@ -127,6 +131,7 @@ func main() {
 
 	c.mu.Lock()
 	c.hub = hb
+	c.jobs = *jobs
 	c.compact = a.Compact
 	if *repl {
 		for _, k := range c.view.keys {
@@ -771,6 +776,8 @@ func replPrinter() func(any) {
 				switch m.Kind {
 				case "opt", "work":
 					fmt.Println(m.Text)
+				case kindAI:
+					dim("[" + kindAI + "] " + oneLine(m.Text, 200))
 				case "tool":
 					dim("→ " + oneLine(m.Text, 200))
 				case "echo":

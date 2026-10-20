@@ -116,7 +116,7 @@ func TestImportClaudeCode(t *testing.T) {
 	want := []string{
 		"note: Claude Code session s1 in /work, from 2026-09-01 10:00:00 UTC (imported)",
 		"user: Fix the build",
-		"opt: Looking.",
+		"ai: Looking.",
 		"user: See [Image #1]",
 		"user: and the docs",
 		"user: and the tests",
@@ -127,19 +127,25 @@ func TestImportClaudeCode(t *testing.T) {
 	if m := c.msgs[3]; len(m.Images) != 1 || !m.Date.Equal(time.Date(2026, 9, 1, 10, 0, 7, 0, time.UTC)) {
 		t.Fatalf("the image message: %+v", m)
 	}
+	if i := slices.IndexFunc(c.msgs, func(m Msg) bool { return !m.Imported }); i >= 0 {
+		t.Fatalf("message %d not marked imported", i)
+	}
 	if out := importInto(t, c, filepath.Join(home, ".claude"), importOpts{skip: []string{"/bots"}}, "y\n"); !strings.HasPrefix(out, "Nothing new in the 2 sessions found") {
 		t.Fatalf("a second import: %q", out)
 	}
 
 	// The session goes on: the next import adds the rest, here with tools.
 	c.Log("user", "a live message") // after the import: never counted as the session's
+	if c.msgs[len(c.msgs)-1].Imported {
+		t.Fatal("a live message marked imported")
+	}
 	jsonl(t, file,
 		claudeLine("assistant", "2026-09-02T09:00:00Z", []obj{{"type": "text", "text": "Done."}, {"type": "tool_use", "name": "Read", "input": obj{"file_path": "a"}}}),
 		claudeLine("user", "2026-09-02T09:00:01Z", []obj{{"type": "tool_result", "content": "contents of " + strings.Repeat("y", 40_000)}}),
 	)
 	importInto(t, c, file, importOpts{tools: true}, "y\n")
 	got := logged(c)[7:]
-	if len(got) != 4 || got[0] != want[0] || got[1] != "opt: Done." || got[2] != `tool: Read {"file_path":"a"}` ||
+	if len(got) != 4 || got[0] != want[0] || got[1] != "ai: Done." || got[2] != `tool: Read {"file_path":"a"}` ||
 		!strings.HasPrefix(got[3], "echo: contents of ") || !strings.Contains(got[3], " characters cut ...]") {
 		t.Fatalf("the rest: %q", got)
 	}
@@ -193,7 +199,7 @@ func TestImportHistory(t *testing.T) {
 		"user: /Users/me/shot.png what is it",
 		"note: Claude Code session s1 in /work, from 2026-09-01 10:00:00 UTC (imported)",
 		"user: Plan it",
-		"opt: Planned.",
+		"ai: Planned.",
 	}
 	if got := logged(c); !slices.Equal(got, want) {
 		t.Fatalf("logged %q\nwant %q", got, want)
@@ -245,7 +251,7 @@ func TestImportCodex(t *testing.T) {
 		"user: list files",
 		`tool: shell {"command":["ls"]}`,
 		"echo: a b",
-		"opt: Two files.",
+		"ai: Two files.",
 	}
 	if got := logged(c); !slices.Equal(got, want) {
 		t.Fatalf("logged %q\nwant %q", got, want)
@@ -290,7 +296,7 @@ func TestImportQueuedAndRefs(t *testing.T) {
 		"echo: B",
 		"user: use the staging db",
 		"user: and be quick, please",
-		"opt: Using staging.",
+		"ai: Using staging.",
 	}
 	if got := logged(c)[1:]; !slices.Equal(got, want) {
 		t.Fatalf("logged %q\nwant %q", got, want)
@@ -349,10 +355,10 @@ func TestImportExports(t *testing.T) {
 		"user: write a poem",
 		"tool: python print(1)",
 		"echo: 1",
-		"opt: Roses\n[image]",
+		"ai: Roses\n[image]",
 		"note: Claude chat \"Trip\", from 2026-05-01 12:00:00 UTC (imported)",
 		"user: Plan a trip\n[file map.pdf]",
-		"opt: Sure.",
+		"ai: Sure.",
 	}
 	if got := logged(c); !slices.Equal(got, want) {
 		t.Fatalf("logged %q\nwant %q", got, want)

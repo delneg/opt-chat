@@ -13,7 +13,8 @@ Opt's memory: the whole chat between Opt and the user, oldest first, inside
 Each message has a kind:
 - user: the user's words
 - opt: Opt's replies
-- tool: Opt's tool calls
+- ai: another AI's replies, from an imported chat; not yours
+- tool: Opt's tool calls, or in an imported chat, that AI's
 - echo: tool results
 - work: an agent's report, starting "[Name]"
 - note: memories from before this chat

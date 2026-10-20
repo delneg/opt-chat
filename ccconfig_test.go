@@ -51,7 +51,7 @@ func TestOwnConfig(t *testing.T) {
 	}
 
 	a.ownConfig = false // a compaction: bare, as ever
-	a.Compact(context.Background(), []string{"x"}, []block{textBlock("Compaction: x")})
+	a.Compact(context.Background(), []string{"x"}, 0, []block{textBlock("Compaction: x")})
 	if args := calls()[1]; flagOf(args, "--setting-sources") != "" || !slices.Contains(args, "--strict-mcp-config") {
 		t.Fatalf("compaction args: %q", args)
 	}

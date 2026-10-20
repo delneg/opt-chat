@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/samber/lo"
 )
 
 func jsonl(t *testing.T, path string, lines ...any) {
@@ -403,5 +405,40 @@ func TestSummaryCalls(t *testing.T) {
 		if got := summaryCalls(tc.at, tc.sizes); got != tc.want {
 			t.Errorf("summaryCalls(%d, %v) = %d, want %d", tc.at, tc.sizes, got, tc.want)
 		}
+	}
+}
+
+// A log from before imports were marked has them marked at load, in memory:
+// a session's note and the messages after it older than it, up to the
+// first that is not, and never the chat's own.
+func TestMarkOldImports(t *testing.T) {
+	dir := t.TempDir()
+	day := func(d, h int) time.Time { return time.Date(2026, 10, d, h, 0, 0, 0, time.UTC) }
+	path := filepath.Join(dir, "main", "2026-10-01.jsonl")
+	jsonl(t, path,
+		Msg{I: 0, Kind: "user", Text: "before", Date: day(1, 9)},
+		Msg{I: 1, Kind: "note", Text: "Claude Code session s1 in /w, from 2026-09-01 10:00:00 UTC (imported)", Date: day(1, 10)},
+		Msg{I: 2, Kind: "user", Text: "old", Date: day(1, 8)},
+		Msg{I: 3, Kind: "opt", Text: "old reply", Date: day(1, 8)},
+		Msg{I: 4, Kind: "user", Text: "live", Date: day(1, 11)},
+		Msg{I: 5, Kind: "opt", Text: "live reply", Date: day(1, 11)},
+		Msg{I: 6, Kind: "note", Text: "Claude Code session s2 in /w, from 2026-09-02 10:00:00 UTC (imported)", Date: day(1, 12)},
+		Msg{I: 7, Kind: "user", Text: "old again", Date: day(1, 9)},
+		Msg{I: 8, Kind: "note", Text: "a memory", Date: day(1, 12)},
+	)
+	before, _ := os.ReadFile(path)
+	c, err := openChat(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := lo.Map(c.msgs, func(m Msg, _ int) bool { return m.Imported })
+	if want := []bool{false, true, true, true, false, false, true, true, false}; !slices.Equal(got, want) {
+		t.Fatalf("imported %v, want %v", got, want)
+	}
+	if c.side(key{1, 1}) != 1 || c.side(key{0, 4}) != 0 {
+		t.Fatal("sides")
+	}
+	if after, _ := os.ReadFile(path); string(after) != string(before) {
+		t.Fatal("the log was written")
 	}
 }

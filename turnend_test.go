@@ -105,3 +105,16 @@ func TestTurnCut(t *testing.T) {
 		t.Fatalf("a quit when idle: %q, %v", note, resume)
 	}
 }
+
+// A failed result and then a good one in the same call (a message sent
+// mid-run) end the turn well: no note that it failed.
+func TestTurnRecovers(t *testing.T) {
+	c, _ := fakeChat(t, t.TempDir(), 100)
+	h := newHarness(t, c)
+	h.input(message{kind: "user", text: "fail-then-ok"})
+	waitFor(t, "the reply", func() bool { return hasLogged(c, "opt: recovered") })
+	waitFor(t, "the loop to end", h.idle)
+	if slices.ContainsFunc(logged(c), func(l string) bool { return strings.Contains(l, "No reply") }) {
+		t.Fatalf("logged %q", logged(c))
+	}
+}

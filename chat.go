@@ -11,7 +11,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"maps"
 	"math"
 	"math/bits"
 	"net/http"
@@ -151,6 +150,7 @@ func openChat(dir string) (*Chat, error) {
 		}
 		c.msgs = append(c.msgs, m)
 	}
+	c.markImported()
 	if err := load(filepath.Join(dir, "btw"), func(s Aside) { c.asides = append(c.asides, s) }); err != nil {
 		return nil, err
 	}
@@ -842,9 +842,14 @@ func (c *Chat) compactTail(k key, size int) []string {
 		j, _ := slices.BinarySearchFunc(c.view.keys, s, func(v key, s int) int { return cmp.Compare(v.start(), s) })
 		return j
 	}
+	// The view's line that holds message from can be a merge begun in the
+	// compactions' view, which grows by message: of it, only the nodes from
+	// there on, so no message is missed or seen twice.
+	j := at(from+1) - 1
+	keys := slices.Concat(cover(from, c.view.keys[j].end()), c.view.keys[j+1:at(until(k))])
 	var tail []string
-	for j := at(until(k)) - 1; j >= at(from); j-- {
-		l := c.callLine(c.view.keys[j])
+	for _, v := range slices.Backward(keys) {
+		l := c.callLine(v)
 		if size += len(l) + 1; size > cviewHi {
 			break
 		}
@@ -960,7 +965,7 @@ func (c *Chat) settle(ctx context.Context, waiting func(n, written int)) error {
 		written, ch := c.written-from, c.changed
 		big := n+lo.CountBy(c.readyM, own) > settleMax
 		_, more := c.pick(0, false)
-		running := slices.ContainsFunc(slices.Collect(maps.Keys(c.busy)), own)
+		running := lo.SomeBy(lo.Keys(c.busy), own)
 		failing := !running && !more && c.compact != nil // all that is left failed: no wait for its next try
 		c.mu.Unlock()
 		if n == 0 || big || failing {
@@ -987,19 +992,24 @@ func (c *Chat) settle(ctx context.Context, waiting func(n, written int)) error {
 // does a view over viewHi whose batch waits for an import's parents. Caller
 // holds c.mu.
 func (c *Chat) callView() []string {
+	return lo.Map(c.callKeys(), func(k key, _ int) string { return c.callLine(k) })
+}
+
+// callKeys are callView's lines' nodes. Caller holds c.mu.
+func (c *Chat) callKeys() []key {
 	keys := c.view.keys
 	if !slices.ContainsFunc(keys, func(k key) bool { return !c.built(k) }) && c.view.bytes <= viewHi {
-		return c.lines(keys)
+		return keys
 	}
-	size := lo.SumBy(keys, func(k key) int { return len(c.callLine(k)) + 1 })
 	weigh := func(k key) int { return len(c.callLine(k)) + 1 }
+	size := lo.SumBy(keys, weigh)
 	if size > viewHi {
 		keys, size = merged(keys, len(c.msgs), func(a, b key) bool { return !c.built(a) && !c.built(b) }, weigh, size, viewLo)
 	}
 	if size > viewHi {
 		keys, _ = merged(keys, len(c.msgs), func(a, b key) bool { return true }, weigh, size, viewLo)
 	}
-	return lo.Map(keys, func(k key, _ int) string { return c.callLine(k) })
+	return keys
 }
 
 // callLine is line k as a call sees it: a message not summarized yet shows
@@ -1024,29 +1034,44 @@ func (c *Chat) callLine(k key) string {
 func (c *Chat) Zoom(id, n int) (string, []string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if n < 1 || n&(n-1) != 0 || id < 0 || id%n != 0 || id > len(c.msgs)-n {
-		// What would be, as UniiChat says it (Memory.ts zoom).
-		roots := lo.Map(rootKeys(len(c.msgs)), func(k key, _ int) string { return k.name() })
-		return fmt.Sprintf("No line %d+%d: n is a power of 2, id a multiple of n, and id+n at most the chat's %d messages; "+
-			"zoom(id, 1) gives message id whole. The tree's roots: %s.", id, n, len(c.msgs), strings.Join(roots, ", ")), nil
+	k, ok := c.keyOf(id, n)
+	if !ok {
+		return c.noLine(id, n), nil
 	}
 	if n == 1 {
 		m := c.msgs[id]
 		return fmt.Sprintf("%d+1|%s: %s", id, m.Kind, m.Text), m.Images
 	}
-	a, b := key{bits.TrailingZeros(uint(n)), id / n}.kids()
+	a, b := k.kids()
 	return c.callLine(a) + "\n" + c.callLine(b), nil // a message not summarized yet: its head
+}
+
+// keyOf is line id+n's node; false when there is no such line.
+func (c *Chat) keyOf(id, n int) (key, bool) {
+	if n < 1 || n&(n-1) != 0 || id < 0 || id%n != 0 || id > len(c.msgs)-n {
+		return key{}, false
+	}
+	return key{bits.TrailingZeros(uint(n)), id / n}, true
+}
+
+// noLine says why there is no line id+n, and what would be, as UniiChat
+// says it (Memory.ts zoom). Caller holds c.mu.
+func (c *Chat) noLine(id, n int) string {
+	roots := lo.Map(rootKeys(len(c.msgs)), func(k key, _ int) string { return k.name() })
+	return fmt.Sprintf("No line %d+%d: n is a power of 2, id a multiple of n, and id+n at most the chat's %d messages; "+
+		"zoom(id, 1) gives message id whole. The tree's roots: %s.", id, n, len(c.msgs), strings.Join(roots, ", "))
 }
 
 // rootKeys are the tree's roots over n messages, oldest first: the lines
 // no other merges, one per bit of n.
-func rootKeys(n int) []key {
+func rootKeys(n int) []key { return cover(0, n) }
+
+// cover is the fewest tree nodes that tile messages from to to-1, oldest first.
+func cover(from, to int) []key {
 	var keys []key
-	for l, start := bits.Len(uint(n))-1, 0; l >= 0; l-- {
-		if n&(1<<l) != 0 {
-			keys = append(keys, key{l, start >> l})
-			start += 1 << l
-		}
+	for i := from; i < to; i += 1 << keys[len(keys)-1].L {
+		l := min(bits.TrailingZeros(uint(i)), bits.Len(uint(to-i))-1)
+		keys = append(keys, key{l, i >> l})
 	}
 	return keys
 }

@@ -248,6 +248,9 @@ func fakeClaude() {
 			emit(map[string]any{"type": "assistant", "message": map[string]any{"content": []map[string]any{{"type": "text", "text": "working"}},
 				"usage": map[string]any{"input_tokens": 10, "cache_read_input_tokens": 300000}}})
 			result("did the big one")
+		case strings.Contains(in, "fail-then-ok"): // as a message sent mid-run: a second result in the same call
+			emit(map[string]any{"type": "result", "is_error": true, "result": "overloaded"})
+			result("recovered")
 		case strings.Contains(in, "side-fail"):
 			emit(map[string]any{"type": "result", "is_error": true, "result": "overloaded"})
 		case strings.Contains(in, "side-ask"): // a side question's call asks, and gets the answer at once
@@ -1078,5 +1081,29 @@ func TestAgentsReload(t *testing.T) {
 	os.Remove(a.agentsMD)
 	if got := turn(); got != "system" {
 		t.Fatalf("after removal: %q", got)
+	}
+}
+
+// A leader's ack lets the calls waiting on its first message go as its
+// response begins: not at its own events, nor at the answer to a mode
+// switch sent meanwhile.
+func TestAckReleases(t *testing.T) {
+	a := &Agent{writing: map[string]chan struct{}{}}
+	out := strings.Join([]string{
+		`{"type":"system","subtype":"init"}`,
+		`{"type":"control_response","response":{"subtype":"success","request_id":"opt-mode-1"}}`,
+		`{"type":"stream_event","event":{"type":"message_start"}}`,
+		`{"type":"result","result":"ok"}`,
+	}, "\n")
+	p := &proc{prefix: "p", ctx: t.Context(), out: bufio.NewScanner(strings.NewReader(out))}
+	var held []bool
+	err := a.ack(p, []block{textBlock("view")}, &usage{}, func(event) {
+		a.mu.Lock()
+		_, ok := a.writing["p\x00view"]
+		a.mu.Unlock()
+		held = append(held, ok)
+	})
+	if err != nil || !slices.Equal(held, []bool{true, true, false}) {
+		t.Fatalf("held %v, err %v", held, err)
 	}
 }

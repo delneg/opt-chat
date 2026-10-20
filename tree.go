@@ -3,11 +3,12 @@ package main
 import (
 	"fmt"
 	"html/template"
-	"math/bits"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/samber/lo"
 )
 
 // What Opt sees, for the page: the view as a list of lines, each opened
@@ -41,14 +42,6 @@ type (
 	}
 )
 
-// keyOf is line id+n's node; false when there is no such line.
-func (c *Chat) keyOf(id, n int) (key, bool) {
-	if n < 1 || n&(n-1) != 0 || id < 0 || id%n != 0 || id > len(c.msgs)-n {
-		return key{}, false
-	}
-	return key{bits.TrailingZeros(uint(n)), id / n}, true
-}
-
 // memLine is line k as callLine has it, its name apart. Caller holds c.mu.
 func (c *Chat) memLine(k key) memLine {
 	_, text, _ := strings.Cut(c.callLine(k), "|")
@@ -66,18 +59,7 @@ func (c *Chat) memView() []memLine {
 
 // viewLines is memView's. Caller holds c.mu.
 func (c *Chat) viewLines() []memLine {
-	lines := c.callView()
-	out := make([]memLine, 0, len(lines))
-	for _, l := range lines {
-		name, _, _ := strings.Cut(l, "|")
-		a, b, _ := strings.Cut(name, "+")
-		id, _ := strconv.Atoi(a)
-		n, _ := strconv.Atoi(b)
-		if k, ok := c.keyOf(id, n); ok {
-			out = append(out, c.memLine(k))
-		}
-	}
-	return out
+	return lo.Map(c.callKeys(), func(k key, _ int) memLine { return c.memLine(k) })
 }
 
 // memZoom opens line id+n as Opt's zoom does: its two halves, or for n = 1
@@ -89,7 +71,7 @@ func (c *Chat) memZoom(id, n int) zoomReply {
 	k, ok := c.keyOf(id, n)
 	switch {
 	case !ok:
-		reply.Error = fmt.Sprintf("No line %d+%d.", id, n)
+		reply.Error = c.noLine(id, n)
 	case n == 1:
 		m := c.msgs[id]
 		reply.Msg = &m

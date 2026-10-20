@@ -680,7 +680,7 @@ func (a *Agent) ack(p *proc, first []block, u *usage, each func(event)) error {
 	defer release()
 	p.send(first...)
 	return awaitResult(p, u, func(e event) {
-		if e.Type != "system" { // its own events come before the request
+		if e.Type == "stream_event" || e.Type == "assistant" { // the response; not its own events, nor a mode switch's answer
 			release()
 		}
 		if each != nil {
@@ -1116,7 +1116,9 @@ func (t *Turn) Run(ctx context.Context, msgs []message) error {
 			continue
 		}
 		u.add(e.Usage)
-		if e.IsError && ctx.Err() == nil && !p.declined.Load() {
+		if !e.IsError {
+			failed = "" // a later result went well: the turn did not fail
+		} else if ctx.Err() == nil && !p.declined.Load() {
 			failed = e.failure()
 		}
 		// Claude Code delivers a message sent mid-run into this same result,

@@ -625,6 +625,25 @@ func (c *Chat) imported() map[string]time.Time {
 	return done
 }
 
+// markImported marks, in memory, the messages of imports logged before
+// Msg.Imported was: each note that starts a session and the messages after
+// it older than it, as imported finds them. Unmarked, an old import's
+// backlog was the chat's own, and the chat's new lines queued behind it.
+func (c *Chat) markImported() {
+	var at time.Time // the session's note's date; zero: not in a session
+	for i := range c.msgs {
+		m := &c.msgs[i]
+		switch {
+		case m.Kind == "note" && strings.HasSuffix(m.Text, " (imported)"):
+			at = m.Date
+		case at.IsZero() || !m.Date.Before(at):
+			at = time.Time{}
+			continue
+		}
+		m.Imported = true
+	}
+}
+
 // importOpts picks what an import takes: messages from since on, tool calls
 // and results with tools, and no session whose directory (or a chat's title)
 // contains one of skip.

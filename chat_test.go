@@ -862,3 +862,33 @@ func TestRedoAcks(t *testing.T) {
 		t.Fatalf("reload redoes again: %v", r2.redo)
 	}
 }
+
+// A compaction past the compactions' view sees, in its tail, the messages
+// from that view's end on once each, even where the view holds a merge
+// that began inside the compactions' view.
+func TestCompactTailInMerge(t *testing.T) {
+	c, err := openChat(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 8 {
+		c.Log("user", strings.Repeat("u", 600)) // none free: nothing builds without a compactor
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, k := range []key{{0, 0}, {0, 1}, {0, 2}, {0, 3}, {1, 0}, {1, 1}, {2, 0}} {
+		c.tree[k] = "line " + k.name()
+	}
+	c.view.keys = []key{{2, 0}, {0, 4}, {0, 5}, {0, 6}, {0, 7}}
+	c.cview.keys = []key{{0, 0}, {0, 1}}
+	var names []string
+	for _, l := range c.compactTail(key{0, 6}, 0) {
+		names = append(names, strings.SplitN(l, "|", 2)[0])
+	}
+	if want := []string{"2+2", "4+1", "5+1"}; !slices.Equal(names, want) {
+		t.Fatalf("tail %q, want %q", names, want)
+	}
+	if got := cover(5, 16); !slices.Equal(got, []key{{0, 5}, {1, 3}, {3, 1}}) {
+		t.Fatalf("cover(5, 16) = %v", got)
+	}
+}

@@ -54,11 +54,14 @@ const S = {
   wide: false, // room for the agents rail beside the chat
   railOff: (() => { try { const v = JSON.parse(localStorage.getItem('railOff')); return Array.isArray(v) ? v : null; } catch { return null; } })(), // hidden by the user: the subagents it had then
   drawer: false, // no room: the rail as a drawer, open
-  agent: null, // the subagent the rail shows: { name, steps, off, cut, loading }
+  agent: null, // the subagent the rail shows: { name, steps, off, cut, loading }; full screen, that one's
+  full: (() => { try { return sessionStorage.getItem('full') || null; } catch { return null; } })(), // the subagent full screen, which the bar talks to (Alt+O); kept per tab
+  ctx: null, // its context, asked: { name, sections, loading, failed }
   memView: false, // the chat shown as Opt's view (Alt+V, /view) instead of the log
   mem: null, // the view's lines, once asked: { id, n, text, built, from, to }
   memTick: 0, // a block opened, shut or zoomed: draw again
 };
+if (S.full) S.agent = { name: S.full, steps: [], off: 0, cut: false, loading: true }; // its steps come with hello
 
 // set changes the state and renders it once per frame; in a tab in the
 // background, where frames pause, on a timer, so its title still tells
@@ -155,6 +158,7 @@ function onUpdate(u) {
       if (S.agent) openAgent(S.agent.name); // its steps meanwhile
       if (S.memView) memAsk(true); // the view, and the blocks open, as they are now
       send({ t: 'usage' }); // the plan's limits, for the bar
+      checkFull();
       break;
     }
     case 'msgs': {
@@ -182,13 +186,14 @@ function onUpdate(u) {
     case 'queue': set({ queue: u.queue }); break;
     case 'asks': {
       const fresh = u.asks.some(q => !S.asks.some(x => x.id === q.id));
-      set({ asks: u.asks, askSel: u.asks[0]?.id === S.asks[0]?.id ? S.askSel : 0, unseen: S.unseen || (fresh && document.hidden) }); // a question: news too
+      set({ asks: u.asks, askSel: shownAsk(u.asks)?.id === shownAsk()?.id ? S.askSel : 0, unseen: S.unseen || (fresh && document.hidden) }); // a question: news too
       break;
     }
     case 'thought': set({ thinking: '' }); break;
     case 'status':
       if (u.status.written !== S.status?.written || u.status.viewLines !== S.status?.viewLines) memAsk(false); // lines built, or merged
       set({ status: u.status });
+      checkFull();
       break;
     case 'memview': memGot(u.lines); break;
     case 'zoom':
@@ -199,7 +204,11 @@ function onUpdate(u) {
     case 'steps': if (S.agent?.name === u.name) set({ agent: { name: u.name, steps: u.steps.slice(-agentStepsMax), off: 0, cut: u.cut || u.steps.length > agentStepsMax, loading: false } }); break;
     case 'step': addStep(u.name, u.step); break;
     case 'end': set({ last: u.end }); send({ t: 'usage' }); break;
-    case 'notice': notice(u.level, u.s); break;
+    case 'notice':
+      if (u.level === 'warn' && S.ctx?.loading) set({ ctx: { ...S.ctx, loading: false, failed: true } }); // its context, asked for, is not coming
+      notice(u.level, u.s);
+      break;
+    case 'agentContext': if (S.ctx?.name === u.name) set({ ctx: { name: u.name, sections: u.sections || [], loading: false } }); break;
     case 'aside': set({ asides: mergeAsides(S.asides, [u.aside]), unseen: S.unseen || (!!u.aside.a && document.hidden) }); break;
     case 'history': { // asked before a reconnect's hello reset the log: not the page before it now
       const fits = u.msgs.length && u.msgs[u.msgs.length - 1].i + 1 === S.msgs[0]?.i;
@@ -227,20 +236,23 @@ function onUpdate(u) {
       if (u.t === 'plugins' && u.action) send({ t: 'skills' }); // theirs came or went
       break;
     }
-    case 'restore': if (u.note) notice('info', u.note); restore(u.text, u.files); break;
+    case 'restore': if (u.note) notice('info', u.note); restoreTo('', u.text, u.files); break; // Opt's queue: into Opt's draft
     case 'sent': sending.delete(u.seq); break;
     case 'failed': {
       const s = sending.get(u.seq);
       sending.delete(u.seq);
       notice('warn', u.s);
-      if (s) restore(s.text, s.files);
+      if (s) restoreTo(s.to, s.text, s.files);
       break;
     }
   }
 }
 
+// notice adds a line to the log. One that comes while a subagent is full
+// screen shows in its view too (who), after its steps so far (step).
 function notice(level, s) {
-  set({ notices: S.notices.concat({ id: ++noticeSeq, after: lastI, level, s }).slice(-50) });
+  const who = S.full || '', step = who && S.agent?.name === who ? S.agent.off + S.agent.steps.length : 0;
+  set({ notices: S.notices.concat({ id: ++noticeSeq, after: lastI, level, s, who, step }).slice(-50) });
 }
 
 // histText is a message as ↑ recalls it: without its attachments, which
@@ -290,7 +302,7 @@ let inputEl = null, histPos = -1, histList = [], draft = '', pathTimer = 0, uplo
 // time. So the log keeps its place: at the end if it was there.
 function autosize() {
   if (!inputEl) return;
-  const log = document.querySelector('.scroll');
+  const log = document.querySelector(S.full ? '.full-log' : '.scroll');
   const top = log?.scrollTop, atEnd = log && log.scrollHeight - log.scrollTop - log.clientHeight < 2;
   const own = inputEl.scrollTop; // past its max height it scrolls too
   inputEl.style.height = 'auto';
@@ -299,9 +311,49 @@ function autosize() {
   if (log) log.scrollTop = atEnd ? log.scrollHeight : top;
 }
 
-// keepDraft keeps the input's text for a reload; its attachments go.
+// keepDraft keeps the input's text for a reload; its attachments go. A
+// subagent's draft is kept for the tab alone, as its full screen is.
 function keepDraft() {
-  try { if (inputEl.value) localStorage.setItem('draft', inputEl.value); else localStorage.removeItem('draft'); } catch {}
+  try {
+    const store = S.full ? sessionStorage : localStorage, key = S.full ? 'draft:' + S.full : 'draft';
+    if (inputEl.value) store.setItem(key, inputEl.value); else store.removeItem(key);
+  } catch {}
+}
+
+// The bar's drafts, one for each it talks to: '' is Opt, else a subagent
+// full screen. The one in the bar is the input's text and S.atts; the
+// others wait here, so going full screen and back neither loses nor mixes
+// text or attachments.
+const drafts = new Map();
+function target() { return S.full || ''; }
+
+function storedDraft(to) {
+  try { return histText((to ? sessionStorage.getItem('draft:' + to) : localStorage.getItem('draft')) || ''); } catch { return ''; }
+}
+
+function saveDraft(to) {
+  drafts.set(to, { text: inputEl ? inputEl.value : storedDraft(to), atts: S.atts, paths: S.paths, skipped: S.skipped, chosen: S.chosen });
+}
+
+// loadDraft puts to's draft in the bar; S.full must already be to.
+function loadDraft(to) {
+  const d = drafts.get(to) || { text: storedDraft(to), atts: [], paths: [], skipped: new Set(), chosen: new Set() };
+  drafts.delete(to);
+  forget();
+  histPos = -1;
+  set({ atts: d.atts, paths: d.paths, skipped: d.skipped, chosen: d.chosen, mention: null, cmdSel: 0, cmdShut: null });
+  if (inputEl) setInput(d.text);
+}
+
+// restoreTo puts a message not sent back where it was typed: in the bar,
+// or in the draft that waits for to.
+function restoreTo(to, text, files) {
+  to = to || '';
+  if (to === target()) { restore(text, files); return; }
+  const d = drafts.get(to) || { text: storedDraft(to), atts: [], paths: [], skipped: new Set(), chosen: new Set() };
+  const back = (files || []).map(f => ({ ...f, id: ++uploadSeq, status: 'done', url: kindOf(f) === 'image' ? '/' + f.name : null, promise: Promise.resolve() }));
+  drafts.set(to, { ...d, text: text + (d.text.trim() ? '\n\n' + d.text : ''), atts: back.concat(d.atts) });
+  notice('info', `Not sent: it waits in ${to ? `[${to}]'s` : 'Opt\'s'} input, for when you go back to ${to ? `[${to}] (full screen)` : 'Opt'}.`);
 }
 
 function setInput(text) {
@@ -487,8 +539,10 @@ let submitting = false; // waiting for uploads: a second Enter sends nothing mor
 
 async function submit(now) {
   if (submitting) return;
+  const to = target();
   if (!inputEl.value.trim() && !S.atts.length) {
-    if (now && S.queue.length) send({ t: 'now' });
+    if (to) { if (fullBusy()) stopFull(); } // full screen, Enter on an empty bar interrupts the agent, as Esc does
+    else if (now && S.queue.length) send({ t: 'now' });
     return;
   }
   if (S.conn !== 'open') { notice('warn', 'Not connected: your message stays in the input until opt-chat is back.'); return; }
@@ -508,6 +562,7 @@ async function submit(now) {
       pathsWait = null;
     }
   } finally { submitting = false; }
+  if (target() !== to) return; // the bar went to another meanwhile: this draft waits in its place
   if (S.atts.some(a => a.status === 'error')) { notice('warn', 'An attachment failed: take it off (×) and send again.'); return; }
   const text = inputEl.value; // as it is now: typing went on meanwhile
   if (!text.trim() && !S.atts.length) return;
@@ -515,10 +570,14 @@ async function submit(now) {
   // Not looked for yet (opt-chat slow to answer): the server looks, as told.
   const paths = pathsDone ? S.paths.map(p => p.path).filter(p => !S.skipped.has(p)) : null;
   const seq = ++sendSeq;
-  const payload = { t: 'send', text, files, paths, skip: [...S.skipped], chosen: [...S.chosen], now, seq, key: pageKey + ':' + seq };
+  const agent = to && !isCommand(text); // a command is Opt's, whoever the bar talks to
+  const payload = agent
+    ? { t: 'tellAgent', name: to, text, files, paths, skip: [...S.skipped], chosen: [...S.chosen], seq, key: pageKey + ':' + seq }
+    : { t: 'send', text, files, paths, skip: [...S.skipped], chosen: [...S.chosen], now, seq, key: pageKey + ':' + seq };
   if (!send(payload)) return;
-  toEnd = true; // what was sent, and its answer, show
-  sending.set(seq, { payload, text, files: S.atts });
+  if (agent) fullToEnd = true; else toEnd = true; // what was sent, and its answer, show
+  if (to && !agent) notice('info', `${text.trim().split(/\s/)[0]} is Opt's: it went to Opt's chat.`);
+  sending.set(seq, { payload, text, files: S.atts, to });
   if (histText(text) && !isCommand(text)) set({ inputs: mergeInputs(S.inputs, [histText(text)]) });
   if (inputEl.value === text) setInput('');
   histPos = -1;
@@ -532,6 +591,12 @@ function escape() {
   if (S.picker) { closePicker(); return; }
   if (S.panel) { closePanel(); return; }
   if (S.help) { set({ help: false }); return; } // one Esc, one thing: never a stop by surprise
+  if (S.full) { // the agent's, not Opt's: it stops the agent at work, else goes back to Opt
+    if (S.ctx) set({ ctx: null });
+    else if (fullBusy()) stopFull();
+    else leaveFull();
+    return;
+  }
   if (S.turn.phase) send({ t: 'stop' });
 }
 
@@ -587,7 +652,7 @@ function onKey(e) {
   // arrows move in it first.
   const recalled = histPos >= 0 && el.value === histList[histPos];
   if (e.key === 'ArrowUp' && !e.shiftKey && (recalled || caretFirstLine(el))) {
-    if (!el.value && S.queue.length && histPos < 0) { // edit the last queued, as Claude Code does
+    if (!el.value && S.queue.length && histPos < 0 && !S.full) { // edit the last queued, as Claude Code does
       e.preventDefault();
       send({ t: 'pull', id: S.queue[S.queue.length - 1].id });
       return;
@@ -1037,12 +1102,14 @@ function UserMsg({ m }) {
   const long = lines.length > 20 || body.length > 3000; // a big paste shows folded, as in Claude Code: one long line too
   const head = long ? lines.slice(0, 12).join('\n').slice(0, 1500) : body;
   const hidden = lines.length - head.split('\n').length;
+  const cls = 'msg user' + (m.from ? ' from-opt' : ''); // from: Opt wrote it, to a subagent
+  const mark = m.from ? '◇' : '▸', from = m.from && html`<div class="from">${m.from}</div>`;
   if (parts.length && body && !long) { // attachments alone show in a row, as ever
     const rest = splitMarks(tail);
     const inline = parts.filter(p => typeof p !== 'string');
-    return html`<div class="msg user" title=${when(m.date)} data-i=${m.i}>
-      <span class="mark" aria-hidden="true">▸</span>
-      <div class="body">
+    return html`<div class=${cls} title=${when(m.date)} data-i=${m.i}>
+      <span class="mark" aria-hidden="true">${mark}</span>
+      <div class="body">${from}
         <div class="text">${parts.map((p, j) => typeof p === 'string' ? p : html`<${MarkView} mk=${p} images=${m.images} inline=${true} onOpen=${() => setShown(shown === j ? -1 : j)} open=${shown === j}/>`)}${rest.body}</div>
         ${shown >= 0 && parts[shown]?.content !== undefined && html`<div class="attach-text"><pre>${parts[shown].content}</pre></div>`}
         ${rest.marks.filter(isVoice).map((mk, j) => html`<${Voice} mk=${mk} k=${`v${m.i}.${j}`}/>`)}
@@ -1050,9 +1117,9 @@ function UserMsg({ m }) {
       </div>
     </div>`;
   }
-  return html`<div class="msg user" title=${when(m.date)} data-i=${m.i}>
-    <span class="mark" aria-hidden="true">▸</span>
-    <div class="body">
+  return html`<div class=${cls} title=${when(m.date)} data-i=${m.i}>
+    <span class="mark" aria-hidden="true">${mark}</span>
+    <div class="body">${from}
       ${body && html`<div class="text">${long && !open ? head : body}</div>`}
       ${long && html`<button class="more" onClick=${() => setOpen(!open)}>${open ? '▴ fold' : `… +${hidden ? count(hidden, 'line') : count(body.length - head.length, 'character')} (click to expand)`}</button>`}
       ${marks.filter(isVoice).map((mk, j) => html`<${Voice} mk=${mk} k=${`v${m.i}.${j}`}/>`)}
@@ -1108,11 +1175,27 @@ function Attached({ id, marks = [], images = [] }) {
 }
 
 function WorkMsg({ m }) {
+  const relay = m.text.match(/^\[user → ([^\]]+)\]\s*/);
+  if (relay) return html`<${RelayMsg} m=${m} name=${relay[1]} text=${m.text.slice(relay[0].length)}/>`;
   const match = m.text.match(/^\[([^\]]+)\]\s*/);
   const who = match ? match[1] : 'subagent';
   const text = match ? m.text.slice(match[0].length) : m.text;
   return html`<div class="msg work" title=${when(m.date)}><span class="mark" aria-hidden="true">◆</span><div class="body">
     <div class="who">[${who}] report</div><${Markdown} text=${text}/></div></div>`;
+}
+
+// RelayMsg is what the user said to a subagent full screen, as Opt's chat
+// logs it: one line, set apart from Opt's own work; a click shows it whole.
+function RelayMsg({ m, name, text }) {
+  const [open, setOpen] = useKept('r' + m.i, false);
+  const { body, marks } = useMemo(() => splitMarks(text), [text]);
+  const line = oneLine(body, 160), long = line !== body;
+  const files = marks.length ? ` + ${marks.map(mk => mk.name).join(', ')}` : '';
+  return html`<div class="msg relay" title=${when(m.date)}><span class="mark" aria-hidden="true">→</span><div class="body">
+    <button class="who" title=${`[${name}] full screen (Alt+O)`} onClick=${() => goFull(name)}>you → [${name}]</button>
+    ${long ? html`<span class="text" role="button" tabindex="0" aria-expanded=${open} onClick=${() => { if (!getSelection().toString()) setOpen(!open); }}>${open ? body : line}</span>`
+      : html`<span class="text">${body}</span>`}<span class="files">${files}</span>
+  </div></div>`;
 }
 
 function NoteMsg({ m }) {
@@ -1353,8 +1436,13 @@ function cycleMode() {
 }
 
 function askChoices(q) {
-  return [['Yes', true, false], q.always && [`Yes, and don't ask again for ${homeTilde(q.always)}`, true, true], ['No, and tell Opt what to do differently (esc)', false, false]].filter(Boolean);
+  const who = q.who && q.who === S.full ? `[${q.who}]` : 'Opt'; // full screen, the bar talks to the agent
+  return [['Yes', true, false], q.always && [`Yes, and don't ask again for ${homeTilde(q.always)}`, true, true], [`No, and tell ${who} what to do differently (esc)`, false, false]].filter(Boolean);
 }
+
+// shownAsk is the question the dock shows: full screen, the agent's own;
+// the others wait in Opt's chat.
+function shownAsk(asks = S.asks) { return S.full ? asks.find(q => q.who === S.full) : asks[0]; }
 
 function answer(q, [, allow, always]) {
   send({ t: 'answer', id: q.id, allow, always });
@@ -1366,7 +1454,7 @@ function answer(q, [, allow, always]) {
 // takes it as it comes up, unless the user is typing, whose keys never
 // answer it by chance; Tab or a click goes to it. True when it took e.
 function askKey(e) {
-  const q = S.asks[0];
+  const q = shownAsk();
   if (!q || S.picker || S.lightbox || S.help || e.metaKey || e.ctrlKey || e.altKey) return false;
   if (!e.target.closest?.('.ask')) return false;
   const choices = askChoices(q);
@@ -1382,7 +1470,7 @@ function askKey(e) {
   }
   e.preventDefault();
   e.stopPropagation();
-  if (S.asks[0] === q) set({ askSel: sel });
+  if (shownAsk() === q) set({ askSel: sel });
   return true;
 }
 
@@ -1402,6 +1490,7 @@ let typedAt = 0; // the last key typed in the input
 function Ask({ q }) {
   const x = q.input && typeof q.input === 'object' ? q.input : null;
   const choices = askChoices(q), sel = Math.min(S.askSel, choices.length - 1);
+  const more = (S.full ? S.asks.filter(x => x.who === S.full) : S.asks).length - 1;
   const ref = useRef();
   const [focused, setFocused] = useState(false);
   useEffect(() => { // up: the keys are its, unless the user is typing
@@ -1409,7 +1498,7 @@ function Ask({ q }) {
   }, [q.id]);
   return html`<div class=${'ask' + (focused ? ' focused' : '')} role="dialog" aria-label="Permission" tabindex="-1" ref=${ref}
       onFocusIn=${() => setFocused(true)} onFocusOut=${() => setFocused(false)}>
-    <div class="title">${askTitle(q.tool, x)}${q.who ? html` <span class="dim">· [${q.who}] asks</span>` : ''}${S.asks.length > 1 ? html` <span class="dim">· ${S.asks.length - 1} more waiting</span>` : ''}</div>
+    <div class="title">${askTitle(q.tool, x)}${q.who ? html` <span class="dim">· [${q.who}] asks</span>` : ''}${more > 0 ? html` <span class="dim">· ${more} more waiting</span>` : ''}</div>
     <div class="what">
       ${q.tool === 'Bash' && x ? html`<pre>${x.command}</pre>` : html`<div class="args">${q.tool}(${toolArgs(q.tool, x, JSON.stringify(q.input))})</div><${ToolInput} name=${q.tool} x=${x} raw=${JSON.stringify(q.input)}/>`}
       ${q.desc && html`<div class="dim">${q.desc}</div>`}
@@ -1681,6 +1770,7 @@ function Help() {
     ['Shift+Tab', 'permission mode: manual, accept edits, auto'],
     ['/mcp · /skills · /plugins', 'your Claude Code MCP servers, skills and plugins: on or off'],
     ['Alt+A · /agents', 'the subagents: what each does now, and its steps'],
+    ['Alt+O · ⤢', 'a subagent full screen: the bar talks to it, Esc stops it at work; Alt+O, ← Opt or Esc at rest: back to Opt'],
     ['Alt+V · /view', 'the chat as Opt sees it: its view, each line opening into its halves; again: the log'],
     ['Alt+U · ↑ button', 'up to your last message out of sight above'],
     ['/tree', 'the whole memory, every level of the tree, in a new tab'],
@@ -1697,18 +1787,20 @@ function Input() {
   useEffect(() => {
     inputEl = ref.current;
     inputEl.focus();
-    let d = '';
-    try { d = localStorage.getItem('draft') || ''; } catch {}
-    if (d && !inputEl.value) setInput(histText(d)); // as ↑ recalls: its attachments stayed behind
+    const d = storedDraft(target()); // as ↑ recalls: its attachments stayed behind
+    if (d && !inputEl.value) setInput(d);
   }, []);
   const sugg = inputEl ? suggestions(inputEl) : [];
+  const to = S.full, busy = to && fullBusy();
   return html`
     <${Mention}/>
     ${sugg.length > 0 && html`<${Cmds} sugg=${sugg}/>`}
-    <div class="box">
+    <div class=${'box' + (to ? ' to-agent' : '')}>
+      ${to && html`<div class="to"><span class="who">→ [${to}]</span><span class="dim">only it reads this${busy ? ', between its steps · Esc interrupts it' : ' · Esc goes back to Opt'}</span></div>`}
       <${Chips}/>
-      <span class="gt" aria-hidden="true">▸</span>
-      <textarea ref=${ref} rows="1" spellcheck="false" aria-label="Message Opt" placeholder=${S.turn.phase ? 'Queue a message for Opt…' : 'Message Opt'}
+      <span class="gt" aria-hidden="true">${to ? '→' : '▸'}</span>
+      <textarea ref=${ref} rows="1" spellcheck="false" aria-label=${to ? `Message [${to}]` : 'Message Opt'}
+        placeholder=${to ? `Message [${to}]…` : S.turn.phase ? 'Queue a message for Opt…' : 'Message Opt'}
         onInput=${() => { histPos = -1; keepDraft(); if (S.cmdSel || S.cmdShut !== null) set({ cmdSel: 0, cmdShut: null }); autosize(); placesGone(); lookForPaths(); lookForMention(); tick(n => n + 1); }}
         onKeyUp=${e => { if (e.key.startsWith('Arrow') || e.key === 'Home' || e.key === 'End') { lookForMention(); tick(n => n + 1); } }}
         onClick=${() => { lookForMention(); tick(n => n + 1); }}
@@ -1920,6 +2012,7 @@ function railShown() {
 }
 
 function toggleRail(name) {
+  if (name && S.full) { goFull(name); return; } // full screen, one agent at a time: that one instead
   if (name) openAgent(name);
   if (S.wide) {
     const off = !name && railShown() ? (S.status?.subs || []).map(s => s.name) : null;
@@ -2035,11 +2128,11 @@ function Rail() {
   const working = subs.filter(s => s.state === 'working' || s.state === 'starting').length;
   return html`<aside class=${'rail' + (S.wide ? '' : ' drawer')} aria-label="subagents">
     <${Grip}/>
-    ${S.agent
+    ${S.agent && !S.full
       ? html`<${AgentView} a=${S.agent} s=${open} now=${now}/>`
       : html`<div class="rail-head">
           <span class="title">Agents</span>
-          <span class="dim">${working ? `${working} at work` : subs.length ? 'none at work' : ''}</span>
+          <span class="dim">${working ? `${working} at work` : subs.length ? 'none at work' : ''}${S.full ? ' · a click: full screen' : ''}</span>
           <button class="x" title=${S.wide ? 'hide until a new subagent starts (Alt+A or the bar\'s agents show it again)' : 'close (Esc)'} onClick=${() => toggleRail()}>×</button>
         </div>
         <div class="cards">
@@ -2054,9 +2147,12 @@ function AgentCard({ s, now }) {
   const ask = S.asks.find(q => q.who === s.name);
   const step = ask ? ask.tool + ' ' + JSON.stringify(ask.input ?? '') : s.step;
   const tool = step && parseTool(step);
-  const open = e => { if (e.type === 'click' || e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openAgent(s.name); } };
-  return html`<div class=${'card ' + cls} role="button" tabindex="0" onClick=${open} onKeyDown=${e => e.target === e.currentTarget && open(e)} title="open its steps">
-    <div class="top"><span class="dot" aria-hidden="true">●</span><span class="name">[${s.name}]</span><span class="state">${label}</span><${SubAction} s=${s}/></div>
+  const open = e => { if (e.type === 'click' || e.key === 'Enter' || e.key === ' ') { e.preventDefault(); if (S.full) goFull(s.name); else openAgent(s.name); } };
+  const on = S.full === s.name;
+  return html`<div class=${'card ' + cls + (on ? ' on' : '')} role="button" tabindex="0" aria-current=${on ? 'true' : undefined} onClick=${open} onKeyDown=${e => e.target === e.currentTarget && open(e)}
+      title=${on ? 'full screen now' : S.full ? 'full screen instead' : 'open its steps'}>
+    <div class="top"><span class="dot" aria-hidden="true">●</span><span class="name">[${s.name}]</span><span class="state">${label}</span>
+      ${!on && html`<${FullButton} name=${s.name}/>`}<${SubAction} s=${s}/></div>
     <div class="meta">${subMeta(s)}</div>
     ${tool && cls !== 'done' && html`<div class="now"><span class="el" aria-hidden="true">⎿</span><span class="tname">${tool.name}</span><span class="args">(${toolArgs(tool.name, tool.input, tool.raw)})</span>${cls === 'work' && s.stepAt ? html`<span class="dim">· ${elapsed(now - s.stepAt)}</span>` : ''}</div>`}
   </div>`;
@@ -2071,20 +2167,24 @@ function SubAction({ s }) {
   const act = e => {
     e.stopPropagation();
     send({ t: live ? 'stopAgent' : 'clearAgent', name: s.name });
+    if (!live && S.full === s.name) leaveFull(true);
     if (!live && S.agent?.name === s.name) closeAgent();
   };
   return html`<button class=${'act' + (live ? ' stop' : '')} onClick=${act} onKeyDown=${e => e.stopPropagation()}
     title=${live ? (s.state === 'resting' ? 'end its call: it has reported' : 'stop it now') : 'clear it from this list (its log stays)'}>${live ? 'stop' : 'clear'}</button>`;
 }
 
-// stepMsgs are a subagent's steps as the chat's messages: its task and Opt's
-// tells as the user's, its text as Opt's, its tool calls and their output.
+// stepMsgs are a subagent's steps as the chat's messages: the user's own
+// messages to it as the user's, its task and Opt's tells marked as Opt's,
+// its text as Opt's replies, its tool calls and their output.
 function stepMsgs(name, steps, off) {
   const out = [];
   steps.forEach((s, j) => {
     const i = `${name}:${off + j}`;
     switch (s.kind) {
-      case 'task': case 'opt': out.push({ kind: 'user', text: s.text, i }); break;
+      case 'user': out.push({ kind: 'user', text: s.text, i }); break;
+      case 'task': out.push({ kind: 'user', from: 'task from Opt', text: s.text, i }); break;
+      case 'opt': out.push({ kind: 'user', from: 'Opt told it', text: s.text, i }); break;
       case 'loop': out.push({ kind: 'user', text: 'Stop hook: ' + s.text, i }); break;
       case 'agent': out.push({ kind: 'opt', text: s.text, i }); break;
       case 'tool': case 'echo': out.push({ kind: s.kind, text: s.text, i }); break;
@@ -2094,10 +2194,27 @@ function stepMsgs(name, steps, off) {
   return out;
 }
 
+// agentRows are a subagent's steps as the log's rows; a tool call with no
+// result runs while it is at work, else was cut short. The notices made
+// while it was full screen go after the steps they followed.
+function agentRows(a, busy, notes = []) {
+  const list = items(stepMsgs(a.name, a.steps, a.off)).map(it => ({ ...it, state: it.m.kind !== 'tool' ? '' : it.echo ? 'done' : busy ? 'run' : 'cut' }));
+  if (!notes.length) return list;
+  const out = [];
+  let j = 0;
+  for (const it of list) {
+    const at = +it.m.i.slice(it.m.i.lastIndexOf(':') + 1);
+    for (; j < notes.length && notes[j].step <= at; j++) out.push({ note: notes[j], key: 'n' + notes[j].id });
+    out.push(it);
+  }
+  for (; j < notes.length; j++) out.push({ note: notes[j], key: 'n' + notes[j].id });
+  return out;
+}
+
 function AgentView({ a, s, now }) {
   const ref = useRef(), stick = useRef(true);
   const busy = s && (s.state === 'working' || s.state === 'starting');
-  const list = useMemo(() => items(stepMsgs(a.name, a.steps, a.off)).map(it => ({ ...it, state: it.m.kind !== 'tool' ? '' : it.echo ? 'done' : busy ? 'run' : 'cut' })), [a.steps, busy]);
+  const list = useMemo(() => agentRows(a, busy), [a.steps, busy]);
   const toBottom = () => { const el = ref.current; if (el) el.scrollTop = el.scrollHeight; };
   const onResize = useMemo(() => () => { if (stick.current) toBottom(); }, []);
   useLayoutEffect(() => { if (stick.current) toBottom(); });
@@ -2107,7 +2224,7 @@ function AgentView({ a, s, now }) {
       <button class="back" title="all agents (Esc)" onClick=${closeAgent}>←</button>
       <span class=${'agent-name ' + cls}><span class="dot" aria-hidden="true">●</span>[${a.name}]</span>
       <span class=${'state ' + cls}>${label}</span>
-      ${s && html`<${SubAction} s=${s}/>`}
+      ${s && html`<${FullButton} name=${a.name}/><${SubAction} s=${s}/>`}
       <button class="x" title=${S.wide ? 'hide until a new subagent starts (Alt+A or the bar\'s agents show it again)' : 'close (Esc)'} onClick=${() => toggleRail()}>×</button>
     </div>
     ${s && html`<div class="rail-meta">${subMeta(s)}</div>`}
@@ -2116,6 +2233,184 @@ function AgentView({ a, s, now }) {
       ${a.loading ? html`<div class="edge">Loading its steps…</div>` : !list.length && html`<div class="edge">No steps yet.</div>`}
       <${Virtualizer} data=${list} scrollRef=${ref} bufferSize=${800} onResize=${onResize}>${row}</${Virtualizer}>
     </div>`;
+}
+
+// ---------------------------------------------------------------- an agent full screen
+
+// One subagent can be full screen: its steps take the chat's place, and
+// the bar talks to it (tellAgent) instead of Opt, as Claude Code's agent
+// view does. UniiChat's agent tabs show an agent but keep its input shut
+// ("Commands only", https://github.com/VictorTaelin/UniiChat); here the
+// user talks to it. Opt's chat stays as it was, scrolled where it was,
+// under the agent's.
+let fullToEnd = false; // scroll the agent's view to its end at the next render
+
+function fullSub() { return S.full ? (S.status?.subs || []).find(s => s.name === S.full) : null; }
+function fullBusy() { const s = fullSub(); return !!s && (s.state === 'working' || s.state === 'starting'); }
+function stopFull() { if (S.full) send({ t: 'stopAgent', name: S.full }); }
+
+function goFull(name) {
+  if (S.full === name) { inputEl?.focus(); return; }
+  if (!(S.status?.subs || []).some(s => s.name === name)) { notice('warn', `[${name}] is not among this run's agents.`); return; }
+  if (S.voice) { notice('warn', 'A voice message is recording: send it (Alt+K) or drop it (Esc) first.'); return; }
+  saveDraft(target());
+  set({ full: name, ctx: null, drawer: false });
+  if (S.agent?.name !== name) openAgent(name);
+  loadDraft(name);
+  fullToEnd = true;
+  try { sessionStorage.setItem('full', name); } catch {}
+}
+
+// leaveFull goes back to Opt's chat, as it was left; the agent stays open
+// in the rail. A voice message recording holds it, unless forced.
+function leaveFull(force) {
+  if (!S.full) return true;
+  if (S.voice) {
+    if (!force) { notice('warn', 'A voice message is recording: send it (Alt+K) or drop it (Esc) first.'); return false; }
+    stopVoice(false);
+  }
+  saveDraft(S.full);
+  set({ full: null, ctx: null });
+  loadDraft('');
+  try { sessionStorage.removeItem('full'); } catch {}
+  return true;
+}
+
+// checkFull goes back to Opt when the agent full screen is gone (cleared).
+function checkFull() {
+  if (!S.full || !S.status || fullSub()) return;
+  const name = S.full;
+  leaveFull(true);
+  const left = drafts.get(name)?.text.trim(); // nobody to send it to now: shown, to copy
+  drafts.delete(name);
+  try { sessionStorage.removeItem('draft:' + name); } catch {}
+  notice('info', `[${name}] is gone from the agents (cleared): back to Opt.${left ? ` Your message to it, not sent:\n${left}` : ''}`);
+}
+
+// pickFull is the agent Alt+O puts full screen: the one open in the rail,
+// else the latest at work, else the latest.
+function pickFull() {
+  const subs = S.status?.subs || [];
+  if (S.agent && subs.some(s => s.name === S.agent.name)) return S.agent.name;
+  const work = subs.filter(s => s.state === 'working' || s.state === 'starting');
+  return (work.length ? work : subs).at(-1)?.name;
+}
+
+function askCtx(name) {
+  set({ ctx: { name, sections: S.ctx?.name === name ? S.ctx.sections : null, loading: true } });
+  if (!send({ t: 'agentContext', name })) set({ ctx: { name, sections: null, loading: false, failed: true } });
+}
+
+function FullButton({ name }) {
+  return html`<button class="act full-btn" title="full screen: the chat shows it and the bar talks to it (Alt+O)" aria-label=${`[${name}] full screen`}
+    onClick=${e => { e.stopPropagation(); goFull(name); }} onKeyDown=${e => e.stopPropagation()}>⤢</button>`;
+}
+
+// lastFrom is who set the agent to work last: 'user', 'opt' (a tell),
+// 'task' or 'loop' (its Stop hook).
+function lastFrom(steps) {
+  for (let j = steps.length - 1; j >= 0; j--) if (['user', 'opt', 'task', 'loop'].includes(steps[j].kind)) return steps[j].kind;
+  return '';
+}
+
+// fullState is the agent's state as its full screen says it: whose message
+// it works on, and that the user's message sets it to work again.
+function fullState(s, now) {
+  const [cls, label] = subState(s, now);
+  if (cls === 'ask') return [cls, label];
+  const from = lastFrom(S.agent?.name === s.name ? S.agent.steps : []);
+  const whose = from === 'user' ? 'your message' : from === 'opt' ? 'Opt\'s message' : from === 'loop' ? 'its Stop hook\'s reason' : 'Opt\'s task';
+  switch (s.state) {
+    case 'working': return [cls, `working on ${whose}`, elapsed(now - s.started)];
+    case 'resting': return [cls, `${from === 'user' ? 'replied to you' : 'reported to Opt'} · at rest${s.until > now ? `, its call open ${Math.ceil((s.until - now) / 60000)}m more` : ''}`];
+    case 'halted': case 'stopped': return [cls, label.replace('a tell resumes it', 'a message resumes it')];
+    case 'ended': return [cls, 'its call ended · a message resumes it'];
+  }
+  return [cls, label];
+}
+
+// AgentFull is the agent full screen: its head, its context when asked,
+// and its steps, in a scroller and messages like the chat's.
+function AgentFull({ a, s }) {
+  const ref = useRef(), stick = useRef(true);
+  const busy = !!s && (s.state === 'working' || s.state === 'starting');
+  const now = useClock(!!s && (busy || s.state === 'resting'));
+  const list = useMemo(() => agentRows(a, busy, S.notices.filter(n => n.who === a.name)), [a.steps, busy, S.notices]);
+  const toBottom = () => { const el = ref.current; if (el) el.scrollTop = el.scrollHeight; };
+  const onResize = useMemo(() => () => { if (stick.current) toBottom(); }, []);
+  useLayoutEffect(() => {
+    if (fullToEnd) { fullToEnd = false; stick.current = true; }
+    if (stick.current) toBottom();
+  });
+  const [cls, label, took] = s ? fullState(s, now) : ['done', 'not in this run'];
+  return html`<section class="full" aria-label=${`[${a.name}] full screen`}>
+    <div class="full-head"><div class="column">
+      <button class="back" title="back to Opt's chat (Alt+O; Esc while it is not at work)" onClick=${() => leaveFull()}>← Opt</button>
+      <span class=${'agent-name ' + cls}><span class="dot" aria-hidden="true">●</span>[${a.name}]</span>
+      <span class=${'state ' + cls}>${label}${took ? ' · ' + took : ''}</span>
+      <span class="acts">
+        <button class=${'act' + (S.ctx ? ' on' : '')} aria-pressed=${!!S.ctx} title="what it reads: its model, effort and context" onClick=${() => S.ctx ? set({ ctx: null }) : askCtx(a.name)}>context</button>
+        ${s && html`<${SubAction} s=${s}/>`}
+      </span>
+    </div>
+    ${s && html`<div class="column meta">${subMeta(s)}</div>`}</div>
+    ${S.ctx?.name === a.name && html`<${Ctx} c=${S.ctx}/>`}
+    <div class="scroll full-log" ref=${ref} onScroll=${() => { const el = ref.current; stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80; }}>
+      <div class="column log" role="log" aria-live="polite">
+        <div class="edge">${a.cut ? `Its earlier steps: zoom("${a.name}") in the chat, or agents/${a.name}.log.` : `[${a.name}]'s steps: its task, what Opt and you told it, its replies and tool calls.`} What you send here only it reads; Opt's chat gets a line saying you wrote.</div>
+        ${a.loading ? html`<div class="edge">Loading its steps…</div>` : !list.length && html`<div class="edge">No steps yet.</div>`}
+        <${Virtualizer} data=${list} scrollRef=${ref} bufferSize=${1200} onResize=${onResize}>${row}</${Virtualizer}>
+      </div>
+    </div>
+  </section>`;
+}
+
+// Ctx is the agent's context, as the server tells it: a section each, a
+// long one folded.
+function Ctx({ c }) {
+  return html`<div class="ctx" role="region" aria-label="its context"><div class="column">
+    <div class="ctx-head"><span class="title">[${c.name}]'s context</span>
+      <span class="dim">${c.loading ? 'asking…' : c.failed ? 'none came: see the notice below' : ''}</span>
+      <span class="acts"><button onClick=${() => askCtx(c.name)} title="ask again">refresh</button><button onClick=${() => set({ ctx: null })} title="close (Esc)" aria-label="close its context">×</button></span>
+    </div>
+    ${(c.sections || []).map((x, j) => html`<${CtxSection} key=${j} x=${x} k=${`c${c.name}.${j}`}/>`)}
+    ${c.sections && !c.sections.length && html`<div class="dim">Nothing to show.</div>`}
+  </div></div>`;
+}
+
+function CtxSection({ x, k }) {
+  const [open, setOpen] = useKept(k, false);
+  const text = x.text || '', lines = text.split('\n');
+  const long = lines.length > 12 || text.length > 1500;
+  const head = long ? lines.slice(0, 8).join('\n').slice(0, 1000) : text;
+  const hidden = lines.length - head.split('\n').length;
+  return html`<div class="ctx-sec"><div class="label">${x.title}</div>
+    <pre>${long && !open ? head : text}</pre>
+    ${long && html`<button class="more" aria-expanded=${open} onClick=${() => setOpen(!open)}>${open ? '▴ fold' : `… +${hidden ? count(hidden, 'line') : count(text.length - head.length, 'character')} (click to expand)`}</button>`}
+  </div>`;
+}
+
+// FullBar is the agent's state above the bar, in the spinner's place, and
+// a small word on Opt's: Opt goes on with its own work meanwhile.
+function FullBar({ s }) {
+  const busy = !!s && (s.state === 'working' || s.state === 'starting');
+  const optBusy = !!S.turn.phase, optAsks = S.asks.some(q => q.who !== S.full);
+  const [, tick] = useState(0);
+  useEffect(() => {
+    if (!busy && !optBusy && s?.state !== 'resting') return;
+    const t = setInterval(() => tick(n => n + 1), busy || optBusy ? 120 : 1000);
+    return () => clearInterval(t);
+  }, [busy, optBusy, s?.state]);
+  const now = Date.now(), g = still.matches ? '✻' : glyphs[Math.floor(now / 120) % glyphs.length];
+  const [cls, label, took] = s ? fullState(s, now) : ['done', 'not in this run'];
+  const meta = busy ? [took, s.steps && count(s.steps, 'step'), s.context && `${k(s.context)} context`].filter(Boolean) : [];
+  const opt = optAsks ? '? Opt waits for your answer' : optBusy ? `${g} Opt working` : '';
+  return html`<div class=${'spinner fullbar st-' + cls}>
+    ${busy
+      ? html`<span><span class="glyph" aria-hidden="true">${g}</span>[${S.full}] ${label}…</span><span class="meta">(${meta.map(x => x + ' · ')}<button title="stop it now" onClick=${stopFull}>esc to interrupt</button>)</span>`
+      : html`<span class="still"><span class="glyph" aria-hidden="true">●</span>[${S.full}] ${label}</span>`}
+    ${(opt || S.queue.length > 0) && html`<button class="opt-note" title="back to Opt's chat (Alt+O)" onClick=${() => leaveFull()}>${opt}${opt && S.queue.length ? ' · ' : ''}${S.queue.length ? count(S.queue.length, 'message') + ' queued for Opt' : ''}</button>`}
+  </div>`;
 }
 
 function Scroller() {
@@ -2203,6 +2498,10 @@ const memZoom = new Map(); // "id+n" → its zoom: { lines } or { msg }
 let memTimer = 0;
 
 function toggleMem() {
+  if (S.full) { // Opt's: back to Opt first
+    if (!leaveFull()) return;
+    if (S.memView) return;
+  }
   const on = !S.memView;
   set({ memView: on, mem: null });
   if (on) memAsk(true);
@@ -2304,14 +2603,20 @@ function App() {
     document.title = (S.asks.length ? '? ' : S.turn.phase ? '✻ ' : S.unseen ? '● ' : '') + 'opt-chat'; // ?: waiting on the user's yes or no
   });
   useEffect(() => { set({ wide: roomy() }); }, []);
+  const ask = shownAsk();
   return html`<div class="shell"><div class="main">
     ${S.conn === 'denied' && html`<div class="banner">This page has no key to the chat: open the address opt-chat printed in the terminal.</div>`}
     ${S.conn === 'closed' && html`<div class="banner">Lost opt-chat: reconnecting…</div>`}
-    ${S.memView ? html`<${MemView} lines=${S.mem} tick=${S.memTick} stored=${S.status?.viewLines}/>` : html`<${Scroller}/>`}
+    <div class=${'stage' + (S.full ? ' behind' : '')}>
+      <div class="opt-pane" inert=${!!S.full}>
+        ${S.memView ? html`<${MemView} lines=${S.mem} tick=${S.memTick} stored=${S.status?.viewLines}/>` : html`<${Scroller}/>`}
+      </div>
+      ${S.full && html`<${AgentFull} key=${S.full} a=${S.agent?.name === S.full ? S.agent : { name: S.full, steps: [], off: 0, loading: true }} s=${fullSub()}/>`}
+    </div>
     <div class="dock"><div class="column">
-      ${S.turn.phase && html`<${Spinner} turn=${S.turn} chars=${S.turnChars} queued=${S.queue.length > 0}/>`}
-      <${Queue} queue=${S.queue}/>
-      ${S.asks.length > 0 && !S.picker && html`<${Ask} q=${S.asks[0]}/>`}
+      ${S.full ? html`<${FullBar} s=${fullSub()}/>` : S.turn.phase && html`<${Spinner} turn=${S.turn} chars=${S.turnChars} queued=${S.queue.length > 0}/>`}
+      ${!S.full && html`<${Queue} queue=${S.queue}/>`}
+      ${ask && !S.picker && html`<${Ask} q=${ask}/>`}
       ${S.picker && html`<${Picker}/>`}
       ${S.panel && !S.picker && html`<${Panel}/>`}
       ${S.voice && html`<${Recorder}/>`}
@@ -2322,7 +2627,7 @@ function App() {
     </div>
     ${railShown() && !S.wide && html`<div class="scrim" onClick=${() => set({ drawer: false })}/>`}
     ${railShown() && html`<${Rail}/>`}
-    ${S.dragging && html`<div class="drop"><div>Drop to attach</div></div>`}
+    ${S.dragging && html`<div class="drop"><div>Drop to attach${S.full ? ` for [${S.full}]` : ''}</div></div>`}
     ${S.lightbox && html`<div class="lightbox" role="dialog" aria-label="image; Esc or a click closes it" onClick=${() => set({ lightbox: null })}><img src=${S.lightbox} alt=""/></div>`}
   </div>`;
 }
@@ -2342,7 +2647,7 @@ addEventListener('drop', e => {
 addEventListener('keydown', e => {
   if (e.isComposing || e.keyCode === 229) return; // the keys that pick an input method's candidates are its own
   if (e.target === inputEl && e.key.length === 1) typedAt = performance.now();
-  if (e.key === 'Tab' && !e.shiftKey && e.target === inputEl && S.asks.length && !S.picker && !S.mention?.items.length && !suggestions(inputEl).length) {
+  if (e.key === 'Tab' && !e.shiftKey && e.target === inputEl && shownAsk() && !S.picker && !S.mention?.items.length && !suggestions(inputEl).length) {
     e.preventDefault(); // to the question
     document.querySelector('.ask')?.focus();
     return;
@@ -2366,7 +2671,18 @@ addEventListener('keydown', e => {
   if (e.altKey && (e.code === 'KeyV' || e.code === 'KeyU') && !e.metaKey && !e.ctrlKey) { // Opt's view; up to the user's message
     e.preventDefault();
     e.stopPropagation();
-    if (e.code === 'KeyV') toggleMem(); else document.querySelector('.mine')?.click();
+    if (e.code === 'KeyV') toggleMem(); else if (!S.full) document.querySelector('.mine')?.click();
+    return;
+  }
+  if (e.altKey && e.code === 'KeyO' && !e.metaKey && !e.ctrlKey) { // a subagent full screen, and back to Opt
+    e.preventDefault();
+    e.stopPropagation();
+    if (S.full) leaveFull();
+    else {
+      const name = pickFull();
+      if (name) goFull(name); else notice('info', 'No subagent to show full screen: none has run yet.');
+    }
+    inputEl?.focus();
     return;
   }
   if (e.altKey && e.code === 'KeyA' && !e.metaKey && !e.ctrlKey) { // the agents rail
@@ -2376,9 +2692,12 @@ addEventListener('keydown', e => {
     return;
   }
   if (e.key === 'Escape' && (e.target.closest?.('.rail') || (S.drawer && e.target !== inputEl))) {
-    e.preventDefault();
-    if (S.agent) closeAgent(); else if (S.drawer) set({ drawer: false });
-    return;
+    if (!S.full) {
+      e.preventDefault();
+      if (S.agent) closeAgent(); else if (S.drawer) set({ drawer: false });
+      return;
+    }
+    if (S.drawer) { e.preventDefault(); set({ drawer: false }); return; } // else the full screen's own Esc
   }
   if (e.altKey && e.code === 'KeyP' && !e.metaKey && !e.ctrlKey) { // Option+P types π on a Mac: the code is the key
     e.preventDefault();

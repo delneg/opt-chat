@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json/v2"
 	"os"
 	"slices"
 	"strings"
@@ -126,5 +128,32 @@ func TestBtwCommand(t *testing.T) {
 	defer c.mu.Unlock()
 	if qs := []string{c.asides[0].Q, c.asides[1].Q}; !slices.Contains(qs, "side-ask what?") || !slices.Contains(qs, "side-ask now") {
 		t.Fatalf("questions: %q", qs)
+	}
+}
+
+// /btw with no words but an attachment, as a voice message sends it, is a
+// side question all the same: the attachment holds the question.
+func TestWebBtwAttached(t *testing.T) {
+	wt := startWeb(t)
+	c := wt.c
+	ws, err := wt.dial(-1, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws.next("hello", typ("hello"))
+	resp := wt.do("POST", "/upload", bytes.NewReader(pngBytes(4, 4)), map[string]string{"Cookie": wt.cookie, "X-Name": "a.png"})
+	var img attachment
+	json.UnmarshalRead(resp.Body, &img)
+	ws.send(map[string]any{"t": "send", "seq": 1, "key": "page:b1", "text": "/btw ", "files": []attachment{img}})
+	ws.next("sent", func(u map[string]any) bool { return u["t"] == "sent" && u["seq"].(float64) == 1 })
+	waitFor(t, "its answer", func() bool {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		return len(c.asides) == 1 && c.asides[0].A != ""
+	})
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if q := c.asides[0].Q; !strings.Contains(q, `<attachment name="a.png"`) || len(c.msgs) != 0 {
+		t.Fatalf("aside %q, %d messages logged", q, len(c.msgs))
 	}
 }

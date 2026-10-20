@@ -584,6 +584,9 @@ func (w *webServer) attachments(req *request) (ups, all []attachment, err error)
 // command runs a send that is a command, its answer going to every page;
 // false: a message. One that failed comes back to the page's input.
 func (w *webServer) command(a *Agent, req request) (any, bool) {
+	if q, ok := btwQuestion(req.Text); ok && strings.TrimSpace(q) == "" && len(req.Files)+len(req.Paths) > 0 {
+		return nil, false // /btw with its question attached, a voice message say: a side question all the same
+	}
 	out, ok, err := command(a, req.Text)
 	switch {
 	case err != nil:

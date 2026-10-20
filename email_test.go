@@ -36,7 +36,7 @@ func TestEmailPlugin(t *testing.T) {
 	record(c)
 	a, calls := fakeAgent(t, c)
 	a.noEmail = root
-	a.Compact(context.Background(), []string{"x"}, []block{textBlock("Compaction: x")})
+	a.Compact(context.Background(), []string{"x"}, 1, []block{textBlock("Compaction: x")})
 	a.ownConfig = true
 	if err := (&Turn{agent: a}).Run(context.Background(), []message{{kind: "user", text: "hi"}}); err != nil {
 		t.Fatal(err)

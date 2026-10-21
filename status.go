@@ -76,8 +76,8 @@ func statusCommand(a *Agent) string {
 	}
 	add("Turns: %s, effort %s, mode %s; recall %s", s.Model, s.Effort, s.Mode, recall)
 	auto := "off"
-	if a.agentWindow > 0 {
-		auto = fmt.Sprintf("past %dk tokens", a.agentWindow/1000)
+	if w := a.agentWindowLocked(a.agentWindow); w > 0 {
+		auto = fmt.Sprintf("past %dk tokens", w/1000)
 	}
 	subs := fmt.Sprintf("Subagents: %s, effort %s; autocompact %s", a.amodel, a.aeffort, auto)
 	if len(s.Agents) > 0 {

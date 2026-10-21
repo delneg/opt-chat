@@ -66,6 +66,7 @@ cache over.
 | `-cwd` | `~` | where Opt's tools run |
 | `-model`, `-effort` | `fable`, `high` | model and effort for turns |
 | `-agent-model`, `-agent-effort` | `opus`, `high` | for subagents |
+| `-agent-compact-max` | `400000` | compact a subagent's context past this, between two steps; `0`: never |
 | `-compact-model`, `-compact-effort` | `sonnet`, `medium` | for summaries (the recipe's: `haiku`) |
 | `-permission-mode` | `auto` | `manual`, `acceptEdits` or `auto` |
 | `-tools` | `Bash,Read,Edit,Write,WebSearch,WebFetch` | Claude Code tools |

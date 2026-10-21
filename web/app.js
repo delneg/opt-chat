@@ -468,7 +468,7 @@ const commands = [
   ['/model', 'choose the model and effort for turns (Alt+P)'],
   ['/effort', 'show or set their effort'],
   ['/mode', 'show or set the permission mode (Shift+Tab)'],
-  ['/autocompact', 'compact a subagent at rest, after a report, past this context, as 250k (never the chat\'s)'],
+  ['/autocompact', 'compact a subagent past this context, as 250k, between two steps, under the -agent-compact-max cap (never the chat\'s)'],
   ['/mcp', 'your Claude Code MCP servers: status, on or off, sign in'],
   ['/skills', 'your Claude Code skills: on or off'],
   ['/plugins', 'your Claude Code plugins, their skills and MCP servers at once: on or off'],
@@ -2048,7 +2048,7 @@ function subState(s, now) {
   switch (s.state) {
     case 'working': return ['work', 'working · ' + elapsed(now - s.started)];
     case 'starting': return ['work', 'starting'];
-    case 'compacting': return ['rest', 'compacting at rest'];
+    case 'compacting': return ['rest', 'compacting its context'];
     case 'resting': return ['rest', s.until > now ? `reported · rests ${Math.ceil((s.until - now) / 60000)}m more` : 'reported'];
     case 'failed': return ['bad', 'failed'];
     case 'stopping': return ['stop', 'stopping'];
@@ -2064,7 +2064,7 @@ function moving(s) { return ['working', 'starting', 'compacting'].includes(s?.st
 function Dot({ s }) { return html`<span class=${'dot' + (moving(s) ? ' moving' : '')} aria-hidden="true">●</span>`; }
 
 function subMeta(s) {
-  return [s.model, s.effort, s.context && `${k(s.context)} context`, s.window && `compacts once it reports past ${k(s.window)}`, s.steps && count(s.steps, 'step')].filter(Boolean).join(' · ');
+  return [s.model, s.effort, s.context && `${k(s.context)} context`, s.compact ? 'compacts at its next step' : s.window && `compacts past ${k(s.window)}`, s.steps && count(s.steps, 'step')].filter(Boolean).join(' · ');
 }
 
 // useClock re-renders each second while on.
@@ -2181,6 +2181,18 @@ function SubAction({ s }) {
     title=${live ? (s.state === 'resting' ? 'end its call: it has reported' : 'stop it now') : 'clear it from this list (its log stays)'}>${live ? 'stop' : 'clear'}</button>`;
 }
 
+// CompactButton compacts a subagent's context (compactAgent): at rest now,
+// at work at its next step, between two tool calls, after which it goes on.
+// None for one that is starting, compacting, stopping or ended; greyed out
+// once asked, until it compacts.
+function CompactButton({ s }) {
+  const can = (s.state === 'working' || s.state === 'resting') && !s.compact;
+  if (!can && !s.compact) return null;
+  const act = e => { e.stopPropagation(); send({ t: 'compactAgent', name: s.name }); };
+  return html`<button class="act" disabled=${!can} onClick=${act} onKeyDown=${e => e.stopPropagation()} aria-label=${`compact [${s.name}]'s context`}
+    title=${s.compact ? 'asked: it compacts at its next step' : s.state === 'resting' ? 'compact its context now' : 'compact its context at its next step, between two tool calls; then it goes on'}>compact</button>`;
+}
+
 // stepMsgs are a subagent's steps as the chat's messages: the user's own
 // messages to it as the user's, its task and Opt's tells marked as Opt's,
 // its text as Opt's replies, its tool calls and their output.
@@ -2195,7 +2207,11 @@ function stepMsgs(name, steps, off) {
       case 'loop': out.push({ kind: 'user', text: 'Stop hook: ' + s.text, i }); break;
       case 'agent': out.push({ kind: 'opt', text: s.text, i }); break;
       case 'tool': case 'echo': out.push({ kind: s.kind, text: s.text, i }); break;
-      case 'compacted': out.push({ kind: 'note', text: 'Its context was compacted at rest: ' + s.text.replace(/(\d+) tokens to (\d+)/, (_, x, y) => `${k(+x)} tokens to ${k(+y)}`), i }); break;
+      case 'compacted': { // "mid-task: " or, at rest, nothing before the sizes
+        const mid = s.text.startsWith('mid-task: ');
+        out.push({ kind: 'note', text: `Its context was compacted ${mid ? 'mid-task, between two steps' : 'at rest'}: ` + s.text.replace(/^mid-task: /, '').replace(/(\d+) tokens to (\d+)/, (_, x, y) => `${k(+x)} tokens to ${k(+y)}`), i });
+        break;
+      }
     }
   });
   return out;
@@ -2231,7 +2247,7 @@ function AgentView({ a, s, now }) {
       <button class="back" title="all agents (Esc)" onClick=${closeAgent}>←</button>
       <span class=${'agent-name ' + cls}><${Dot} s=${s}/>[${a.name}]</span>
       <span class=${'state ' + cls}>${label}</span>
-      ${s && html`<${FullButton} name=${a.name}/><${SubAction} s=${s}/>`}
+      ${s && html`<${FullButton} name=${a.name}/><${CompactButton} s=${s}/><${SubAction} s=${s}/>`}
       <button class="x" title=${S.wide ? 'hide until a new subagent starts (Alt+A or the bar\'s agents show it again)' : 'close (Esc)'} onClick=${() => toggleRail()}>×</button>
     </div>
     ${s && html`<div class="rail-meta">${subMeta(s)}</div>`}
@@ -2368,7 +2384,7 @@ function AgentFull({ a, s }) {
       <span class=${'state ' + cls}>${label}${took ? ' · ' + took : ''}</span>
       <span class="acts">
         <button class=${'act' + (S.ctx ? ' on' : '')} aria-pressed=${!!S.ctx} title="what it reads: its model, effort and context" onClick=${() => S.ctx ? set({ ctx: null }) : askCtx(a.name)}>context</button>
-        ${s && html`<${SubAction} s=${s}/>`}
+        ${s && html`<${CompactButton} s=${s}/><${SubAction} s=${s}/>`}
       </span>
     </div>
     ${s && html`<div class="column meta">${subMeta(s)}</div>`}</div>

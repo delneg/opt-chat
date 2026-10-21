@@ -336,6 +336,7 @@ a { color: var(--blue); }
 :is(.rail, .full-head) .act { flex: none; color: var(--faint); font-size: .92em; padding: 0 .6ch; border-radius: 4px; box-shadow: 0 0 0 1px var(--border); }
 :is(.rail, .full-head) .act:hover, :is(.rail, .full-head) .act:focus-visible { color: var(--fg); background: var(--bg); }
 :is(.rail, .full-head) .act.stop:hover, :is(.rail, .full-head) .act.stop:focus-visible { color: var(--red); }
+:is(.rail, .full-head) .act:disabled, :is(.rail, .full-head) .act:disabled:hover { color: var(--border); background: none; cursor: default; }
 .rail-head .act { margin-left: auto; }
 .rail-head .act + .x, .rail-head .act + .act { margin-left: 0; }
 .card:hover, .card:focus-visible { background: var(--bg); outline: none; box-shadow: 0 0 0 1px var(--border); }

@@ -598,6 +598,16 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 						s.State = "compacting"
 					}
 				})
+			} else { // over, even if it failed: one at work is at work again
+				a.mu.Lock()
+				if a.running[name] == p && forced == 0 {
+					a.subLocked(name, func(s *sub) {
+						if s.State == "compacting" {
+							s.State = "working"
+						}
+					})
+				}
+				a.mu.Unlock()
 			}
 			return
 		}
@@ -804,6 +814,7 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 			r.State, r.Resumes, r.User = "resting", 0, false
 			r.Compacted = r.Compacted || mid
 		})
+		compact := r.compacting // read here: the page's compact may set it once unlocked, and sends its own
 		a.mu.Unlock()
 		if user { // its reply was the user's, in its log: Opt gets no report
 			a.chat.hub.notice("info", "[%s] answered you", name)
@@ -813,7 +824,7 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 		if len(late) > 0 {
 			a.tell(name, late...)
 		}
-		if r.compacting {
+		if compact {
 			p.send(textBlock(compactAsk))
 		}
 		time.AfterFunc(agentRest, func() {

@@ -5,6 +5,7 @@ import (
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"fmt"
+	"maps"
 	"net"
 	"net/http"
 	"path/filepath"
@@ -76,7 +77,8 @@ var (
 			"A subagent sees the view and the user's instructions, but knows what you want only from its task. "+
 			"effort: how long it thinks first; more is smarter and slower. Leave it out for the default. "+
 			"model: the Claude it runs on: opus (the default), fable, sonnet, haiku, or a full model name; leave it out unless the user asks for one. "+
-			"autocompact: for a long task, a context size in tokens: once the subagent has reported past it, opt-chat compacts it at rest, never mid-step, and its next message (a tell) brings the view and its task again; leave it out for the user's setting (/autocompact). "+
+			"autocompact: for a long task, a context size in tokens: past it, the subagent's context is compacted between two steps, never in one; "+
+			"leave it out for the user's setting (/autocompact) or the cap (-agent-compact-max, 400k by default), which it can only lower. "+
 			"loop: keeps it at work turn after turn, as a Claude Code Stop hook would: after each turn opt-chat runs command (sh, in dir, the Stop hook's JSON on stdin), "+
 			`and a {"decision":"block","reason":...} sends the reason as its next message; it reports once the hook lets it stop, or after max turns (60). `+
 			"Leave it out unless asked.",
@@ -94,14 +96,35 @@ var (
 		schema(nil, map[string]any{"at": str, "message": str, "cancel": num}))
 )
 
-// mcpList is the tools the chat serves: wake only with -wake.
+// mcpList is the tools the chat serves: wake only with -wake. spawn's
+// autocompact goes up to the cap.
 func (a *Agent) mcpList() []map[string]any {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.wakes == nil {
-		return mcpTools
+	tools := slices.Clip(mcpTools)
+	if a.agentCap > 0 {
+		tools = slices.Clone(mcpTools)
+		for i, t := range tools {
+			if t["name"] == "spawn" {
+				tools[i] = withWindowMax(t, a.agentCap)
+			}
+		}
 	}
-	return append(slices.Clip(mcpTools), wakeTool)
+	if a.wakes == nil {
+		return tools
+	}
+	return append(tools, wakeTool)
+}
+
+// withWindowMax is the spawn tool t with autocompact's maximum at most.
+func withWindowMax(t map[string]any, most int) map[string]any {
+	in := maps.Clone(t["inputSchema"].(map[string]any))
+	props := maps.Clone(in["properties"].(map[string]any))
+	props["autocompact"] = map[string]any{"type": "integer", "minimum": windowMin, "maximum": most}
+	in["properties"] = props
+	t = maps.Clone(t)
+	t["inputSchema"] = in
+	return t
 }
 
 func mcpResult(a *Agent, method string, params jsontext.Value, fromAgent bool) (any, bool) {

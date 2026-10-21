@@ -43,7 +43,8 @@ type Agent struct {
 	skillsSet       map[string]string // the user's skills' states set here: on, off, ...
 	pluginsSet      map[string]bool   // and plugins turned on or off here, by name@marketplace
 	skillsListed    []skill           // the skills Claude Code listed last, in its own states
-	agentWindow     int               // subagents' auto-compaction window, in tokens; 0: off
+	agentWindow     int               // the user's window for subagents' compaction (/autocompact), in tokens; 0: none
+	agentCap        int               // -agent-compact-max: no subagent's context outgrows it; 0: no cap
 	recall          int               // messages a turn gets that share the user's words: see Chat.Recall; 0: none. Set once, at start
 	resting         map[string]*rest  // subagents that have reported, still able to go on: see Tell
 	mcpUp           []string          // the servers connected when the last call sent its view: see mcpSettle
@@ -221,9 +222,11 @@ type event struct {
 	Event   jsontext.Value `json:"event"`                  // stream_event: one of the API's own
 	Think   int            `json:"estimated_tokens_delta"` // system thinking_tokens
 	Compact struct {
-		Pre  int `json:"pre_tokens"`
-		Post int `json:"post_tokens"`
+		Trigger string `json:"trigger"` // manual: a /compact; auto: past its window, mid-turn
+		Pre     int    `json:"pre_tokens"`
+		Post    int    `json:"post_tokens"`
 	} `json:"compact_metadata"` // system compact_boundary: Claude Code compacted the call's context
+	Status string `json:"status"` // system status: compacting, or null once done
 
 	RequestID string          `json:"request_id"` // control_request: Claude Code asks
 	Request   jsontext.Value  `json:"request"`
@@ -313,10 +316,10 @@ const (
 // same as a turn's, so that on one model both read one cache entry (gist §4);
 // with the user's own setup, a turn's add Skill and ToolSearch.
 // ownSettings are a call's settings over the user's own: never their hooks
-// or Claude Code's auto-compaction (see start), nor their own CLAUDE.md
-// when repos' ones load; their skills and plugins on or off as set here.
-// Under a.mu.
-func (a *Agent) ownSettings() string {
+// or Claude Code's auto-compaction, but for a subagent's window (see
+// start), nor their own CLAUDE.md when repos' ones load; their skills and
+// plugins on or off as set here. Under a.mu.
+func (a *Agent) ownSettings(window int) string {
 	var excludes []string
 	if a.claudeMd {
 		excludes = []string{filepath.Join(claudeConfigDir(), "CLAUDE.md")}
@@ -324,11 +327,36 @@ func (a *Agent) ownSettings() string {
 	b, _ := json.Marshal(struct {
 		DisableAllHooks    bool              `json:"disableAllHooks"`
 		AutoCompactEnabled bool              `json:"autoCompactEnabled"`
+		AutoCompactWindow  int               `json:"autoCompactWindow,omitzero"`
 		ClaudeMdExcludes   []string          `json:"claudeMdExcludes,omitzero"`
 		SkillOverrides     map[string]string `json:"skillOverrides,omitzero"`
 		EnabledPlugins     map[string]bool   `json:"enabledPlugins,omitzero"`
-	}{true, false, excludes, a.skillsSet, a.pluginsSet}, json.Deterministic(true))
+	}{true, window > 0, ccWindow(window), excludes, a.skillsSet, a.pluginsSet}, json.Deterministic(true))
 	return string(b)
+}
+
+// compactSettings are the settings of a call without the user's setup:
+// Claude Code's auto-compaction off, or on for a subagent's window.
+func compactSettings(window int) string {
+	if window == 0 {
+		return `{"autoCompactEnabled":false}`
+	}
+	return fmt.Sprintf(`{"autoCompactEnabled":true,"autoCompactWindow":%d}`, ccWindow(window))
+}
+
+// ccBuffer is how far under its autoCompactWindow Claude Code compacts: it
+// keeps room for a reply (the model's output limit, at most 20k tokens)
+// and a 13k buffer. Measured on Claude Code 2.1.304: a window of 100k
+// compacted at 70k, its threshold 67k.
+const ccBuffer = 33_000
+
+// ccWindow is the autoCompactWindow that compacts a context once it passes
+// window, within Claude Code's 1M; 0 for none.
+func ccWindow(window int) int {
+	if window == 0 {
+		return 0
+	}
+	return min(window+ccBuffer, 1_000_000)
 }
 
 // fileStamp tells a file's versions apart, as a build tool does.
@@ -372,10 +400,22 @@ func withTools(list string, names ...string) string {
 const noTools = `{"autoCompactEnabled":false,"hooks":{"PreToolUse":[{"matcher":"*","hooks":[{"type":"command","command":"echo 'Compactions call no tools.' >&2; exit 2"}]}]}}`
 
 // start starts a call. Claude Code never compacts one, whatever the user's
-// settings: the chat never ends, and its view never needs it; a subagent is
-// compacted only at rest, between its steps (see runAgent).
-// extra are a subagent's session flags.
-func (a *Agent) start(ctx context.Context, model, effort string, r role, extra ...string) (p *proc, err error) {
+// settings: the chat never ends, and its view never needs it. extra are a
+// subagent's session flags.
+func (a *Agent) start(ctx context.Context, model, effort string, r role, extra ...string) (*proc, error) {
+	return a.startCall(ctx, model, effort, r, 0, extra...)
+}
+
+// startAgent starts a subagent's call. Past window, Claude Code compacts
+// its context between two steps, never in one (see runAgent); 0: never.
+func (a *Agent) startAgent(ctx context.Context, model, effort string, window int, extra ...string) (*proc, error) {
+	return a.startCall(ctx, model, effort, roleAgent, window, extra...)
+}
+
+func (a *Agent) startCall(ctx context.Context, model, effort string, r role, window int, extra ...string) (p *proc, err error) {
+	if r != roleAgent {
+		window = 0 // the chat's calls never compact
+	}
 	if !a.begin() {
 		return nil, errors.New("opt-chat is quitting")
 	}
@@ -390,7 +430,7 @@ func (a *Agent) start(ctx context.Context, model, effort string, r role, extra .
 	a.mu.Lock()
 	mcp, perm, allowed := a.mcpConfig, a.perm, append([]string{"mcp__opt__zoom", "mcp__opt__date", "mcp__opt__search", "mcp__opt__spawn", "mcp__opt__tell", "mcp__opt__wake"}, a.allowed...)
 	dirs, own := slices.Clone(a.dirs), a.ownConfig && r != roleCompact
-	settings, claudeMd := a.ownSettings(), a.claudeMd
+	settings, claudeMd := a.ownSettings(window), a.claudeMd
 	system := a.systemNow()
 	a.mu.Unlock()
 	switch r {
@@ -430,7 +470,7 @@ func (a *Agent) start(ctx context.Context, model, effort string, r role, extra .
 			args = append(args, "--plugin-dir", a.noEmail)
 		}
 		if r != roleCompact { // noTools says it for compactions
-			args = append(args, "--settings", `{"autoCompactEnabled":false}`)
+			args = append(args, "--settings", compactSettings(window))
 		}
 	}
 	if effort != "" {
@@ -570,9 +610,12 @@ func (a *Agent) quit() {
 // got that session's token-budget reminder in some requests and not in
 // others, so no two prompts matched, and inherited its effort.
 func childEnv() []string {
+	// Those of a Claude Code that started opt-chat, and the user's own
+	// compaction window, which would beat a subagent's settings.
 	inherited := []string{"CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_CHILD_SESSION",
 		"CLAUDE_CODE_SESSION_ATTENDED", "CLAUDE_CODE_MESSAGING_SOCKET", "CLAUDE_CODE_MESSAGING_TOKEN",
-		"CLAUDE_CODE_EXECPATH", "CLAUDE_PID", "CLAUDE_EFFORT", "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"}
+		"CLAUDE_CODE_EXECPATH", "CLAUDE_PID", "CLAUDE_EFFORT", "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS",
+		"CLAUDE_CODE_AUTO_COMPACT_WINDOW", "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"}
 	env := slices.DeleteFunc(os.Environ(), func(kv string) bool {
 		k, _, _ := strings.Cut(kv, "=")
 		return slices.Contains(inherited, k)

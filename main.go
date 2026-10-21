@@ -35,6 +35,7 @@ func main() {
 	effort := flag.String("effort", "high", "effort for turns: low, medium, high, xhigh, max (unset: the picker's, if saved)")
 	amodel := flag.String("agent-model", "opus", "model for subagents")
 	aeffort := flag.String("agent-effort", "high", "effort for subagents")
+	agentCap := flag.Int("agent-compact-max", 400_000, fmt.Sprintf("compact a subagent's context once it passes this many tokens, between two steps (%dk to %dk; 0: never). The chat's own never compacts", windowMin/1000, windowMax/1000))
 	cmodel := flag.String("compact-model", "sonnet", "model for compactions (the recipe's: haiku)")
 	ceffort := flag.String("compact-effort", "medium", "effort for compactions")
 	jobs := flag.Int("jobs", defaultJobs, "compactions running at once, the chat's before an import's")
@@ -71,6 +72,9 @@ func main() {
 	}
 	if *jobs < 1 {
 		fatal("-jobs must be 1 or more")
+	}
+	if *agentCap != 0 && (*agentCap < windowMin || *agentCap > windowMax) {
+		fatal("-agent-compact-max must be 0, or from %d to %d", windowMin, windowMax)
 	}
 	if !validMode(*perm) {
 		fatal("-permission-mode must be one of %s", strings.Join(modes, ", "))
@@ -112,7 +116,7 @@ func main() {
 	}
 	h := &harness{}
 	a := &Agent{chat: c, system: systemPrompt(agentsMD, *wake), agentsMD: agentsMD, claudeMd: *claudeMd, model: *model, effort: *effort,
-		amodel: *amodel, aeffort: *aeffort, cmodel: *cmodel, ceffort: *ceffort, perm: *perm, cwd: *cwd, tools: *tools, ownConfig: *ownConfig, mcpOff: saved.MCPOff, skillsSet: saved.Skills, pluginsSet: saved.Plugins, agentWindow: saved.AgentAutocompact, recall: *recall,
+		amodel: *amodel, aeffort: *aeffort, cmodel: *cmodel, ceffort: *ceffort, perm: *perm, cwd: *cwd, tools: *tools, ownConfig: *ownConfig, mcpOff: saved.MCPOff, skillsSet: saved.Skills, pluginsSet: saved.Plugins, agentWindow: saved.AgentAutocompact, agentCap: *agentCap, recall: *recall,
 		running: map[string]*proc{}, writing: map[string]chan struct{}{}, report: func(text string) { h.input(message{kind: "work", text: text}) }, autoResume: *autoResume}
 	a.life, a.stop = context.WithCancel(context.Background())
 	h.agent = a
@@ -676,7 +680,8 @@ func command(a *Agent, line string) (string, bool, error) {
 		return "/model [name]       show or set the model for turns, as -model (until quit)\n" +
 			"/effort [level]     show or set their effort: " + joinEfforts() + "\n" +
 			"/mode [mode]        show or set the permission mode: " + strings.Join(modes, ", ") + "\n" +
-			"/autocompact [tokens|off] compact a subagent at rest, after a report, past this context, as 250k (never the chat's)\n" +
+			"/autocompact [tokens|off] compact a subagent past this context, as 250k, between two steps (never the chat's)\n" +
+			"                    the -agent-compact-max cap applies first; the page's compact compacts one now\n" +
 			"/mcp [on|off name]  your Claude Code MCP servers: list them, or turn one on or off for Opt\n" +
 			"/skills [on|off name] your Claude Code skills: list them, or turn one on or off for Opt\n" +
 			"/plugins [on|off id] your Claude Code plugins (skills and MCP servers together), as name@marketplace\n" +
@@ -709,9 +714,21 @@ func asks(a *Agent, line string) bool {
 
 const windowMin, windowMax = 100_000, 1_000_000 // a subagent's compaction window
 
-// autocompact shows or sets the context past which a subagent is compacted
-// at rest, for good (settings.json). The chat's own calls never compact:
-// see start.
+// agentWindowLocked is the window a subagent compacts past, its own (spawn's
+// or the user's) under the cap; 0: never. a.mu held.
+func (a *Agent) agentWindowLocked(own int) int {
+	switch {
+	case own == 0:
+		return a.agentCap
+	case a.agentCap == 0:
+		return own
+	}
+	return min(own, a.agentCap)
+}
+
+// autocompact shows or sets the context past which a subagent is compacted,
+// between two steps, for good (settings.json); -agent-compact-max caps it.
+// The chat's own calls never compact: see start.
 func autocompact(a *Agent, arg string) (string, bool, error) {
 	if arg = strings.ToLower(strings.TrimSpace(arg)); arg != "" {
 		n := 0
@@ -735,12 +752,20 @@ func autocompact(a *Agent, arg string) (string, bool, error) {
 		}
 	}
 	a.mu.Lock()
-	n := a.agentWindow
+	n, most := a.agentWindow, a.agentCap
+	w := a.agentWindowLocked(n)
 	a.mu.Unlock()
-	if n == 0 {
-		return "Subagents' contexts never compact (/autocompact 250k: when one has reported past 250k tokens). The chat's own never do.", true, nil
+	capped := ""
+	if most > 0 && most < n {
+		capped = fmt.Sprintf(", not %dk: -agent-compact-max caps it", n/1000)
 	}
-	return fmt.Sprintf("A subagent that has reported past %dk tokens of context is compacted then, at rest, never mid-step; its next message brings the view and its task again. The chat's own never compact.", n/1000), true, nil
+	switch {
+	case w == 0:
+		return "Subagents' contexts never compact (/autocompact 250k: past 250k tokens). The chat's own never do.", true, nil
+	case n == 0:
+		return fmt.Sprintf("A subagent's context is compacted past the cap, %dk tokens, between two steps, never in one (/autocompact 250k: sooner). The chat's own never compact.", w/1000), true, nil
+	}
+	return fmt.Sprintf("A subagent's context is compacted past %dk tokens%s, between two steps, never in one; at rest, its next message brings the view and its task again. The chat's own never compact.", w/1000, capped), true, nil
 }
 
 func logAll(c *Chat, msgs []message) {

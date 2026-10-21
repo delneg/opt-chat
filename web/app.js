@@ -2064,7 +2064,7 @@ function moving(s) { return ['working', 'starting', 'compacting'].includes(s?.st
 function Dot({ s }) { return html`<span class=${'dot' + (moving(s) ? ' moving' : '')} aria-hidden="true">●</span>`; }
 
 function subMeta(s) {
-  return [s.model, s.effort, s.context && `${k(s.context)} context${s.window ? ` of ${k(s.window)} before it compacts` : ''}`, s.steps && count(s.steps, 'step')].filter(Boolean).join(' · ');
+  return [s.model, s.effort, s.context && `${k(s.context)} context`, s.window && `compacts once it reports past ${k(s.window)}`, s.steps && count(s.steps, 'step')].filter(Boolean).join(' · ');
 }
 
 // useClock re-renders each second while on.

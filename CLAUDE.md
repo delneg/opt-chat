@@ -55,9 +55,9 @@ land there. The web tests go through real HTTP and WebSocket connections.
 ## Rules
 
 - The main chat never compacts, by any setting or means: the view is its
-  memory. Claude Code's own auto-compaction stays off in every call.
-  Subagents compact only when the user opts in, and only at rest, never
-  mid-step.
+  memory. Claude Code's own auto-compaction stays off in every call but
+  subagents'. A subagent compacts past its window (`-agent-compact-max`,
+  or less if the user or Opt asks), between two steps, never in one.
 - New behavior is on by default, with a flag or setting to turn it off.
 - Only subagent calls keep a Claude Code session on disk
   (`--session-id`/`--resume`); turns, compactions and control calls run

@@ -242,8 +242,51 @@ func fakeClaude() {
 			time.Sleep(300 * time.Millisecond)
 			emit(map[string]any{"type": "system", "subtype": "compact_boundary", "compact_metadata": map[string]any{"trigger": "manual", "pre_tokens": 300000, "post_tokens": 20000}})
 			result("")
+		case strings.Contains(in, "compacted in the middle of the task"): // the page's compact, mid-task: it goes on
+			result(fmt.Sprintf("went on: view %v, task %v, message %v", strings.Contains(text, "<chat>"), strings.Contains(in, "step-task"), strings.Contains(in, "meanwhile")))
 		case strings.Contains(in, "Your context was compacted"): // the view and the task again, then Opt's message
 			result(fmt.Sprintf("anchored: view %v, task %v, message %v", strings.Contains(text, "<chat>"), strings.Contains(in, "big-task"), strings.Contains(in, "next step")))
+		case strings.Contains(in, "grow-task"): // past its window mid-task: Claude Code compacts it between two steps
+			say(block{Type: "tool_use", ID: "g1", Name: "Read", Input: []byte(`{"file_path":"big"}`)})
+			emit(map[string]any{"type": "user", "message": map[string]any{"content": []block{{Type: "tool_result", ToolID: "g1", Content: []byte(`"lots"`)}}}})
+			emit(map[string]any{"type": "system", "subtype": "status", "status": "compacting"})
+			emit(map[string]any{"type": "system", "subtype": "status", "status": nil})
+			emit(map[string]any{"type": "system", "subtype": "compact_boundary", "compact_metadata": map[string]any{"trigger": "auto", "pre_tokens": 410000, "post_tokens": 30000}})
+			emit(map[string]any{"type": "assistant", "message": map[string]any{"content": []map[string]any{{"type": "text", "text": "grown"}},
+				"usage": map[string]any{"input_tokens": 10, "cache_read_input_tokens": 31000}}})
+			result("did the grown one")
+		case strings.Contains(in, "step-task"): // a step at a time until interrupted, as Claude Code: a queued message runs as a turn of its own
+			for n := 1; ; n++ {
+				id := fmt.Sprint("t", n)
+				say(block{Type: "tool_use", ID: id, Name: "Bash", Input: []byte(fmt.Sprintf(`{"command":"step %d"}`, n))})
+				emit(map[string]any{"type": "user", "message": map[string]any{"content": []block{{Type: "tool_result", ToolID: id, Content: []byte(`"ok"`)}}}})
+				l, interrupted := "", false
+				select {
+				case l = <-lines:
+				case <-time.After(100 * time.Millisecond):
+				}
+				if l != "" {
+					var r struct {
+						Request map[string]any `json:"request"`
+					}
+					json.Unmarshal([]byte(l), &r)
+					interrupted = r.Request["subtype"] == "interrupt"
+					if !interrupted && !control(l) {
+						next, _ := read(l)
+						say(textBlock("noted: " + next))
+					}
+				}
+				if interrupted {
+					appendRaw(base+".ctl", []byte(`{"subtype":"interrupt"}`+"\n"))
+					emit(map[string]any{"type": "user", "message": map[string]any{"content": []block{{Type: "text", Text: "[Request interrupted by user]"}}}})
+					emit(map[string]any{"type": "result", "subtype": "error_during_execution", "is_error": true, "result": ""})
+					break
+				}
+				if n == 50 {
+					result("never interrupted")
+					break
+				}
+			}
 		case strings.Contains(in, "big-task"):
 			emit(map[string]any{"type": "assistant", "message": map[string]any{"content": []map[string]any{{"type": "text", "text": "working"}},
 				"usage": map[string]any{"input_tokens": 10, "cache_read_input_tokens": 300000}}})
@@ -771,9 +814,9 @@ func TestHarness(t *testing.T) {
 	}
 }
 
-// A subagent is compacted only at rest, past the window the user set or
-// spawn asked for, never mid-step: Claude Code's own auto-compaction is off
-// in every call. Its next message brings the view and its task again; a
+// A subagent is compacted past the window the user set or spawn asked
+// for: by Claude Code between two steps (its settings), and at rest if it
+// reported past it. Its next message brings the view and its task again; a
 // tell that comes while it compacts waits for it.
 func TestAgentAutocompact(t *testing.T) {
 	c, _ := fakeChat(t, t.TempDir(), 100)
@@ -846,10 +889,183 @@ func TestAgentAutocompact(t *testing.T) {
 	if err := (&Turn{agent: a}).Run(context.Background(), []message{{kind: "user", text: "hi"}}); err != nil {
 		t.Fatal(err)
 	}
-	for i, args := range calls() {
-		if slices.Contains(args, "--autocompact") || flagOf(args, "--settings") != `{"autoCompactEnabled":false}` {
-			t.Fatalf("call %d: %q", i, args)
+	on := func(n int) string {
+		return fmt.Sprintf(`{"autoCompactEnabled":true,"autoCompactWindow":%d}`, n+ccBuffer)
+	}
+	want := []string{on(250_000), on(250_000), `{"autoCompactEnabled":false}`, on(400_000), `{"autoCompactEnabled":false}`} // Long, Later, Small, Asked, the turn
+	got := calls()
+	if len(got) != len(want) {
+		t.Fatalf("%d calls", len(got))
+	}
+	for i, args := range got {
+		if slices.Contains(args, "--autocompact") || flagOf(args, "--settings") != want[i] {
+			t.Fatalf("call %d: %q, want settings %s", i, args, want[i])
 		}
+	}
+}
+
+// -agent-compact-max caps every subagent's window, its own or none: Claude
+// Code compacts it past the cap, between two steps, and says so; spawn
+// can ask only for less. The chat's turns, compactions and control calls
+// never compact.
+func TestAgentCompactCap(t *testing.T) {
+	c, _ := fakeChat(t, t.TempDir(), 100)
+	a, calls := fakeAgent(t, c)
+	a.agentCap = 400_000
+	reported := make(chan string, 4)
+	a.report = func(text string) { reported <- text }
+	report := func() string {
+		select {
+		case got := <-reported:
+			return got
+		case <-time.After(10 * time.Second):
+			t.Fatal("no report")
+			return ""
+		}
+	}
+	if got := a.Spawn("Over", "x", "", "", 500_000, nil); got != "autocompact must be from 100000 to 400000 tokens, or left out." {
+		t.Fatal(got)
+	}
+	for _, tl := range a.mcpList() {
+		if tl["name"] == "spawn" {
+			if w := tl["inputSchema"].(map[string]any)["properties"].(map[string]any)["autocompact"].(map[string]any); w["maximum"] != 400_000 {
+				t.Fatalf("spawn's autocompact: %v", w)
+			}
+		}
+	}
+	a.Spawn("Grow", "grow-task", "", "", 0, nil)
+	if got := report(); !strings.Contains(got, "did the grown one") || !strings.Contains(got, "its context at 31k tokens") {
+		t.Fatalf("report: %q", got)
+	}
+	if log := c.ZoomAgent("Grow"); !strings.Contains(log, "compacted: mid-task: 410000 tokens to 30000") {
+		t.Fatalf("Grow's log: %q", log)
+	}
+	a.mu.Lock()
+	s, compacted := *a.subs["Grow"], a.resting["Grow"].compacting
+	a.mu.Unlock()
+	if s.Window != 400_000 || s.State != "resting" || compacted {
+		t.Fatalf("after a mid-task compaction: %+v, compacting again %v", s, compacted)
+	}
+	if got := a.Tell("Grow", "next step"); !strings.HasPrefix(got, "Sent: [Grow] is at work on it") {
+		t.Fatal(got)
+	}
+	if got := report(); !strings.Contains(got, "anchored: view true") { // its view and task again, after a compaction
+		t.Fatalf("after its report: %q", got)
+	}
+	a.Spawn("Lower", "x", "", "", 250_000, nil)
+	report()
+	a.agentWindow = 600_000 // the user's own: capped too
+	a.Spawn("Mine", "x", "", "", 0, nil)
+	report()
+	if err := (&Turn{agent: a}).Run(context.Background(), []message{{kind: "user", text: "hi"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.control(context.Background(), map[string]any{"subtype": "initialize"}); err != nil {
+		t.Fatal(err)
+	}
+	on := func(n int) string {
+		return fmt.Sprintf(`{"autoCompactEnabled":true,"autoCompactWindow":%d}`, n+ccBuffer)
+	}
+	off := `{"autoCompactEnabled":false}`
+	want := []string{on(400_000), on(250_000), on(400_000), off, off} // Grow, Lower, Mine, the turn, the control call
+	got := calls()
+	if len(got) != len(want) {
+		t.Fatalf("%d calls: %q", len(got), got)
+	}
+	for i, args := range got {
+		if flagOf(args, "--settings") != want[i] {
+			t.Fatalf("call %d: %q, want settings %s", i, args, want[i])
+		}
+	}
+	lines := make([]string, 70)
+	for i := range lines {
+		lines[i] = "line"
+	}
+	if _, err := a.Compact(context.Background(), lines, len(lines), []block{textBlock("Compaction: x")}); err != nil {
+		t.Fatal(err)
+	}
+	if args := calls()[len(want)]; !strings.Contains(strings.Join(args, " "), `"autoCompactEnabled":false`) || strings.Contains(strings.Join(args, " "), "autoCompactWindow") {
+		t.Fatalf("a compaction: %q", args)
+	}
+}
+
+// The page's compact: one at rest compacts now, and its next message brings
+// the view and its task again; one at work is interrupted at the end of a
+// step, two after a message queued in its turn, compacted, and set to go
+// on with its task, a tell meanwhile with it.
+func TestCompactAgent(t *testing.T) {
+	c, _ := fakeChat(t, t.TempDir(), 100)
+	a, _ := fakeAgent(t, c)
+	reported := make(chan string, 4)
+	a.report = func(text string) { reported <- text }
+	report := func() string {
+		select {
+		case got := <-reported:
+			return got
+		case <-time.After(10 * time.Second):
+			t.Fatal("no report")
+			return ""
+		}
+	}
+	if _, ok := a.CompactAgent("Nobody"); ok {
+		t.Fatal("compacted no one")
+	}
+	a.Spawn("Idle", "look around", "", "", 0, nil)
+	report()
+	if out, ok := a.CompactAgent("Idle"); !ok || out != "[Idle] compacts its context now." {
+		t.Fatal(out, ok)
+	}
+	if _, ok := a.CompactAgent("Idle"); ok {
+		t.Fatal("compacted twice at once")
+	}
+	waitFor(t, "the compaction at rest", func() bool {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		r := a.resting["Idle"]
+		return r != nil && r.compacted && !r.compacting && a.subs["Idle"].State == "resting"
+	})
+	if !strings.Contains(c.ZoomAgent("Idle"), "compacted: 300000 tokens to 20000") {
+		t.Fatalf("Idle's log: %q", c.ZoomAgent("Idle"))
+	}
+	a.Tell("Idle", "next step")
+	if got := report(); !strings.Contains(got, "anchored: view true") {
+		t.Fatalf("after the compaction: %q", got)
+	}
+
+	a.Spawn("Busy", "step-task", "", "", 0, nil)
+	waitFor(t, "its steps", func() bool { return strings.Contains(c.ZoomAgent("Busy"), "step 2") })
+	a.Tell("Busy", "a note")
+	if out, ok := a.CompactAgent("Busy"); !ok || out != "[Busy] compacts its context at its next step, then goes on." {
+		t.Fatal(out, ok)
+	}
+	a.mu.Lock()
+	asked := a.subs["Busy"].Compact
+	a.mu.Unlock()
+	if !asked {
+		t.Fatal("the page doesn't show it asked")
+	}
+	waitFor(t, "the interrupt", func() bool {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		return a.resting["Busy"] != nil && a.resting["Busy"].goOn
+	})
+	if got := a.Tell("Busy", "meanwhile"); !strings.HasPrefix(got, "Sent: [Busy] is compacting its context") {
+		t.Fatal(got)
+	}
+	if got := report(); !strings.Contains(got, "went on: view true, task true, message true") || !strings.Contains(got, "its context at") {
+		t.Fatalf("after the compaction: %q", got)
+	}
+	log := c.ZoomAgent("Busy")
+	note := strings.Index(log, "agent: noted: a note")
+	steps := strings.Count(log[note:strings.Index(log, "compacted: ")], "tool: Bash")
+	if note < 0 || steps < 2 || !strings.Contains(log, "compacted: mid-task: 300000 tokens to 20000") {
+		t.Fatalf("Busy's log, %d steps after the note: %q", steps, log)
+	}
+	if n := strings.Count(strings.Join(fakeFiles(a, ".ctl"), ""), `"interrupt"`); n != 1 {
+		t.Fatalf("%d interrupts", n)
+	}
+	if strings.Contains(strings.Join(logged(c), "\n"), "never interrupted") {
+		t.Fatal("it reported before it was compacted")
 	}
 }
 

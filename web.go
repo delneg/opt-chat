@@ -289,7 +289,7 @@ type request struct {
 	Allow  bool         `json:"allow"`  // answer: yes
 	Always bool         `json:"always"` // answer: yes, and don't ask again
 	Action string       `json:"action"` // mcp: on, off, reconnect, signin; skills: set; plugins: on, off; empty: list
-	Name   string       `json:"name"`   // mcp, skills: which; steps, tellAgent, agentContext: the subagent's
+	Name   string       `json:"name"`   // mcp, skills: which; steps, tellAgent, agentContext, compactAgent: the subagent's
 	State  string       `json:"state"`  // skills: on, off, name-only, user-invocable-only
 }
 
@@ -535,6 +535,14 @@ func (w *webServer) serve(req request) any {
 			return noticeUpdate{T: "notice", Level: "warn", S: fmt.Sprintf("No log for [%s]: %v", name, err)}
 		}
 		return stepsReply{T: "steps", Name: name, Steps: steps, Cut: cut}
+	case "compactAgent": // the page's compact: now at rest, at its next step at work
+		out, ok := h.agent.CompactAgent(agentName(req.Name))
+		c.hub.setStatus(currentStatus(c, h.agent))
+		level := "info"
+		if !ok {
+			level = "warn"
+		}
+		return noticeUpdate{T: "notice", Level: level, S: out}
 	case "stopAgent", "clearAgent": // the rail's stop, then clear
 		if req.T == "stopAgent" {
 			h.agent.StopAgent(agentName(req.Name))

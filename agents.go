@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"maps"
@@ -26,14 +27,17 @@ var agentRest = 30 * time.Minute
 const restMax = 4
 
 // rest is a subagent that has reported, its call open until then. One
-// whose context passed its window is compacted at rest, never mid-step;
-// its next message then brings the view and its task again.
+// whose context passed its window is compacted at rest; its next message
+// then brings the view and its task again. One the page asked to compact
+// at work rests here too while it compacts, between two of its steps, and
+// then goes on with its task (goOn).
 type rest struct {
 	p          *proc
 	until      time.Time
 	task       string
 	compacting bool   // its /compact is underway: tells wait in pending
 	compacted  bool   // since its last message
+	goOn       bool   // compacting mid-task: after it, it goes on with its task
 	pending    []tell // tells that came while compacting
 }
 
@@ -73,8 +77,9 @@ func (a *Agent) Spawn(name, task, effort, model string, window int, loop *loopHo
 	if model != "" && !modelName.MatchString(model) {
 		return "model is one word: opus, fable, sonnet, haiku, or a full model name; or left out."
 	}
-	if window != 0 && (window < windowMin || window > windowMax) {
-		return fmt.Sprintf("autocompact must be from %d to %d tokens, or left out.", windowMin, windowMax)
+	most := cmp.Or(a.agentCap, windowMax) // spawn's window is under the cap
+	if window != 0 && (window < windowMin || window > most) {
+		return fmt.Sprintf("autocompact must be from %d to %d tokens, or left out.", windowMin, most)
 	}
 	if loop != nil {
 		if bad := loop.check(); bad != "" {
@@ -273,6 +278,9 @@ func (a *Agent) tell(name string, ts ...tell) (string, bool) {
 		a.userTurnLocked(name, false)
 	}
 	a.logTells(name, ts)
+	if h := a.halts[name]; h != nil && !resting { // queued in its turn: see CompactAgent
+		h.told++
+	}
 	msg := tellBlocks(ts, "")
 	if resting && r.compacted {
 		msg = anchored(lines, name, r.task, tellBlocks(ts, optHead))
@@ -347,9 +355,11 @@ func (a *Agent) resume(name string, ts []tell, auto bool) (string, bool) {
 
 // halt stops one subagent's call: see StopAgent.
 type halt struct {
-	ctx    context.Context
-	cancel context.CancelFunc
-	byUser bool // stopped from the page; under a.mu
+	ctx     context.Context
+	cancel  context.CancelFunc
+	byUser  bool // stopped from the page; under a.mu
+	compact bool // the page asked it to compact at its next step; under a.mu
+	told    int  // messages sent to it at work, queued in its turn; under a.mu
 }
 
 // haltLocked makes the halt of the subagent name's call about to run; a.mu held.
@@ -375,6 +385,9 @@ func (a *Agent) StopAgent(name string) bool {
 		return false
 	}
 	_, working := a.running[name]
+	if r := a.resting[name]; r != nil && r.goOn { // compacting mid-task
+		working = true
+	}
 	h.byUser = working
 	if r := a.resting[name]; r != nil && !r.compacting {
 		r.p.close() // with its input closed, Claude Code exits at once; a SIGTERM takes seconds
@@ -383,6 +396,40 @@ func (a *Agent) StopAgent(name string) bool {
 	}
 	a.subLocked(name, func(s *sub) { s.State = "stopping" }) // until its call has ended
 	return true
+}
+
+// CompactAgent compacts the subagent name's context, as the page's compact
+// asks. One at rest is compacted now, as one past its window is. One at
+// work is compacted at its next step: once its tool calls have their
+// results, it is interrupted there, compacted, and set to go on with its
+// task; or as its turn ends, if that comes first. A message queued in its
+// turn would run before the /compact, as a turn of its own, so it waits
+// two steps past the one it first sees after such a message: Claude Code
+// takes a queued message into the request after a step, that one or the
+// next. Claude Code runs a /compact sent mid-turn only
+// once the turn is over, and a window lowered mid-turn (apply_flag_settings)
+// is not read until then: both measured on Claude Code 2.1.304. False,
+// with why, when it can't.
+func (a *Agent) CompactAgent(name string) (string, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	h, r, p, s := a.halts[name], a.resting[name], a.running[name], a.subs[name]
+	switch {
+	case h == nil:
+		return fmt.Sprintf("[%s] has no call underway: nothing to compact.", name), false
+	case r != nil && r.compacting, h.compact, s != nil && s.State == "compacting":
+		return fmt.Sprintf("[%s] is compacting already.", name), false
+	case r != nil:
+		r.compacting = true
+		a.subLocked(name, func(s *sub) { s.State = "compacting" })
+		r.p.send(textBlock(compactAsk))
+		return fmt.Sprintf("[%s] compacts its context now.", name), true
+	case p == nil:
+		return fmt.Sprintf("[%s] is starting: compact it in a moment.", name), false
+	}
+	h.compact = true
+	a.subLocked(name, func(s *sub) { s.Compact = true })
+	return fmt.Sprintf("[%s] compacts its context at its next step, then goes on.", name), true
 }
 
 // ClearAgent drops a subagent whose call has ended from the rail; its log
@@ -435,7 +482,7 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 			state = "halted"
 		}
 		delete(a.running, name)
-		a.subLocked(name, func(s *sub) { s.State = state })
+		a.subLocked(name, func(s *sub) { s.State, s.Compact = state, false })
 		user := a.userTurn[name]
 		delete(a.userTurn, name)
 		a.mu.Unlock()
@@ -500,17 +547,20 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 		if window == 0 {
 			window = a.agentWindow
 		}
-		a.subLocked(name, func(s *sub) { s.Window = window })
 		a.mu.Unlock()
-		rec.Window = window
+		rec.Window = window // its own, saved; the cap applies as it runs
 	}
+	a.mu.Lock()
+	window = a.agentWindowLocked(window)
+	a.subLocked(name, func(s *sub) { s.Window = window })
+	a.mu.Unlock()
 	rec.State = "working"
 	a.note(name, func(r *agentRecord) { *r = rec })
 	flags := []string{"--session-id", rec.Session}
 	if resumed {
 		flags = []string{"--resume", rec.Session}
 	}
-	p, err := a.start(h.ctx, model, effort, roleAgent, flags...)
+	p, err := a.startAgent(h.ctx, model, effort, window, flags...)
 	if err != nil {
 		report(failed(err))
 		return
@@ -518,15 +568,56 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 	p.who = name // before its first message: its questions say who asks
 	a.note(name, func(r *agentRecord) { r.Pid = p.cmd.Process.Pid })
 	acking := !resumed
+	// Past its window, Claude Code compacts its context itself, between two
+	// steps. The page's compact interrupts it at a step's end (forced: 1),
+	// then compacts it (2). A step ends once each of its tool calls has its
+	// result: open counts those without.
+	forced, open, told, quiet, midCompacted := 0, 0, 0, 2, false
+	stepEnd := func() {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		if h.told != told { // queued in its turn: see CompactAgent
+			told, quiet = h.told, 0
+		}
+		quiet++
+		if !h.compact || forced != 0 || quiet < 3 {
+			return
+		}
+		h.compact, forced = false, 1
+		a.subLocked(name, func(s *sub) { s.State, s.Compact = "compacting", false })
+		p.control("opt-compact", map[string]any{"subtype": "interrupt"})
+	}
 	each := func(e event) {
 		if e.Parent != nil {
 			return
 		}
+		if e.Type == "system" && e.Subtype == "status" {
+			if e.Status == "compacting" { // its own, mid-task, or one asked
+				a.setSub(name, func(s *sub) {
+					if s.State == "working" {
+						s.State = "compacting"
+					}
+				})
+			}
+			return
+		}
 		if e.Type == "system" && e.Subtype == "compact_boundary" {
-			a.agentWrite(name, "compacted", fmt.Sprintf("%d tokens to %d", e.Compact.Pre, e.Compact.Post))
-			a.chat.hub.notice("info", "[%s]'s context was compacted at rest, %s tokens to %s", name, k(e.Compact.Pre), k(e.Compact.Post))
 			size = e.Compact.Post
-			a.setSub(name, func(s *sub) { s.Context = size })
+			if e.Compact.Trigger == "manual" && forced == 0 { // asked at rest, or between a loop's turns
+				a.agentWrite(name, "compacted", fmt.Sprintf("%d tokens to %d", e.Compact.Pre, e.Compact.Post))
+				a.chat.hub.notice("info", "[%s]'s context was compacted at rest, %s tokens to %s", name, k(e.Compact.Pre), k(e.Compact.Post))
+				a.setSub(name, func(s *sub) { s.Context = size })
+				return
+			}
+			a.agentWrite(name, "compacted", fmt.Sprintf("mid-task: %d tokens to %d", e.Compact.Pre, e.Compact.Post))
+			a.chat.hub.notice("info", "[%s]'s context was compacted mid-task, between two steps, %s tokens to %s", name, k(e.Compact.Pre), k(e.Compact.Post))
+			midCompacted = forced == 0 // its next message, after its report, brings the view and its task again
+			a.setSub(name, func(s *sub) {
+				s.Context = size
+				if s.State == "compacting" && forced == 0 {
+					s.State = "working"
+				}
+			})
 			return
 		}
 		if e.Type == "assistant" {
@@ -535,6 +626,7 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 				a.setSub(name, func(s *sub) { s.Context = size })
 			}
 		}
+		results := 0
 		for _, b := range e.blocks() {
 			switch {
 			case e.Type == "assistant" && b.Type == "text" && !acking:
@@ -543,10 +635,16 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 				call := toolCall(b)
 				a.setSub(name, func(s *sub) { s.Step, s.StepAt = head(call, 400), nowMs(); s.Steps++ })
 				a.agentWrite(name, "tool", call)
+				open++
 			case e.Type == "user" && b.Type == "tool_result":
 				out, _ := resultContent(b.Content)
 				a.agentWrite(name, "echo", clip(out, clipMax))
+				open, results = open-1, results+1
 			}
+		}
+		if results > 0 && open <= 0 {
+			open = 0
+			stepEnd()
 		}
 	}
 	var u usage
@@ -589,23 +687,56 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 			each(e)
 			continue
 		}
+		open = 0
 		lines := c.viewNow()
 		a.mu.Lock()
 		if r := a.resting[name]; r != nil && r.p == p && r.compacting { // the compaction's end, not a report
 			r.compacting, r.compacted = false, true
 			a.subLocked(name, func(s *sub) { s.State = "resting" })
 			a.note(name, func(r *agentRecord) { r.Compacted = true })
-			if msgs := r.pending; len(msgs) > 0 { // tells that waited for it
+			if msgs := r.pending; len(msgs) > 0 || r.goOn { // tells that waited for it; its task, cut at a step
 				delete(a.resting, name)
 				a.running[name] = p
-				a.subLocked(name, func(s *sub) { s.State, s.Started, s.Until = "working", nowMs(), 0 })
+				a.subLocked(name, func(s *sub) {
+					s.State, s.Until = "working", 0
+					if !r.goOn {
+						s.Started = nowMs()
+					}
+				})
 				a.note(name, func(r *agentRecord) { r.State, r.Compacted = "working", false })
-				a.userTurnLocked(name, !anyOpt(msgs))
-				p.send(anchored(lines, name, task, tellBlocks(msgs, optHead))...)
+				var msg []block
+				if r.goOn { // the turn stays whoever's it was, unless Opt told it something
+					forced = 0
+					a.userTurnLocked(name, a.userTurn[name] && !anyOpt(msgs))
+					msg = []block{textBlock(goOn)}
+					if len(msgs) > 0 {
+						msg = joinText(append(append(msg, textBlock("\n\n")), tellBlocks(msgs, optHead)...))
+					}
+				} else {
+					a.userTurnLocked(name, !anyOpt(msgs))
+					msg = tellBlocks(msgs, optHead)
+				}
+				p.send(anchored(lines, name, task, msg)...)
 			}
 			a.mu.Unlock()
 			continue
 		}
+		if forced == 1 && e.IsError && e.Subtype == "error_during_execution" { // interrupted at a step's end, as asked: compacted, then it goes on
+			forced = 2
+			delete(a.running, name)
+			if a.resting == nil {
+				a.resting = map[string]*rest{}
+			}
+			a.resting[name] = &rest{p: p, until: time.Now().Add(agentRest), task: task, compacting: true, goOn: true}
+			a.mu.Unlock()
+			p.send(textBlock(compactAsk))
+			continue
+		}
+		// Asked to compact at a step, but its turn ended first: compacted
+		// now, as it reports.
+		asked := forced == 1 || h.compact
+		forced, h.compact = 0, false
+		a.subLocked(name, func(s *sub) { s.Compact = false })
 		if lp.compacting { // its compaction between turns is over: the next comes with the view and its task
 			a.mu.Unlock()
 			lp.compacting = false
@@ -625,7 +756,7 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 			next, note := a.loopStep(name, h, &lp, rec.Session, e)
 			a.note(name, func(r *agentRecord) { r.Turns, r.Resumes = lp.turns, 0 })
 			if next != nil {
-				if window > 0 && size > window { // compacted now, between turns, never in one
+				if window > 0 && size > window || asked { // compacted now, between turns, never in one
 					lp.compacting, lp.next = true, next
 					a.setSub(name, func(s *sub) { s.State = "compacting" })
 					p.send(textBlock(compactAsk))
@@ -646,7 +777,9 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 			a.resting = map[string]*rest{}
 		}
 		delete(a.running, name)
-		r := &rest{p: p, until: time.Now().Add(agentRest), task: task, compacting: window > 0 && size > window}
+		r := &rest{p: p, until: time.Now().Add(agentRest), task: task, compacting: window > 0 && size > window || asked, compacted: midCompacted}
+		mid := midCompacted
+		midCompacted = false
 		a.resting[name] = r
 		a.subLocked(name, func(s *sub) {
 			s.State, s.Until = "resting", r.until.UnixMilli()
@@ -655,7 +788,8 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 			}
 		})
 		if len(a.resting) > restMax {
-			oldest := slices.MinFunc(slices.Collect(maps.Keys(a.resting)), func(x, y string) int { return a.resting[x].until.Compare(a.resting[y].until) })
+			done := slices.DeleteFunc(slices.Collect(maps.Keys(a.resting)), func(n string) bool { return a.resting[n].goOn }) // not one mid-task
+			oldest := slices.MinFunc(done, func(x, y string) int { return a.resting[x].until.Compare(a.resting[y].until) })
 			a.resting[oldest].p.close()
 			delete(a.resting, oldest)
 			a.subLocked(oldest, func(s *sub) { s.State = "ended" })
@@ -666,7 +800,10 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 		}
 		user := a.userTurn[name]
 		delete(a.userTurn, name)
-		a.note(name, func(r *agentRecord) { r.State, r.Resumes, r.User = "resting", 0, false }) // under a.mu: a tell now comes after
+		a.note(name, func(r *agentRecord) { // under a.mu: a tell now comes after
+			r.State, r.Resumes, r.User = "resting", 0, false
+			r.Compacted = r.Compacted || mid
+		})
 		a.mu.Unlock()
 		if user { // its reply was the user's, in its log: Opt gets no report
 			a.chat.hub.notice("info", "[%s] answered you", name)
@@ -690,11 +827,13 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 		})
 	}
 	a.mu.Lock()
+	working := a.running[name] == p // its task, or a tell's, left without a reply
 	if r := a.resting[name]; r != nil && r.p == p {
+		working = working || r.goOn // cut off compacting mid-task
 		delete(a.resting, name)
 	}
-	working := a.running[name] == p // its task, or a tell's, left without a reply
 	a.subLocked(name, func(s *sub) {
+		s.Compact = false
 		if !working {
 			s.State = "ended"
 		}
@@ -709,6 +848,9 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 }
 
 const compactAsk = "/compact Keep what is needed to go on with your task: what was asked, what is done and how, what is left, the decisions and why, the files and commands."
+
+// goOn sets a subagent compacted mid-task to work again.
+const goOn = "It was compacted in the middle of the task, between two steps: go on with it where you left off."
 
 // ZoomAgent gives a subagent's whole chat.
 func (c *Chat) ZoomAgent(name string) string {

@@ -103,6 +103,33 @@ func TestWebTellAgent(t *testing.T) {
 	ws.next("none", func(u map[string]any) bool { return u["t"] == "notice" && u["s"] == "No subagent [Nobody]." })
 }
 
+// The page's compactAgent: a subagent at rest compacts now, and the page
+// hears so; one with no call underway can't, and the page hears why.
+func TestWebCompactAgent(t *testing.T) {
+	wt := startWeb(t)
+	a, c := wt.h.agent, wt.c
+	a.Spawn("Scout", "look around", "", "", 0, nil)
+	waitFor(t, "it at rest", func() bool { return agentState(a, "Scout") == "resting" })
+	ws, err := wt.dial(-1, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws.next("hello", typ("hello"))
+	ws.send(map[string]any{"t": "compactAgent", "name": "[Scout]"})
+	ws.next("it compacts", func(u map[string]any) bool {
+		return u["t"] == "notice" && u["level"] == "info" && u["s"] == "[Scout] compacts its context now."
+	})
+	waitFor(t, "its compaction", func() bool { return strings.Contains(c.ZoomAgent("Scout"), "compacted: 300000 tokens to 20000") })
+	waitFor(t, "it at rest again", func() bool { return agentState(a, "Scout") == "resting" })
+	ws.send(map[string]any{"t": "compactAgent", "name": "Nobody"})
+	ws.next("no call", func(u map[string]any) bool {
+		return u["t"] == "notice" && u["level"] == "warn" && u["s"] == "[Nobody] has no call underway: nothing to compact."
+	})
+	if n := len(workLines(c, "[Scout]")); n != 1 {
+		t.Fatalf("%d reports: the compaction reported", n)
+	}
+}
+
 // Whose turn reports: one the user's message set going, the subagent at
 // rest, answers the user alone; a task's turn reports to Opt, a user's
 // message in it or not; and Opt's tell in the user's turn makes it report.
@@ -297,7 +324,7 @@ func TestAgentContext(t *testing.T) {
 		sec["After its compaction"] != "Your context was compacted. Above, the chat's view[image]" {
 		t.Fatalf("sections: %q", sec)
 	}
-	for _, want := range []string{"mid\n", "State: resting", "Autocompact: at rest, past 300k tokens", "Compacted: its next message"} {
+	for _, want := range []string{"mid\n", "State: resting", "Autocompact: past 300k tokens, between two steps", "Compacted: its next message"} {
 		if !strings.Contains(sec["Model"], want) {
 			t.Fatalf("model: %q, no %q", sec["Model"], want)
 		}

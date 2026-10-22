@@ -370,7 +370,7 @@ func TestImportExports(t *testing.T) {
 // A text file's lines become notes, once the user says yes.
 func TestImportNotes(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "memories.txt")
-	os.WriteFile(path, []byte("I like F#\n\n  I dislike Haskell  \n"), 0o600)
+	os.WriteFile(path, []byte("I like tea\n\n  I dislike rain  \n"), 0o600)
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	if out := importInto(t, c, path, importOpts{}, "\n"); !strings.HasPrefix(out, "2 notes, one per line.") || len(logged(c)) != 0 {
 		t.Fatalf("declined: %q, logged %q", out, logged(c))
@@ -380,7 +380,7 @@ func TestImportNotes(t *testing.T) {
 	if err := importChats(c, path, importOpts{}, in, io.Discard); err != nil {
 		t.Fatal(err)
 	}
-	if got := logged(c); !slices.Equal(got, []string{"note: I like F#", "note: I dislike Haskell"}) {
+	if got := logged(c); !slices.Equal(got, []string{"note: I like tea", "note: I dislike rain"}) {
 		t.Fatal(got)
 	}
 	if rest, _ := io.ReadAll(in); string(rest) != "hello\n" {

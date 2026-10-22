@@ -37,7 +37,7 @@ func TestIndexFold(t *testing.T) {
 		{"toy Toy TOY", "TOY", 0, 3},
 		{"no match here", "wobbling", -1, -1},
 		{"tttoy", "toy", 2, 5},
-		{"Привет, ИГРУШКА", "игрушка", 14, 28},
+		{"Привет, КАРТИНА", "картина", 14, 28},
 		{"short", "shorter", -1, -1},
 		{"anything", "", 0, 0},
 		{"x Kelvin K", "k", 2, 3},

@@ -64,7 +64,7 @@ a { color: var(--blue); }
 /* tool calls */
 .msg.tool { margin-bottom: .8em; }
 .msg.tool > .mark { color: var(--green); }
-.msg.tool.run > .mark { color: var(--dim); }
+.msg.tool.run > .mark { color: var(--blue); } /* in progress: blue as its run time, and pulsing */
 /* a mark moves only while its thing is in progress: a tool call with no
    result yet, a reply streaming, a subagent at work; still once done */
 .msg.tool.run > .mark, .msg.opt.live > .mark, .dot.moving { animation: pulse 1s ease-in-out infinite; }

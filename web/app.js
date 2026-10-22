@@ -55,6 +55,7 @@ const S = {
   railOff: (() => { try { const v = JSON.parse(localStorage.getItem('railOff')); return Array.isArray(v) ? v : null; } catch { return null; } })(), // hidden by the user: the subagents it had then
   drawer: false, // no room: the rail as a drawer, open
   agent: null, // the subagent the rail shows: { name, steps, off, cut, loading }; full screen, that one's
+  alive: null, // what that subagent is writing now: { name, text, thinking, input }, as live, thinking and input are Opt's
   full: (() => { try { return sessionStorage.getItem('full') || null; } catch { return null; } })(), // the subagent full screen, which the bar talks to (Alt+O); kept per tab
   ctx: null, // its context, asked: { name, sections, loading, failed }
   memView: false, // the chat shown as Opt's view (Alt+V, /view) instead of the log
@@ -216,7 +217,14 @@ function onUpdate(u) {
       if (u.error) { notice('warn', u.error); memOpen.delete(u.id + '+' + u.n); } else memZoom.set(u.id + '+' + u.n, u);
       set({ memTick: S.memTick + 1 });
       break;
-    case 'steps': if (S.agent?.name === u.name) set({ agent: { name: u.name, steps: u.steps.slice(-agentStepsMax), off: 0, cut: u.cut || u.steps.length > agentStepsMax, loading: false } }); break;
+    case 'steps': if (S.agent?.name === u.name) set({ agent: { name: u.name, steps: u.steps.slice(-agentStepsMax), off: 0, cut: u.cut || u.steps.length > agentStepsMax, loading: false }, alive: u.live ? { name: u.name, ...u.live } : null }); break;
+    case 'agentDelta': { // what the open subagent is writing, as it writes it
+      if (S.agent?.name !== u.name) break;
+      if (!u.k) { if (S.alive) set({ alive: null }); break; }
+      const w = S.alive?.name === u.name ? S.alive : { name: u.name };
+      set({ alive: { ...w, [u.k]: (u.r ? '' : w[u.k] || '') + (u.s || '') } });
+      break;
+    }
     case 'step': addStep(u.name, u.step); break;
     case 'end': set({ last: u.end }); send({ t: 'usage' }); break;
     case 'notice':
@@ -745,7 +753,7 @@ async function submit(now) {
   const seq = ++sendSeq;
   const agent = to && !isCommand(text); // a command is Opt's, whoever the bar talks to
   const payload = agent
-    ? { t: 'tellAgent', name: to, text, files, paths, skip: [...S.skipped], chosen: [...S.chosen], seq, key: pageKey + ':' + seq }
+    ? { t: 'tellAgent', name: to, text, files, paths, skip: [...S.skipped], chosen: [...S.chosen], now, seq, key: pageKey + ':' + seq }
     : { t: 'send', text, files, paths, skip: [...S.skipped], chosen: [...S.chosen], now, seq, key: pageKey + ':' + seq };
   if (!send(payload)) return;
   if (agent) fullToEnd = true; else toNow(); // what was sent, and its answer, show: the end, from the past too
@@ -1238,6 +1246,8 @@ function AsideView({ a }) {
   </div>`;
 }
 
+function refusal(out) { return out.startsWith('The user doesn\'t want to proceed with this tool use.') || out === 'The user said no to this call.'; }
+
 const MsgView = memo(({ m, echo, state }) => {
   switch (m.kind) {
     case 'user': return html`<${UserMsg} m=${m}/>`;
@@ -1481,7 +1491,7 @@ function ToolMsg({ m, echo, state }) {
   const tool = m ? parseTool(m.text) : null;
   const out = echo ? echo.text : '';
   const lines = out ? out.replace(/\n+$/, '').split('\n') : [];
-  const refused = out.startsWith('The user doesn\'t want to proceed with this tool use.') || out === 'The user said no to this call.';
+  const refused = refusal(out);
   const failed = refused || /^(<tool_use_error>|Error\b|error:)/i.test(out.trim());
   const cls = 'msg tool ' + (state === 'run' ? 'run' : state === 'cut' || failed ? 'cut' : '');
   const toggle = () => { if (!getSelection().toString()) setOpen(!open); }; // not when selecting its text
@@ -1494,7 +1504,7 @@ function ToolMsg({ m, echo, state }) {
     <div class="body">
       ${tool && html`<div class="head" role="button" tabindex="0" aria-expanded=${open} onClick=${toggle}><span class="name">${tool.name}</span><span class="args">(${toolArgs(tool.name, tool.input, tool.raw)})</span>${ran >= 1000 && html`<span class="took" title="how long it ran">${elapsed(ran)}</span>`}</div>`}
       ${echo && !open && sum && html`<div class="result" role="button" tabindex=${tool ? -1 : 0} onClick=${toggle}><span aria-hidden="true">  ⎿</span><span class="lines">${sum} <span class="more">(click to expand)</span></span></div>`}
-      ${echo && !open && refused && html`<div class="result" role="button" tabindex=${tool ? -1 : 0} onClick=${toggle}><span aria-hidden="true">  ⎿</span><span class="cut-note">No (you said no)</span></div>`}
+      ${echo && !open && refused && html`<div class="result" role="button" tabindex=${tool ? -1 : 0} onClick=${toggle}><span aria-hidden="true">  ⎿</span><span class="cut-note">${state === 'cut' ? 'Interrupted' : 'No (you said no)'}</span></div>`}
       ${echo && !open && !sum && !refused && html`<div class="result" role="button" tabindex=${tool ? -1 : 0} onClick=${toggle}><span aria-hidden="true">  ⎿</span><span class="lines">${lines.slice(0, 3).map(l => oneLine(l, 160)).join('\n') || '(no output)'}${lines.length > 3 && html`<span class="more">${'\n'}… +${lines.length - 3} lines (click to expand)</span>`}</span></div>`}
       ${state === 'cut' && !echo && html`<div class="result"><span aria-hidden="true">  ⎿</span><span class="cut-note">Interrupted</span></div>`}
       ${open && html`<div class="full">
@@ -1819,8 +1829,7 @@ function Spinner({ turn, chars, queued }) {
     case 'asks': verb = 'Waiting for your permission'; break;
     case 'settling': verb = turn.backlog ? `Waiting for ${turn.backlog} message summar${turn.backlog === 1 ? 'y' : 'ies'}` : 'Getting ready'; break;
     case 'reading': verb = 'Reading memory'; break;
-    case 'writing': verb = 'Writing'; break;
-    case 'tool': verb = !turn.tool ? 'Calling a tool' : S.input ? `Writing the ${turn.tool} call` : `Running ${turn.tool}`; break;
+    case 'writing': case 'tool': verb = phaseVerb(turn.phase, turn.tool, S.input); break;
   }
   const meta = [elapsed(Date.now() - (turn.since || Date.now()))];
   const tokens = (turn.tokens || 0) + Math.round(chars / 4);
@@ -1945,7 +1954,7 @@ function Help() {
   const rows = [
     ['Enter', 'send; while Opt works, queue'],
     ['Shift+Enter', 'new line'],
-    ['⌘/Ctrl+Enter', 'send now: stop the turn and send'],
+    ['⌘/Ctrl+Enter', 'send now: stop the turn and send; full screen, interrupt the subagent at work to read it now'],
     ['Esc', 'stop the turn; queued messages come back here'],
     ['↑ / ↓', 'your earlier messages; ↑ on an empty input edits the last queued'],
     ['drop · paste · 📎', 'attach files, each where the caret is; a path you type (/… or ~/…) attaches its file'],
@@ -1956,9 +1965,9 @@ function Help() {
     ['Alt+A · /agents', 'the subagents: what each does now, and its steps'],
     ['Alt+O · ⤢', 'a subagent full screen: the bar talks to it, Esc stops it at work; Alt+O, ← Opt or Esc at rest: back to Opt'],
     ['Alt+V · /view', 'the chat as Opt sees it: its view, each line opening into its halves; again: the log'],
-    ['Alt+U · ↑ button', 'up to your last message out of sight above'],
-    ['⌘/Ctrl+F · /find', 'find words in the whole chat: ↑/↓ choose, Enter shows the message, Alt+M only yours, Esc goes back; again in the box: the browser\'s find'],
-    ['End · ↓ back to now', 'from the past a find showed, or anywhere up the log, back to the latest messages'],
+    ['Alt+U · ↑ button', 'up to your last message out of sight above, full screen too'],
+    ['⌘/Ctrl+F · /find', 'find words in the whole chat, or full screen in the subagent\'s steps: ↑/↓ choose, Enter shows the message, Alt+M only yours, Esc goes back; again in the box: the browser\'s find'],
+    ['End · ↓ back to now', 'from the past a find showed, or anywhere up the log, back to the latest messages; full screen, its latest steps'],
     ['/tree', 'the whole memory, every level of the tree, in a new tab'],
     ['Alt+K', 'record a voice message; Alt+K or Enter sends it with the input, Esc drops it; type meanwhile, Shift+Enter breaks the line'],
     ['/help', 'the commands'],
@@ -1982,7 +1991,7 @@ function Input() {
     <${Mention}/>
     ${sugg.length > 0 && html`<${Cmds} sugg=${sugg}/>`}
     <div class=${'box' + (to ? ' to-agent' : '')}>
-      ${to && html`<div class="to"><span class="who">→ [${to}]</span><span class="dim">only it reads this${busy ? ', between its steps · Esc interrupts it' : ' · Esc goes back to Opt'}</span></div>`}
+      ${to && html`<div class="to"><span class="who">→ [${to}]</span><span class="dim">only it reads this${busy ? ', between its steps · ⌘⏎ interrupts it to read it now · Esc stops it' : ' · Esc goes back to Opt'}</span></div>`}
       <${Chips}/>
       <span class="gt" aria-hidden="true">${to ? '→' : '▸'}</span>
       <textarea ref=${ref} rows="1" spellcheck="false" aria-label=${to ? `Message [${to}]` : 'Message Opt'}
@@ -2209,11 +2218,11 @@ function toggleRail(name) {
 }
 
 function openAgent(name) {
-  set({ agent: { name, steps: [], off: 0, cut: false, loading: true } });
+  set({ agent: { name, steps: [], off: 0, cut: false, loading: true }, alive: null });
   send({ t: 'steps', name });
 }
 
-function closeAgent() { set({ agent: null }); }
+function closeAgent() { set({ agent: null, alive: null }); }
 
 const agentStepsMax = 3000; // the oldest go, as the chat's own messages do
 
@@ -2222,7 +2231,9 @@ function addStep(name, s) {
   if (a?.name !== name || a.loading) return; // a step that came before its log is in the log
   const steps = a.steps.concat([s]);
   const cut = steps.length > agentStepsMax;
-  set({ agent: { ...a, steps: cut ? steps.slice(-agentStepsMax) : steps, off: a.off + (cut ? 1 : 0), cut: a.cut || cut } });
+  const live = { agent: 'text', tool: 'input' }[s.kind]; // what it was writing, now in its log
+  set({ agent: { ...a, steps: cut ? steps.slice(-agentStepsMax) : steps, off: a.off + (cut ? 1 : 0), cut: a.cut || cut },
+    ...(live && S.alive?.[live] ? { alive: { ...S.alive, [live]: '' } } : {}) });
 }
 
 // what is one sub's state, as the rail says it: a question waiting on the
@@ -2403,10 +2414,17 @@ function stepMsgs(name, steps, off) {
 }
 
 // agentRows are a subagent's steps as the log's rows; a tool call with no
-// result runs while it is at work, else was cut short. The notices made
-// while it was full screen go after the steps they followed.
+// result runs while it is at work, unless a "cut" step came after it (its
+// turn was interrupted), else was cut short. The notices made while it was
+// full screen go after the steps they followed.
 function agentRows(a, busy, notes = []) {
-  const list = items(stepMsgs(a.name, a.steps, a.off), false).map(it => ({ ...it, state: it.m.kind !== 'tool' ? '' : it.echo ? 'done' : busy ? 'run' : 'cut' }));
+  const cut = a.off + a.steps.findLastIndex(s => s.kind === 'cut');
+  const at = m => +m.i.slice(m.i.lastIndexOf(':') + 1);
+  // Claude Code answers a call cut short for a message sent now (⌘⏎) as one
+  // the user said no to: the user's message between the two tells which.
+  const told = (m, echo) => refusal(echo.text) && a.steps.slice(at(m) + 1 - a.off, at(echo) - a.off).some(s => s.kind === 'user');
+  const list = items(stepMsgs(a.name, a.steps, a.off), false).map(it => ({ ...it,
+    state: it.m.kind !== 'tool' ? '' : it.echo ? (told(it.m, it.echo) ? 'cut' : 'done') : busy && at(it.m) > cut ? 'run' : 'cut' }));
   if (!notes.length) return list;
   const out = [];
   let j = 0;
@@ -2417,6 +2435,25 @@ function agentRows(a, busy, notes = []) {
   }
   for (; j < notes.length; j++) out.push({ note: notes[j], key: 'n' + notes[j].id });
   return out;
+}
+
+// AgentLive is what the open subagent is writing, as Opt's live reply, its
+// thinking and the tool call it writes show under Opt's log.
+function AgentLive({ s }) {
+  const w = S.alive;
+  if (!w || w.name !== s?.name || !atWork(s)) return null;
+  return html`${w.thinking && s.phase === 'thinking' && html`<div class="thinking"><div>${w.thinking}</div></div>`}
+    ${w.input && s.phase === 'tool' && s.tool && html`<${LiveTool} name=${s.tool} raw=${w.input}/>`}
+    ${w.text && html`<div class="msg opt live"><span class="mark" aria-hidden="true">●</span><div class="body"><${Markdown} text=${w.text} live=${true}/></div></div>`}`;
+}
+
+// phaseVerb is what a turn or a subagent at work is doing, as the spinner says it.
+function phaseVerb(phase, tool, input) {
+  switch (phase) {
+    case 'writing': return 'Writing';
+    case 'tool': return !tool ? 'Calling a tool' : input ? `Writing the ${tool} call` : `Running ${tool}`;
+  }
+  return 'Thinking';
 }
 
 function AgentView({ a, s, now }) {
@@ -2440,6 +2477,7 @@ function AgentView({ a, s, now }) {
       ${a.cut && html`<div class="edge">Its earlier steps: zoom("${a.name}") in the chat, or agents/${a.name}.log</div>`}
       ${a.loading ? html`<div class="edge">Loading its steps…</div>` : !list.length && html`<div class="edge">No steps yet.</div>`}
       <${Virtualizer} data=${list} scrollRef=${ref} bufferSize=${800} onResize=${onResize}>${row}</${Virtualizer}>
+      <${AgentLive} s=${s}/>
     </div>`;
 }
 
@@ -2462,6 +2500,7 @@ function goFull(name) {
   if (S.full === name) { inputEl?.focus(); return; }
   if (!(S.status?.subs || []).some(s => s.name === name)) { notice('warn', `[${name}] is not among this run's agents.`); return; }
   if (S.voice) { notice('warn', 'A voice message is recording: send it (Alt+K) or drop it (Esc) first.'); return; }
+  if (S.find) closeFind(false); // the chat's, or another agent's: Esc would close it unseen
   saveDraft(target());
   set({ full: name, ctx: null, drawer: false, askSel: 0 });
   if (S.agent?.name !== name) openAgent(name);
@@ -2478,6 +2517,7 @@ function leaveFull(force) {
     if (!force) { notice('warn', 'A voice message is recording: send it (Alt+K) or drop it (Esc) first.'); return false; }
     stopVoice(false);
   }
+  if (S.find) closeFind(false); // a find in its steps
   saveDraft(S.full);
   set({ full: null, ctx: null, askSel: 0 });
   loadDraft('');
@@ -2548,18 +2588,53 @@ function fullState(s, now) {
   return [cls, label];
 }
 
+// fullNav moves the agent full screen's log, for the keys: to its end
+// (End), up to the user's message (Alt+U), and where it is, for a find's
+// Esc to come back to.
+let fullNav = null;
+
 // AgentFull is the agent full screen: its head, its context when asked,
-// and its steps, in a scroller and messages like the chat's.
+// and its steps, in a scroller and messages like the chat's, which move
+// as the chat's do: ↓ new steps, ↑ up to the user's message, End, a find.
 function AgentFull({ a, s }) {
-  const ref = useRef(), stick = useRef(true);
+  const ref = useRef(), head = useRef(), vh = useRef(), stick = useRef(true), was = useRef(0);
+  const [newer, setNewer] = useState(false), [up, setUp] = useState(false), [margin, setMargin] = useState(0);
   const busy = atWork(s);
   const now = useClock(!!s && (busy || s.state === 'resting'));
   const list = useMemo(() => agentRows(a, busy, S.notices.filter(n => n.who === a.name)), [a.steps, busy, S.notices]);
   const toBottom = () => { const el = ref.current; if (el) el.scrollTop = el.scrollHeight; };
+  const toEnd = () => { stick.current = true; setNewer(false); toBottom(); };
   const onResize = useMemo(() => () => { if (stick.current) toBottom(); }, []);
+  const mine = useMemo(() => list.flatMap((it, j) => it.m?.kind === 'user' && !it.m.from ? [j] : []), [list]); // the user's own, as in Opt's log
+  const above = j => margin + vh.current.getItemOffset(j) < ref.current.scrollTop - 1;
+  const checkUp = () => { const show = !!vh.current && mine.length > 0 && above(mine[0]); if (show !== up) setUp(show); };
+  const jumpUp = () => {
+    const j = vh.current && mine.findLast(above);
+    if (j === undefined || j === null) return;
+    stick.current = false;
+    vh.current.scrollToIndex(j, { align: 'start', offset: -12 });
+  };
+  const nav = useRef({}).current;
+  fullNav = Object.assign(nav, { end: toEnd, up: jumpUp, here: () => ({ top: ref.current?.scrollTop, end: stick.current }), to: top => { stick.current = false; ref.current.scrollTop = top; } });
+  useEffect(() => () => { if (fullNav === nav) fullNav = null; }, []);
   useLayoutEffect(() => {
-    if (fullToEnd) { fullToEnd = false; stick.current = true; }
+    const el = ref.current;
+    const m = Math.round(head.current.getBoundingClientRect().bottom - el.getBoundingClientRect().top + el.scrollTop);
+    if (m !== margin) setMargin(m);
+    if (fullToEnd) { fullToEnd = false; stick.current = true; setNewer(false); }
     if (stick.current) toBottom();
+    else if (list.length > was.current && was.current > 0) setNewer(true);
+    was.current = list.length;
+    checkUp();
+    const j = S.jump; // a find's match in its steps
+    if (j?.agent === a.name && !j.done && vh.current) {
+      j.done = true;
+      const k = list.findIndex(it => it.m?.i === j.i);
+      if (k < 0) return;
+      stick.current = false;
+      vh.current.scrollToIndex(k, { align: 'start', offset: -Math.round(el.clientHeight * 0.2) });
+      markFound(el, j.i, j.terms);
+    }
   });
   const [cls, label, took] = s ? fullState(s, now) : ['done', 'not in this run'];
   return html`<section class="agent-full" aria-label=${`[${a.name}] full screen`}>
@@ -2574,12 +2649,24 @@ function AgentFull({ a, s }) {
     </div>
     ${s && html`<div class="column meta">${subMeta(s)}</div>`}</div>
     ${S.ctx?.name === a.name && html`<${Ctx} c=${S.ctx}/>`}
-    <div class="scroll full-log" ref=${ref} onScroll=${() => { const el = ref.current; stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80; }}>
-      <div class="column log" role="log" aria-live="polite">
-        <div class="edge">${a.cut ? `Its earlier steps: zoom("${a.name}") in the chat, or agents/${a.name}.log.` : `[${a.name}]'s steps: its task, what Opt and you told it, its replies and tool calls.`} What you send here only it reads; Opt's chat gets a line saying you wrote.</div>
-        ${a.loading ? html`<div class="edge">Loading its steps…</div>` : !list.length && html`<div class="edge">No steps yet.</div>`}
-        <${Virtualizer} data=${list} scrollRef=${ref} bufferSize=${1200} onResize=${onResize}>${row}</${Virtualizer}>
+    ${S.find?.agent === a.name && html`<${FindBar}/>`}
+    <div class="scroll full-log" ref=${ref} onScroll=${() => {
+      const el = ref.current;
+      stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+      if (stick.current) setNewer(false);
+      checkUp();
+    }}>
+      <div class="column log" role="log" aria-live="polite" aria-busy=${S.alive?.name === a.name && !!S.alive.text}>
+        <div ref=${head}>
+          <div class="edge">${a.cut ? `Its earlier steps: zoom("${a.name}") in the chat, or agents/${a.name}.log.` : `[${a.name}]'s steps: its task, what Opt and you told it, its replies and tool calls.`} What you send here only it reads; Opt's chat gets a line saying you wrote.</div>
+          ${a.loading ? html`<div class="edge">Loading its steps…</div>` : !list.length && html`<div class="edge">No steps yet.</div>`}
+        </div>
+        <${Virtualizer} ref=${vh} data=${list} startMargin=${margin} scrollRef=${ref} bufferSize=${1200} onResize=${onResize}>${row}</${Virtualizer}>
+        <${AgentLive} s=${s}/>
       </div>
+      ${newer && html`<div class="newer"><button onClick=${toEnd}>↓ new steps</button></div>`}
+      ${up && html`<div class="column up"><button class="mine" title="up to your message (Alt+U)" aria-label="up to your message" onClick=${jumpUp}>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 15l6-6 6 6"/></svg></button></div>`}
     </div>
   </section>`;
 }
@@ -2620,7 +2707,7 @@ function FullBar({ s }) {
   const opt = optAsks ? '? a question waits in Opt\'s chat' : optBusy ? html`<${Glyph}/>Opt working` : '';
   return html`<div class=${'spinner fullbar st-' + cls}>
     ${busy
-      ? html`<span><${Glyph}/>[${S.full}] ${label}…</span><span class="meta">(${meta.map(x => x + ' · ')}<button title="stop it now" onClick=${stopFull}>esc to interrupt</button>)</span>`
+      ? html`<span><${Glyph}/>[${S.full}] ${s.phase && s.state === 'working' ? phaseVerb(s.phase, s.tool, S.alive?.name === s.name && S.alive.input) + ' · ' : ''}${label}…</span><span class="meta">(${meta.map(x => x + ' · ')}<button title="stop it now" onClick=${stopFull}>esc to interrupt</button>)</span>`
       : html`<span class="still"><span class="glyph" aria-hidden="true">●</span>[${S.full}] ${label}</span>`}
     ${(opt || S.queue.length > 0) && html`<button class="opt-note" title="back to Opt's chat (Alt+O)" onClick=${() => leaveFull()}>${opt}${opt && S.queue.length ? ' · ' : ''}${S.queue.length ? count(S.queue.length, 'message') + ' queued for Opt' : ''}</button>`}
   </div>`;
@@ -2639,11 +2726,12 @@ function FullBar({ s }) {
 let findEl = null, findTimer = 0, findSeq = 0, findFrom = null, showNext = false, showFirst = false;
 
 function openFind(text) {
-  if (S.full && !leaveFull()) return;
   if (S.memView) toggleMem();
+  const agent = S.full || undefined; // full screen: a find in its steps
+  if (S.find && S.find.agent !== agent) closeFind(false);
   if (!S.find) {
-    findFrom = here();
-    set({ find: { text: '', mine: false, hits: [], total: 0, more: 0, terms: [], sel: 0, shown: -1, folded: false, busy: false, asked: null, error: '' }, help: false });
+    findFrom = agent ? fullNav?.here() : here();
+    set({ find: { agent, text: '', mine: false, hits: [], total: 0, more: 0, terms: [], sel: 0, shown: -1, folded: false, busy: false, asked: null, error: '' }, help: false });
   } else set({ find: { ...S.find, folded: false } });
   if (text !== undefined && text.trim()) { set({ find: { ...S.find, text: text.trim() } }); askFind(true); }
   requestAnimationFrame(() => { findEl?.focus(); findEl?.select(); });
@@ -2660,6 +2748,11 @@ function askFind(now) {
   findTimer = setTimeout(() => {
     const g = S.find;
     if (!g) return;
+    if (g.agent) { // its steps are in the page: found here, at once
+      set({ find: { ...g, ...agentFind(g.text, g.mine), more: 0, busy: false, error: '', asked: g.text, askedMine: g.mine, sel: 0, shown: -1, folded: false } });
+      if (showFirst) { showFirst = false; showHit(0); }
+      return;
+    }
     const seq = ++findSeq;
     if (send({ t: 'find', text: g.text, mine: g.mine, seq })) set({ find: { ...g, busy: true } });
   }, now ? 0 : 150);
@@ -2671,6 +2764,35 @@ function loadMore(show) {
   showNext = !!show;
   const seq = ++findSeq;
   if (send({ t: 'find', text: f.asked ?? f.text, mine: f.askedMine ?? f.mine, before: f.more, seq })) set({ find: { ...f, busy: true } });
+}
+
+// findTerms are what a match must hold, as find.go's findTerms has them:
+// each word, and each "quoted phrase" as it is written.
+function findTerms(text) {
+  const out = [], add = s => { s = s.trim().split(/\s+/).join(' '); if (s && !out.includes(s)) out.push(s); };
+  text.replace(/[“”]/g, '"').split('"').forEach((p, j) => { if (j % 2) add(p); else p.split(/\s+/).forEach(add); });
+  return out;
+}
+
+// agentFind finds in the full screen agent's steps the page holds, as the
+// chat's find does in the chat: the messages (not tool calls or their
+// output) that hold every term in any case, newest first; with mine, the
+// user's own.
+function agentFind(text, mine) {
+  const a = S.agent, terms = findTerms(text), hits = [];
+  if (!a || a.name !== S.find?.agent || !terms.length && !mine) return { hits, total: 0, terms };
+  const lower = terms.map(t => t.toLowerCase());
+  for (let j = a.steps.length - 1; j >= 0; j--) {
+    const s = a.steps[j], kind = { user: 'user', task: 'opt', opt: 'opt', agent: 'work', loop: 'note' }[s.kind];
+    if (!kind || mine && kind !== 'user') continue;
+    const low = s.text.toLowerCase(), at = lower.map(t => low.indexOf(t));
+    if (at.some(x => x < 0)) continue;
+    const first = at.length ? Math.min(...at) : 0, end = first + (lower[at.indexOf(first)]?.length || 0);
+    const from = Math.max(0, first - 70), to = Math.min(s.text.length, end + 160);
+    const snip = (from ? '…' : '') + s.text.slice(from, to).split(/\s+/).join(' ') + (to < s.text.length ? '…' : '');
+    hits.push({ i: `${a.name}:${a.off + j}`, kind, who: a.name, date: s.at, snip });
+  }
+  return { hits, total: hits.length, terms };
 }
 
 function toggleMine() {
@@ -2685,7 +2807,8 @@ function showHit(j) {
   const f = S.find, h = f?.hits[j];
   if (!h) return;
   set({ find: { ...f, sel: j, shown: j, folded: true, moved: true, error: '' } });
-  jumpTo(h.i, f.terms);
+  if (f.agent) set({ jump: { agent: f.agent, i: h.i, terms: f.terms, seq: ++jumpSeq } });
+  else jumpTo(h.i, f.terms);
 }
 
 // closeFind shuts the box: the log stays where it is, or with back goes
@@ -2696,10 +2819,12 @@ function closeFind(back) {
   showNext = showFirst = false;
   const from = findFrom;
   findFrom = null;
+  const agent = S.find?.agent;
   set({ find: null });
   if (back && from) {
     unmark();
-    if (from.end) toNow(); else jumpTo(from.i, null, { offset: from.top, quiet: true });
+    if (agent) { if (from.end) fullNav?.end(); else fullNav?.to(from.top); }
+    else if (from.end) toNow(); else jumpTo(from.i, null, { offset: from.top, quiet: true });
   }
   inputEl?.focus();
 }
@@ -2773,7 +2898,7 @@ function FindBar() {
   return html`<div class="findbar" role="search"><div class="column">
     <div class="find-box">
       <span class="gt" aria-hidden="true">⌕</span>
-      <input ref=${ref} value=${f.text} spellcheck="false" autocomplete="off" placeholder="Find in the whole chat…" aria-label="Find in the whole chat"
+      <input ref=${ref} value=${f.text} spellcheck="false" autocomplete="off" placeholder=${f.agent ? `Find in [${f.agent}]'s steps…` : 'Find in the whole chat…'} aria-label=${f.agent ? `Find in [${f.agent}]'s steps` : 'Find in the whole chat'}
         aria-controls="find-hits" aria-activedescendant=${!f.folded && n ? 'hit-' + f.sel : undefined}
         onInput=${e => { set({ find: { ...S.find, text: e.target.value } }); askFind(false); }}
         onClick=${() => { if (S.find.folded) set({ find: { ...S.find, folded: false } }); }}
@@ -2783,7 +2908,9 @@ function FindBar() {
       <button class="x" title="close, staying here (Esc goes back)" aria-label="close the find" onMouseDown=${e => e.preventDefault()} onClick=${() => closeFind(false)}>×</button>
     </div>
     ${f.error && html`<div class="find-note warn">${f.error}</div>`}
-    ${!f.folded && (!typed ? html`<div class="find-note">Words to find in the whole chat, in any case: a message must hold them all, in any order, and a "quoted phrase" as it is. Your messages, Opt's, subagents' reports and imported chats; not tool calls or their output. Alt+M: only yours.</div>`
+    ${!f.folded && (!typed ? html`<div class="find-note">${f.agent
+        ? `Words to find in [${f.agent}]'s steps${S.agent?.cut ? ' this page holds (its latest)' : ''}, in any case: a message must hold them all, in any order, and a "quoted phrase" as it is. Your messages to it, Opt's, and its replies; not tool calls or their output. Alt+M: only yours.`
+        : 'Words to find in the whole chat, in any case: a message must hold them all, in any order, and a "quoted phrase" as it is. Your messages, Opt\'s, subagents\' reports and imported chats; not tool calls or their output. Alt+M: only yours.'}</div>`
       : asked && !f.total && !f.busy ? html`<div class="find-note">No ${f.askedMine ? 'message of yours' : 'message'} holds ${what}. Try fewer words, or part of one ("pars" finds "parser")${f.askedMine ? ', or all messages (Alt+M)' : ''}.</div>`
       : n > 0 && html`<div class="hits" id="find-hits" role="listbox" ref=${list} aria-label="matches, newest first">
           ${f.hits.map((h, j) => {
@@ -2797,7 +2924,7 @@ function FindBar() {
         </div>`)}
     <div class="find-hint">${f.folded
       ? '↑/↓ the next match, shown at once · Enter stays here · Esc goes back where you were · a click in the box: the list'
-      : '↑/↓ choose · Enter shows it in the chat · Alt+M only yours · Esc closes'}</div>
+      : `↑/↓ choose · Enter shows it ${f.agent ? 'in its steps' : 'in the chat'} · Alt+M only yours · Esc closes`}</div>
   </div></div>`;
 }
 
@@ -2840,7 +2967,7 @@ function Scroller() {
     else if (last > was.current.last && was.current.last >= 0) setNewer(true);
     was.current = { first, last };
     const j = S.jump; // a find's match, or the place a find's Esc goes back to
-    if (j && !j.loading && !j.done && vh.current) {
+    if (j && !j.agent && !j.loading && !j.done && vh.current) {
       j.done = true;
       const k = list.findIndex(it => it.m && it.m.i <= j.i && j.i <= (it.m.last ?? it.m.i));
       if (k < 0) return;
@@ -3009,7 +3136,7 @@ function App() {
     ${S.conn === 'closed' && html`<div class="banner">Lost opt-chat: reconnecting…</div>`}
     <div class=${'stage' + (S.full ? ' behind' : '')}>
       <div class="opt-pane" inert=${!!S.full}>
-        ${S.find && !S.memView && html`<${FindBar}/>`}
+        ${S.find && !S.find.agent && !S.memView && html`<${FindBar}/>`}
         ${S.memView ? html`<${MemView} lines=${S.mem} tick=${S.memTick} stored=${S.status?.viewLines}/>` : html`<${Scroller}/>`}
       </div>
       ${S.full && html`<${AgentFull} key=${S.full} a=${S.agent?.name === S.full ? S.agent : { name: S.full, steps: [], off: 0, loading: true }} s=${fullSub()}/>`}
@@ -3072,14 +3199,20 @@ addEventListener('keydown', e => {
   if (e.altKey && (e.code === 'KeyV' || e.code === 'KeyU') && !e.metaKey && !e.ctrlKey) { // Opt's view; up to the user's message
     e.preventDefault();
     e.stopPropagation();
-    if (e.code === 'KeyV') toggleMem(); else if (!S.full) document.querySelector('.mine')?.click();
+    if (e.code === 'KeyV') toggleMem(); else if (S.full) fullNav?.up(); else document.querySelector('.mine')?.click();
     return;
   }
   if ((e.metaKey || e.ctrlKey) && e.code === 'KeyF' && !e.altKey && !e.shiftKey) { // the find; in its box, in Opt's view or full screen: the browser's
-    if (e.target === findEl || S.memView || S.full) return;
+    if (e.target === findEl || S.memView) return;
     e.preventDefault();
     e.stopPropagation();
     openFind();
+    return;
+  }
+  if (e.key === 'End' && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && S.full && !S.find &&
+      (e.target === document.body || e.target.closest?.('.scroll') || e.target === inputEl && !inputEl.value)) {
+    e.preventDefault(); // the agent's log to its end
+    fullNav?.end();
     return;
   }
   if (e.key === 'End' && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && !S.full && !S.memView &&

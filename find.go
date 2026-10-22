@@ -13,7 +13,7 @@ import (
 // hold some words, newest first, a page at a time, and the log around one
 // of them, so the page can show a message tens of thousands back without
 // paging back through all that lies between. The log is in memory: a find
-// reads all of it: 25 ms or so on a log of 35,000 messages, 25 MB.
+// reads all of it: about 25 ms on a log of tens of thousands of messages.
 
 const (
 	findPage   = 30  // matches a find answers at once
@@ -49,9 +49,9 @@ func findTerms(text string) []string {
 // indexFold is where s first holds sub in any case, as strings.EqualFold
 // compares them, and where that ends; -1 when it does not. It looks for
 // each form of sub's first character with strings.Index, which is fast,
-// and compares the rest there. On a log of 35,000 messages, a regexp with
-// (?i) took ten times as long, and looking for the first two characters'
-// forms ("to", "To", "tO", "TO") half again as long.
+// and compares the rest there. On a log of tens of thousands of messages,
+// a regexp with (?i) took ten times as long, and looking for the first two
+// characters' forms ("ab", "Ab", "aB", "AB") half again as long.
 func indexFold(s, sub string) (int, int) {
 	if sub == "" {
 		return 0, 0

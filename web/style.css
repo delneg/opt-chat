@@ -15,6 +15,7 @@
   --code-bg: #f2f0e9;
   --border: #d5d3cb;
   --chip: #ebe9e1;
+  --blue-chip: #e6edf7; /* --blue on it 4.7:1 */
   --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
   font-size: 16px;
 }
@@ -71,7 +72,8 @@ a { color: var(--blue); }
 .tool .head { cursor: pointer; }
 .tool .name { font-weight: 600; }
 .tool .args { color: var(--dim); }
-.tool .took { color: var(--faint); margin-left: 1ch; white-space: nowrap; }
+/* how long a call ran, or has run so far: easy to find down the log */
+.tool .took { color: var(--blue); background: var(--blue-chip); font-weight: 600; font-size: .9em; padding: 0 .6ch; border-radius: 4px; margin-left: 1ch; white-space: nowrap; }
 .result { color: var(--dim); display: grid; grid-template-columns: 4ch 1fr; }
 .tool .result { cursor: pointer; }
 .tool .result .lines { white-space: pre-wrap; min-width: 0; }

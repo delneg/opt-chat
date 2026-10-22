@@ -11,6 +11,7 @@ import (
 	"os"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -86,6 +87,8 @@ func (a *Agent) subsLocked() []sub {
 type step struct {
 	Kind string `json:"kind"`
 	Text string `json:"text"`
+	At   int64  `json:"at,omitzero"`  // unix ms it was written; 0 in logs from before times were kept
+	Ref  string `json:"ref,omitzero"` // a tool call's id, on it and on its echo
 }
 
 type (
@@ -105,7 +108,23 @@ type (
 // stepsMax is how much of a log the rail gets at first: its end.
 const stepsMax = 512 << 10
 
-var stepStart = regexp.MustCompile(`(?m)^(task|on|opt|user|agent|tool|echo|loop|compacted): `)
+// stepStart is an entry's head: its kind, then, since times were kept,
+// "@" and the unix ms it was written, and on a tool call and its echo "#"
+// and the call's id; "tool@1761134400000#toolu_01: ". Logs from before
+// have the kind alone, "tool: ".
+var stepStart = regexp.MustCompile(`(?m)^(task|on|opt|user|agent|tool|echo|loop|compacted)(?:@(\d+)(?:#(\S+?))?)?: `)
+
+// stepHead is s's head in the log, as stepStart reads it.
+func stepHead(s step) string {
+	h := s.Kind
+	if s.At > 0 {
+		h += "@" + strconv.FormatInt(s.At, 10)
+		if s.Ref != "" && !strings.ContainsAny(s.Ref, " \t\r\n") {
+			h += "#" + s.Ref
+		}
+	}
+	return h + ": "
+}
 
 // steps reads the log of the subagent name: its end, at most stepsMax.
 func (a *Agent) steps(name string) ([]step, bool, error) {
@@ -141,22 +160,49 @@ func (a *Agent) steps(name string) ([]step, bool, error) {
 // parseSteps splits a log into its entries, each "kind: text" and a blank
 // line; a text's own blank line followed by such a start is taken for one.
 func parseSteps(b []byte) []step {
-	blank := []byte("\n\n")
-	var at [][]int
-	for _, m := range stepStart.FindAllSubmatchIndex(b, -1) {
-		if m[0] == 0 || bytes.HasSuffix(b[:m[0]], blank) {
-			at = append(at, m)
-		}
-	}
+	at := stepHeads(b)
 	out := []step{}
 	for j, m := range at {
 		end := len(b)
 		if j+1 < len(at) {
 			end = at[j+1][0]
 		}
-		out = append(out, step{Kind: string(b[m[2]:m[3]]), Text: string(bytes.TrimSuffix(b[m[1]:end], blank))})
+		s := step{Kind: string(b[m[2]:m[3]]), Text: string(bytes.TrimSuffix(b[m[1]:end], []byte("\n\n")))}
+		if m[4] >= 0 {
+			s.At, _ = strconv.ParseInt(string(b[m[4]:m[5]]), 10, 64)
+		}
+		if m[6] >= 0 {
+			s.Ref = string(b[m[6]:m[7]])
+		}
+		out = append(out, s)
 	}
 	return out
+}
+
+// stepHeads are the heads of a log's entries, as stepStart's submatch
+// indexes: each at the log's start or after a blank line.
+func stepHeads(b []byte) [][]int {
+	var at [][]int
+	for _, m := range stepStart.FindAllSubmatchIndex(b, -1) {
+		if m[0] == 0 || bytes.HasSuffix(b[:m[0]], []byte("\n\n")) {
+			at = append(at, m)
+		}
+	}
+	return at
+}
+
+// plainSteps is a log with each entry's head its kind alone, as logs had
+// before times were kept: what Opt reads of a subagent.
+func plainSteps(b []byte) []byte {
+	var out []byte
+	last := 0
+	for _, m := range stepHeads(b) {
+		out = append(out, b[last:m[0]]...)
+		out = append(out, b[m[2]:m[3]]...)
+		out = append(out, ": "...)
+		last = m[1]
+	}
+	return append(out, b[last:]...)
 }
 
 func nowMs() int64 { return time.Now().UnixMilli() }

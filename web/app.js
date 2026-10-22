@@ -1132,6 +1132,12 @@ function day(d) {
   return isNaN(t) ? '' : t.toLocaleDateString(undefined, { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric' });
 }
 
+// msOf is a date as unix ms: the chat's are ISO strings, a subagent's
+// steps' unix ms; NaN for none.
+function msOf(d) {
+  return d === undefined || d === null || d === '' ? NaN : new Date(d).getTime();
+}
+
 function elapsed(ms) {
   const s = Math.max(0, Math.floor(ms / 1000));
   return s < 60 ? s + 's' : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`;
@@ -1140,9 +1146,9 @@ function elapsed(ms) {
 // ---------------------------------------------------------------- the log
 
 // items turns the log into what the page shows: a message split for length
-// back in one piece, each tool call with its result, and a line where the
-// day changes.
-function items(msgs) {
+// back in one piece, each tool call with its result, and, unless days is
+// false, a line where the day changes.
+function items(msgs, days = true) {
   const joined = [];
   for (const m of msgs) {
     const p = joined[joined.length - 1];
@@ -1168,7 +1174,7 @@ function items(msgs) {
   let lastDay = '';
   for (const m of joined) {
     if (paired.has(m.i)) continue;
-    const d = day(m.date);
+    const d = days && day(m.date);
     if (d && d !== lastDay) { out.push({ sep: d, key: 'd' + m.i, i: m.i }); lastDay = d; }
     out.push({ m, echo: echoOf.get(m.i), key: m.i });
   }
@@ -1482,7 +1488,7 @@ function ToolMsg({ m, echo, state }) {
   const sum = echo && !failed && tool ? brief(tool.name, tool.input, lines, echo) : '';
   // how long it ran, from its call to its result, or so far while it runs
   const now = useClock(state === 'run' && !!m);
-  const ran = m ? (echo ? Date.parse(echo.date) : state === 'run' ? now : NaN) - Date.parse(m.date) : NaN;
+  const ran = m ? (echo ? msOf(echo.date) : state === 'run' ? now : NaN) - msOf(m.date) : NaN;
   return html`<div class=${cls} title=${when((m || echo).date)}>
     <span class="mark" aria-hidden="true">●</span>
     <div class="body">
@@ -2373,21 +2379,22 @@ function CompactButton({ s }) {
 
 // stepMsgs are a subagent's steps as the chat's messages: the user's own
 // messages to it as the user's, its task and Opt's tells marked as Opt's,
-// its text as Opt's replies, its tool calls and their output.
+// its text as Opt's replies, its tool calls and their output; each has its
+// time, but in logs from before times were kept.
 function stepMsgs(name, steps, off) {
   const out = [];
   steps.forEach((s, j) => {
-    const i = `${name}:${off + j}`;
+    const at = { i: `${name}:${off + j}`, date: s.at || undefined }; // unix ms
     switch (s.kind) {
-      case 'user': out.push({ kind: 'user', text: s.text, i }); break;
-      case 'task': out.push({ kind: 'user', from: 'task from Opt', text: s.text, i }); break;
-      case 'opt': out.push({ kind: 'user', from: 'Opt told it', text: s.text, i }); break;
-      case 'loop': out.push({ kind: 'user', text: 'Stop hook: ' + s.text, i }); break;
-      case 'agent': out.push({ kind: 'opt', text: s.text, i }); break;
-      case 'tool': case 'echo': out.push({ kind: s.kind, text: s.text, i }); break;
+      case 'user': out.push({ kind: 'user', text: s.text, ...at }); break;
+      case 'task': out.push({ kind: 'user', from: 'task from Opt', text: s.text, ...at }); break;
+      case 'opt': out.push({ kind: 'user', from: 'Opt told it', text: s.text, ...at }); break;
+      case 'loop': out.push({ kind: 'user', text: 'Stop hook: ' + s.text, ...at }); break;
+      case 'agent': out.push({ kind: 'opt', text: s.text, ...at }); break;
+      case 'tool': case 'echo': out.push({ kind: s.kind, text: s.text, ref: s.ref, ...at }); break;
       case 'compacted': { // "mid-task: " or, at rest, nothing before the sizes
         const mid = s.text.startsWith('mid-task: ');
-        out.push({ kind: 'note', text: `Its context was compacted ${mid ? 'mid-task, between two steps' : 'at rest'}: ` + s.text.replace(/^mid-task: /, '').replace(/(\d+) tokens to (\d+)/, (_, x, y) => `${k(+x)} tokens to ${k(+y)}`), i });
+        out.push({ kind: 'note', text: `Its context was compacted ${mid ? 'mid-task, between two steps' : 'at rest'}: ` + s.text.replace(/^mid-task: /, '').replace(/(\d+) tokens to (\d+)/, (_, x, y) => `${k(+x)} tokens to ${k(+y)}`), ...at });
         break;
       }
     }
@@ -2399,7 +2406,7 @@ function stepMsgs(name, steps, off) {
 // result runs while it is at work, else was cut short. The notices made
 // while it was full screen go after the steps they followed.
 function agentRows(a, busy, notes = []) {
-  const list = items(stepMsgs(a.name, a.steps, a.off)).map(it => ({ ...it, state: it.m.kind !== 'tool' ? '' : it.echo ? 'done' : busy ? 'run' : 'cut' }));
+  const list = items(stepMsgs(a.name, a.steps, a.off), false).map(it => ({ ...it, state: it.m.kind !== 'tool' ? '' : it.echo ? 'done' : busy ? 'run' : 'cut' }));
   if (!notes.length) return list;
   const out = [];
   let j = 0;

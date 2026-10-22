@@ -1808,9 +1808,9 @@ function Panel() {
 
 // Glyph is the spinner's star, as Claude Code's: its glyphs there and back,
 // 120 ms each. CSS turns them (style.css, .spin), so no frame renders the
-// page; with reduced motion it is a still ✻.
+// page.
 const glyphs = ['·', '✢', '✳', '✶', '✻', '✽', '✻', '✶', '✳', '✢'];
-const Glyph = memo(() => html`<span class="spin" aria-hidden="true">${glyphs.map((g, j) => html`<i class=${j === 4 ? 'rest' : ''} style=${{ '--k': j }}>${g}</i>`)}</span>`);
+const Glyph = memo(() => html`<span class="spin" aria-hidden="true">${glyphs.map((g, j) => html`<i style=${{ '--k': j }}>${g}</i>`)}</span>`);
 
 function Spinner({ turn, chars, queued }) {
   useClock(true); // its time, each second

@@ -88,7 +88,6 @@ a { color: var(--blue); }
 .diff .add { color: var(--green); }
 .cut-note { color: var(--red); }
 @keyframes pulse { 50% { opacity: .35; } }
-@media (prefers-reduced-motion: reduce) { .msg.tool.run > .mark, .msg.opt.live > .mark, .dot.moving { animation: none; } }
 
 /* markdown: a reply's own markup stays inside it (contain), whatever it is */
 .md { contain: paint; }
@@ -160,10 +159,6 @@ a { color: var(--blue); }
 .spin > i { grid-area: 1 / 1; font-style: normal; text-align: center; opacity: 0; animation: frame 1.2s linear infinite; animation-delay: calc(var(--k) * 120ms - 1.2s); }
 @keyframes frame { 0%, 9.99% { opacity: 1; } 10%, 100% { opacity: 0; } }
 @keyframes shimmer { to { color: color-mix(in srgb, currentColor 55%, var(--bg)); } }
-@media (prefers-reduced-motion: reduce) {
-  .spin, .spin > i { animation: none; }
-  .spin > i.rest { opacity: 1; }
-}
 .spinner .meta { color: var(--dim); }
 .spinner .meta button:hover { color: var(--fg); }
 .queue { padding: .1em 0 .3em; }
@@ -206,7 +201,6 @@ a { color: var(--blue); }
 .rec .keys button:hover { color: var(--fg); }
 .rec kbd { font-family: inherit; background: var(--chip); border-radius: 3px; padding: 0 .5ch; color: var(--dim); }
 .rec .quiet { flex-basis: 100%; color: var(--yellow); font-size: .85em; }
-@media (prefers-reduced-motion: reduce) { .rec .dot { animation: none; } }
 /* a voice message in the chat: it plays, and its words follow */
 .voice .player { display: flex; align-items: center; gap: 1ch; color: var(--dim); font-size: .9em; }
 .voice .play { width: 3ch; color: var(--accent); }
@@ -359,9 +353,6 @@ a { color: var(--blue); }
 .rail .empty { color: var(--faint); padding: .5em 1.2ch; }
 .rail-log { flex: 1; min-height: 0; overflow-y: auto; overflow-anchor: none; padding: .9em 1.5ch 1em; }
 .rail-log .edge { padding: 0 0 1em; }
-@media (prefers-reduced-motion: reduce) {
-  .rail.drawer { animation: none; }
-}
 .card .now .el { flex: none; padding-right: 1ch; }
 .card.on { background: var(--bg); box-shadow: 0 0 0 1px var(--blue); cursor: default; }
 
@@ -471,7 +462,6 @@ a { color: var(--blue); }
   0%, 35% { box-shadow: 0 0 0 2px var(--accent), 0 0 0 7px color-mix(in srgb, var(--accent) 14%, transparent); }
   100% { box-shadow: 0 0 0 2px transparent; }
 }
-@media (prefers-reduced-motion: reduce) { .row-m.flash { animation: none; box-shadow: 0 0 0 2px var(--accent); } }
 /* the past a find showed: its bottom, and the way back to now */
 .edge.below { padding: .5em 0 1em; }
 .edge.below button { color: var(--blue); }

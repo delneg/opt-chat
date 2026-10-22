@@ -60,6 +60,10 @@ const S = {
   memView: false, // the chat shown as Opt's view (Alt+V, /view) instead of the log
   mem: null, // the view's lines, once asked: { id, n, text, built, from, to }
   memTick: 0, // a block opened, shut or zoomed: draw again
+  find: null, // the find box (⌘/Ctrl+F, /find), open: { text, mine, hits, total, more, terms, sel, shown, folded, busy, asked }
+  past: false, // the log shows a stretch of the past a find went to, not its end: the end waits in liveMsgs
+  newer: false, // asking for the messages after that stretch
+  jump: null, // a message to show: { i, terms, seq, loading, offset, quiet, done }
 };
 if (S.full) S.agent = { name: S.full, steps: [], off: 0, cut: false, loading: true }; // its steps come with hello
 
@@ -143,14 +147,23 @@ function onUpdate(u) {
   switch (u.t) {
     case 'hello': {
       retries = 0;
-      const msgs = trim(u.reset ? u.msgs : S.msgs.concat(u.msgs.filter(m => m.i > lastI)));
-      if (u.reset) toEnd = true; // pages loaded above are gone: show the end
-      lastI = msgs.length ? msgs[msgs.length - 1].i : -1;
+      const patch = {};
+      if (S.past) { // the stretch shown stays: a logged message never changes; the end catches up beneath
+        liveMsgs = trim(u.reset ? u.msgs : liveMsgs.concat(u.msgs.filter(m => m.i > lastI)), true);
+        if (liveMsgs.length) lastI = liveMsgs[liveMsgs.length - 1].i;
+        patch.newer = false;
+      } else {
+        const msgs = patch.msgs = trim(u.reset ? u.msgs : S.msgs.concat(u.msgs.filter(m => m.i > lastI)));
+        if (u.reset) toEnd = true; // pages loaded above are gone: show the end
+        lastI = msgs.length ? msgs[msgs.length - 1].i : -1;
+      }
       set({
-        conn: 'open', msgs, total: u.total, turn: u.turn, turnChars: 0, live: u.turn.text || '', thinking: u.turn.thinking || '', input: u.turn.input || '',
+        ...patch, conn: 'open', total: u.total, turn: u.turn, turnChars: 0, live: u.turn.text || '', thinking: u.turn.thinking || '', input: u.turn.input || '',
         queue: u.queue, asks: u.asks || [], status: u.status, last: u.last, inputs: mergeInputs(S.inputs, u.inputs), older: false,
-        asides: mergeAsides(u.reset ? [] : S.asides, u.asides || []),
+        asides: mergeAsides(u.reset && !S.past ? [] : S.asides, u.asides || []),
       });
+      if (S.jump?.loading) send({ t: 'around', id: S.jump.i }); // asked before the connection dropped
+      if (S.find?.busy) askFind(true);
       for (const s of sending.values()) send(s.payload); // the connection may have dropped it: the key makes it once
       if (S.panel) { set({ panel: { ...S.panel, busy: true, acting: false } }); send({ t: S.panel.kind }); } // a reply lost with the connection
       if (S.picker && (!S.models || S.modelsError)) send({ t: 'models' });
@@ -166,7 +179,9 @@ function onUpdate(u) {
       if (!fresh.length) break;
       if (fresh[0].i !== lastI + 1) { ws.close(); break; } // a gap: the reconnect catches up
       lastI = fresh[fresh.length - 1].i;
-      const patch = { msgs: trim(S.msgs.concat(fresh)), total: lastI + 1 };
+      const patch = { total: lastI + 1 };
+      if (S.past) liveMsgs = trim(liveMsgs.concat(fresh), true); // the end, beneath the past shown
+      else patch.msgs = trim(S.msgs.concat(fresh));
       if (fresh.some(m => m.kind === 'opt')) { patch.live = ''; if (document.hidden) patch.unseen = true; }
       if (fresh.some(m => m.kind === 'tool')) patch.input = '';
       const typed = fresh.filter(m => m.kind === 'user' && !m.part).map(m => histText(m.text)).filter(Boolean);
@@ -213,6 +228,30 @@ function onUpdate(u) {
     case 'history': { // asked before a reconnect's hello reset the log: not the page before it now
       const fits = u.msgs.length && u.msgs[u.msgs.length - 1].i + 1 === S.msgs[0]?.i;
       set({ msgs: fits ? u.msgs.concat(S.msgs) : S.msgs, asides: fits ? mergeAsides(u.asides || [], S.asides) : S.asides, older: false });
+      break;
+    }
+    case 'newer': { // the page after the past shown, scrolling down: until it meets the end
+      const fits = S.past && S.msgs.length && (!u.msgs.length || u.msgs[0].i === S.msgs[S.msgs.length - 1].i + 1);
+      if (!fits) { set({ newer: false }); break; }
+      set({ ...meetEnd(S.msgs.concat(u.msgs)), asides: mergeAsides(S.asides, u.asides || []), newer: false });
+      break;
+    }
+    case 'around': { // the log around a message a find went to
+      const j = S.jump;
+      if (!j?.loading || j.i !== u.id) break; // another jump since
+      if (u.error || !u.msgs.length) { set({ jump: null, find: S.find && { ...S.find, error: u.error || 'Not found.' } }); break; }
+      if (!S.past) liveMsgs = S.msgs;
+      set({ ...meetEnd(u.msgs), asides: mergeAsides(S.asides, u.asides || []), jump: { ...j, loading: false }, older: false, newer: false });
+      break;
+    }
+    case 'found': {
+      const f = S.find;
+      if (!f || u.seq !== findSeq) break; // typed on since, or closed
+      const more = u.before > 0;
+      set({ find: { ...f, hits: more ? f.hits.concat(u.hits) : u.hits, total: u.total, more: u.more, terms: u.terms, busy: false, error: '',
+        asked: u.text, askedMine: u.mine, sel: more ? f.sel : 0, shown: more ? f.shown : -1, folded: more && f.folded } });
+      if (more && showNext) { showNext = false; showHit(S.find.shown + 1); }
+      if (!more && showFirst) { showFirst = false; showHit(0); }
       break;
     }
     case 'paths': {
@@ -280,8 +319,8 @@ function mergeInputs(a, b) {
 // shows without its start.
 const keep = 1500, keepMax = 3000;
 let atEnd = true; // the log is scrolled to its end
-function trim(msgs) {
-  if (msgs.length <= keepMax || !atEnd) return msgs;
+function trim(msgs, out) { // out: out of sight, beneath the past shown
+  if (msgs.length <= keepMax || !(atEnd || out)) return msgs;
   const j = msgs.length - keep;
   const at = msgs.findIndex((m, x) => x >= j && m.kind === 'user' && !m.part);
   return msgs.slice(at >= 0 && at < msgs.length - 100 ? at : j);
@@ -290,6 +329,137 @@ function trim(msgs) {
 function loadOlder() {
   if (S.older || !S.msgs.length || S.msgs[0].i === 0) return;
   if (send({ t: 'history', before: S.msgs[0].i })) set({ older: true });
+}
+
+// ---------------------------------------------------------------- the past
+//
+// A find shows a message far back without paging back through all that lies
+// between: the log becomes a stretch of the past around it (S.past), which
+// scrolls both ways, older as ever and newer a page at a time, until it
+// meets the end again. Meanwhile the end, as it was and as live messages
+// come, waits in liveMsgs, out of sight: nothing new moves the log, and
+// End, "↓ back to now" or a message sent brings the end back.
+let liveMsgs = null;
+
+function loadNewer() {
+  if (!S.past || S.newer || !S.msgs.length) return;
+  if (send({ t: 'newer', id: S.msgs[S.msgs.length - 1].i })) set({ newer: true });
+}
+
+// meetEnd is msgs, the past shown, joined to the end beneath it once they
+// meet: the log is the live one again.
+function meetEnd(msgs) {
+  const last = msgs.length ? msgs[msgs.length - 1].i : -1, live = liveMsgs || [];
+  if (live.length ? last + 1 >= live[0].i : last >= lastI) {
+    liveMsgs = null;
+    return { msgs: msgs.concat(live.filter(m => m.i > last)), past: false };
+  }
+  return { msgs, past: true };
+}
+
+// toNow shows the end of the log, the live one, at the next render.
+function toNow() {
+  if (S.past) {
+    const msgs = liveMsgs || S.msgs;
+    liveMsgs = null;
+    set({ msgs, past: false, newer: false, older: false });
+  }
+  toEnd = true;
+  set({});
+}
+
+// has is whether msgs hold message i.
+function has(msgs, i) { return msgs.length > 0 && msgs[0].i <= i && i <= msgs[msgs.length - 1].i; }
+
+// jumpTo shows message i in the log, its words terms marked a moment: at
+// once if the page holds it, else once the log around it comes. offset
+// puts its top that far below the log's (a place given back); quiet marks
+// nothing.
+let jumpSeq = 0;
+function jumpTo(i, terms, { offset, quiet } = {}) {
+  if (S.full && !leaveFull()) return;
+  if (S.memView) toggleMem();
+  const j = { i, terms: terms || [], seq: ++jumpSeq, offset, quiet: !!quiet };
+  if (has(S.msgs, i)) { set({ jump: j }); return; }
+  if (S.past && liveMsgs && has(liveMsgs, i)) { // it is at the end, as it was
+    const msgs = liveMsgs;
+    liveMsgs = null;
+    set({ msgs, past: false, newer: false, jump: j });
+    return;
+  }
+  set({ jump: { ...j, loading: true } });
+  send({ t: 'around', id: i });
+}
+
+// here is where the log is: at its end, or the message at its top and how
+// far below the log's top that message starts, for a find's Esc to come back to.
+function here() {
+  const el = document.querySelector('.opt-pane > .scroll:not(.mem)'), col = el?.querySelector('.column.log');
+  if (!el || !col || (!S.past && atEnd)) return { end: true };
+  const box = el.getBoundingClientRect(), x = col.getBoundingClientRect().left + col.clientWidth / 3;
+  for (const dy of [4, 16, 32, 64, 96, 160, 240]) {
+    const row = document.elementFromPoint(x, box.top + dy)?.closest('.row-m');
+    if (row) return { i: +row.dataset.i, top: row.getBoundingClientRect().top - box.top };
+  }
+  return { end: !S.past };
+}
+
+// markFound marks a message a find went to, once it is in the page: a ring
+// around it a moment, and its matching words, with the CSS Highlight API
+// (the page's own nodes untouched), the first of them scrolled into sight:
+// a long message's may be far below its start. A long message of the
+// user's, folded, opens when they are past its fold.
+let markSeq = 0;
+function markFound(scroller, i, terms) {
+  const seq = ++markSeq;
+  let tries = 0;
+  const step = () => {
+    if (seq !== markSeq || !scroller.isConnected) return;
+    const row = scroller.querySelector(`.row-m[data-i="${i}"]`);
+    if (!row) { if (++tries < 60) requestAnimationFrame(step); return; }
+    const ranges = termRanges(row, terms);
+    const fold = !ranges.length && row.querySelector('.msg.user > .body > button.more');
+    if (fold && /expand/.test(fold.textContent) && tries < 60) { tries++; fold.click(); requestAnimationFrame(step); return; }
+    row.classList.add('flash');
+    setTimeout(() => row.classList.remove('flash'), 2400);
+    if (window.Highlight && CSS.highlights) {
+      if (ranges.length) CSS.highlights.set('find', new Highlight(...ranges)); else CSS.highlights.delete('find');
+      setTimeout(() => { if (seq === markSeq) CSS.highlights.delete('find'); }, 8000);
+    }
+    if (!ranges.length) return;
+    setTimeout(() => { // once virtua is done placing it
+      if (seq !== markSeq) return;
+      const r = ranges[0].getBoundingClientRect(), box = scroller.getBoundingClientRect();
+      if (r.height && (r.top < box.top + 8 || r.bottom > box.bottom - 8)) scroller.scrollTop += r.top - box.top - box.height * 0.3;
+    }, 150);
+  };
+  requestAnimationFrame(() => requestAnimationFrame(step));
+}
+
+function unmark() {
+  markSeq++;
+  if (window.Highlight && CSS.highlights) CSS.highlights.delete('find');
+}
+
+// termRanges are the places in el's text that hold one of terms, in any
+// case: at most 200.
+function termRanges(el, terms) {
+  const out = [], lower = terms.map(t => t.toLowerCase()).filter(Boolean);
+  if (!lower.length) return out;
+  const walk = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+  for (let n = walk.nextNode(); n && out.length < 200; n = walk.nextNode()) {
+    const s = n.data.toLowerCase();
+    if (s.length !== n.data.length) continue; // a case changes its length: offsets would be off
+    for (const t of lower) {
+      for (let at = s.indexOf(t); at >= 0 && out.length < 200; at = s.indexOf(t, at + t.length)) {
+        const r = new Range();
+        r.setStart(n, at);
+        r.setEnd(n, at + t.length);
+        out.push(r);
+      }
+    }
+  }
+  return out.sort((a, b) => a.compareBoundaryPoints(Range.START_TO_START, b));
 }
 
 // ---------------------------------------------------------------- input
@@ -476,6 +646,7 @@ const commands = [
   ['/status', 'Claude Code\'s version and account, this run\'s settings, the view and the plan\'s usage'],
   ['/usage', 'the plan\'s limits, what uses them, and what Opt\'s calls spent: day, week or run'],
   ['/btw', 'a side question: answered beside the chat, which never sees it'],
+  ['/find', 'find words in the whole chat, and show the message where it is (⌘/Ctrl+F)'],
   ['/view', 'the chat as Opt sees it, its view, each line opening into its halves; again: the log (Alt+V)'],
   ['/tree', 'the whole memory, every level of the tree, in a new tab'],
   ['/help', 'list the commands'],
@@ -548,6 +719,8 @@ async function submit(now) {
   if (S.conn !== 'open') { notice('warn', 'Not connected: your message stays in the input until opt-chat is back.'); return; }
   if (/^\/model\s*$/.test(inputEl.value) && !S.atts.length) { setInput(''); openPicker(); return; }
   if (/^\/view\s*$/.test(inputEl.value) && !S.atts.length) { setInput(''); toggleMem(); return; }
+  const find = inputEl.value.match(/^\/find(?:\s([\s\S]*))?$/);
+  if (find && !S.atts.length) { setInput(''); openFind(find[1] || ''); return; }
   if (/^\/tree\s*$/.test(inputEl.value) && !S.atts.length) { setInput(''); window.open('/tree', '_blank', 'noopener'); return; }
   const panel = inputEl.value.match(/^\/(mcp|skills|plugins)\s*$/);
   if (panel && !S.atts.length) { setInput(''); openPanel(panel[1]); return; }
@@ -575,7 +748,7 @@ async function submit(now) {
     ? { t: 'tellAgent', name: to, text, files, paths, skip: [...S.skipped], chosen: [...S.chosen], seq, key: pageKey + ':' + seq }
     : { t: 'send', text, files, paths, skip: [...S.skipped], chosen: [...S.chosen], now, seq, key: pageKey + ':' + seq };
   if (!send(payload)) return;
-  if (agent) fullToEnd = true; else toEnd = true; // what was sent, and its answer, show
+  if (agent) fullToEnd = true; else toNow(); // what was sent, and its answer, show: the end, from the past too
   if (to && !agent) notice('info', `${text.trim().split(/\s/)[0]} is Opt's: it went to Opt's chat.`);
   sending.set(seq, { payload, text, files: S.atts, to });
   if (histText(text) && !isCommand(text)) set({ inputs: mergeInputs(S.inputs, [histText(text)]) });
@@ -591,6 +764,7 @@ function escape() {
   if (S.picker) { closePicker(); return; }
   if (S.panel) { closePanel(); return; }
   if (S.help) { set({ help: false }); return; } // one Esc, one thing: never a stop by surprise
+  if (S.find) { closeFind(!!S.find.moved); return; }
   if (S.full) { // the agent's, not Opt's: it stops the agent at work, else goes back to Opt
     if (S.ctx) set({ ctx: null });
     else if (fullBusy()) stopFull();
@@ -1005,10 +1179,11 @@ function items(msgs) {
 // the notices, each after the message it followed. A tool call with no
 // result is running when the turn underway made it (from on), else it was
 // cut short.
-function rows(msgs, phase, from, notices, asides) {
+function rows(msgs, phase, from, notices, asides, past) {
   const first = msgs.length ? msgs[0].i : 0; // asides before the page's messages wait for theirs
-  const notes = notices.map(n => ({ note: n, after: n.after, key: 'n' + n.id }))
-    .concat(asides.filter(a => a.after >= first - 1).map(a => ({ aside: a, after: a.after, key: 'b' + a.date })))
+  const last = past && msgs.length ? msgs[msgs.length - 1].i : Infinity; // a stretch of the past: what came after waits too
+  const notes = notices.filter(n => n.after <= last).map(n => ({ note: n, after: n.after, key: 'n' + n.id }))
+    .concat(asides.filter(a => a.after >= first - 1 && a.after <= last).map(a => ({ aside: a, after: a.after, key: 'b' + a.date })))
     .sort((a, b) => a.after - b.after);
   const out = [];
   let j = 0;
@@ -1029,7 +1204,8 @@ function row(it) {
   if (it.note) return html`<${Notice} key=${it.key} n=${it.note}/>`;
   if (it.aside) return html`<${AsideView} key=${it.key} a=${it.aside}/>`;
   if (it.sep) return html`<div class="sep" key=${it.key}><span class="lbl">${it.sep}</span></div>`;
-  return html`<${MsgView} key=${it.key} m=${it.m} echo=${it.echo} state=${it.state}/>`;
+  // data-i: a find finds its message in the page by it (markFound, here)
+  return html`<div class="row-m" key=${it.key} data-i=${it.m.i}><${MsgView} m=${it.m} echo=${it.echo} state=${it.state}/></div>`;
 }
 
 // Log is the chat, virtualized: only the rows in view and near it are in
@@ -1775,6 +1951,8 @@ function Help() {
     ['Alt+O · ⤢', 'a subagent full screen: the bar talks to it, Esc stops it at work; Alt+O, ← Opt or Esc at rest: back to Opt'],
     ['Alt+V · /view', 'the chat as Opt sees it: its view, each line opening into its halves; again: the log'],
     ['Alt+U · ↑ button', 'up to your last message out of sight above'],
+    ['⌘/Ctrl+F · /find', 'find words in the whole chat: ↑/↓ choose, Enter shows the message, Alt+M only yours, Esc goes back; again in the box: the browser\'s find'],
+    ['End · ↓ back to now', 'from the past a find showed, or anywhere up the log, back to the latest messages'],
     ['/tree', 'the whole memory, every level of the tree, in a new tab'],
     ['Alt+K', 'record a voice message; Alt+K or Enter sends it with the input, Esc drops it; type meanwhile, Shift+Enter breaks the line'],
     ['/help', 'the commands'],
@@ -2441,6 +2619,181 @@ function FullBar({ s }) {
   </div>`;
 }
 
+// ---------------------------------------------------------------- find
+//
+// ⌘/Ctrl+F or /find opens a box at the top of the chat that finds words in
+// the whole log, which the browser's own find can't: the log is
+// virtualized and paged, so most of it is not in the page. Typing asks
+// opt-chat (find.go), which answers the matches newest first; ↑/↓ choose,
+// Enter or a click shows one in the log (jumpTo), and the list folds to the
+// box, where ↑/↓ go on to the next match. Enter there stays, Esc goes back
+// where the log was. UniiChat has no such search; its "↓" beside the jump
+// up (its pull request 23) is the "back to now" here.
+let findEl = null, findTimer = 0, findSeq = 0, findFrom = null, showNext = false, showFirst = false;
+
+function openFind(text) {
+  if (S.full && !leaveFull()) return;
+  if (S.memView) toggleMem();
+  if (!S.find) {
+    findFrom = here();
+    set({ find: { text: '', mine: false, hits: [], total: 0, more: 0, terms: [], sel: 0, shown: -1, folded: false, busy: false, asked: null, error: '' }, help: false });
+  } else set({ find: { ...S.find, folded: false } });
+  if (text !== undefined && text.trim()) { set({ find: { ...S.find, text: text.trim() } }); askFind(true); }
+  requestAnimationFrame(() => { findEl?.focus(); findEl?.select(); });
+}
+
+// askFind asks for the matches of what the box holds: at once, or after a
+// pause in the typing.
+function askFind(now) {
+  clearTimeout(findTimer);
+  if (!now) showFirst = false;
+  const f = S.find;
+  if (!f) return;
+  if (!f.text.trim() && !f.mine) { findSeq++; set({ find: { ...f, hits: [], total: 0, more: 0, terms: [], busy: false, asked: null, shown: -1, folded: false, error: '' } }); return; }
+  findTimer = setTimeout(() => {
+    const g = S.find;
+    if (!g) return;
+    const seq = ++findSeq;
+    if (send({ t: 'find', text: g.text, mine: g.mine, seq })) set({ find: { ...g, busy: true } });
+  }, now ? 0 : 150);
+}
+
+function loadMore(show) {
+  const f = S.find;
+  if (!f?.more || f.busy) return;
+  showNext = !!show;
+  const seq = ++findSeq;
+  if (send({ t: 'find', text: f.asked ?? f.text, mine: f.askedMine ?? f.mine, before: f.more, seq })) set({ find: { ...f, busy: true } });
+}
+
+function toggleMine() {
+  const f = S.find;
+  set({ find: { ...f, mine: !f.mine } });
+  askFind(true);
+  findEl?.focus();
+}
+
+// showHit shows the jth match in the log, and folds the list to the box.
+function showHit(j) {
+  const f = S.find, h = f?.hits[j];
+  if (!h) return;
+  set({ find: { ...f, sel: j, shown: j, folded: true, moved: true, error: '' } });
+  jumpTo(h.i, f.terms);
+}
+
+// closeFind shuts the box: the log stays where it is, or with back goes
+// back where it was when the box opened.
+function closeFind(back) {
+  clearTimeout(findTimer);
+  findSeq++;
+  showNext = showFirst = false;
+  const from = findFrom;
+  findFrom = null;
+  set({ find: null });
+  if (back && from) {
+    unmark();
+    if (from.end) toNow(); else jumpTo(from.i, null, { offset: from.top, quiet: true });
+  }
+  inputEl?.focus();
+}
+
+function findKey(e) {
+  if (e.isComposing || e.keyCode === 229) return;
+  const f = S.find;
+  if ((e.metaKey || e.ctrlKey) && e.code === 'KeyF') return; // a second ⌘F: the browser's own find
+  if (e.altKey && e.code === 'KeyM' && !e.metaKey && !e.ctrlKey) { e.preventDefault(); toggleMine(); return; } // Option+M types µ on a Mac
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  const n = f.hits.length;
+  switch (e.key) {
+    case 'ArrowDown': case 'ArrowUp': case 'PageDown': case 'PageUp': {
+      e.preventDefault();
+      const d = { ArrowDown: 1, ArrowUp: -1, PageDown: 8, PageUp: -8 }[e.key];
+      if (f.folded) { // on to the next match, shown at once
+        const j = f.shown + Math.sign(d);
+        if (j >= 0 && j < n) showHit(j); else if (j >= n) loadMore(true);
+        return;
+      }
+      if (!n) return;
+      if (d > 0 && f.sel + d >= n) loadMore();
+      set({ find: { ...f, sel: Math.max(0, Math.min(n - 1, f.sel + d)) } });
+      return;
+    }
+    case 'Enter':
+      e.preventDefault();
+      if (f.folded) closeFind(false); // stay
+      else if ((f.text.trim() || f.mine) && (f.busy || f.text !== f.asked || f.mine !== !!f.askedMine)) { showFirst = true; askFind(true); } // typed faster than the answer: its first, once it comes
+      else if (n) showHit(Math.min(f.sel, n - 1));
+      return;
+    case 'Escape':
+      e.preventDefault();
+      e.stopPropagation(); // the box's, not the turn's
+      closeFind(!!f.moved); // back, if a match moved the log
+  }
+}
+
+// hitWho is who wrote a match, as its mark and name.
+function hitWho(h) {
+  switch (h.kind) {
+    case 'user': return ['▸', h.imported ? 'you, imported' : 'you'];
+    case 'opt': return ['●', 'Opt'];
+    case 'ai': return ['○', 'AI, imported'];
+    case 'work': return h.who?.startsWith('user → ') ? ['→', `you → [${h.who.slice(7)}]`] : ['◆', `[${h.who || 'subagent'}]`];
+    default: return ['※', 'note'];
+  }
+}
+
+function hitDate(d) {
+  const t = new Date(d);
+  return isNaN(t) ? '' : t.toLocaleString(undefined, { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
+// withMarks is s with each place it holds one of terms marked.
+function withMarks(s, terms) {
+  const ts = terms.filter(Boolean).sort((a, b) => b.length - a.length).map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  if (!ts.length) return s;
+  return s.split(new RegExp(`(${ts.join('|')})`, 'giu')).map((p, j) => j % 2 ? html`<mark>${p}</mark>` : p);
+}
+
+function FindBar() {
+  const f = S.find, ref = useRef(), list = useRef();
+  useEffect(() => { findEl = ref.current; findEl.focus(); return () => { if (findEl === ref.current) findEl = null; }; }, []);
+  useEffect(() => { list.current?.querySelector('.hit.sel')?.scrollIntoView({ block: 'nearest' }); }, [f.sel, f.hits, f.folded]);
+  const n = f.hits.length, asked = f.asked !== null;
+  const typed = f.text.trim() || f.mine;
+  const count = f.busy && !n ? 'finding…' : !asked || !typed ? '' : !f.total ? 'no match'
+    : f.shown >= 0 ? `${f.shown + 1} of ${f.total.toLocaleString()}` : `${f.total.toLocaleString()} message${f.total === 1 ? '' : 's'}`;
+  const what = f.asked?.trim() ? `"${f.asked.trim()}"` : 'that';
+  return html`<div class="findbar" role="search"><div class="column">
+    <div class="find-box">
+      <span class="gt" aria-hidden="true">⌕</span>
+      <input ref=${ref} value=${f.text} spellcheck="false" autocomplete="off" placeholder="Find in the whole chat…" aria-label="Find in the whole chat"
+        aria-controls="find-hits" aria-activedescendant=${!f.folded && n ? 'hit-' + f.sel : undefined}
+        onInput=${e => { set({ find: { ...S.find, text: e.target.value } }); askFind(false); }}
+        onClick=${() => { if (S.find.folded) set({ find: { ...S.find, folded: false } }); }}
+        onKeyDown=${findKey}/>
+      <button class=${'only' + (f.mine ? ' on' : '')} aria-pressed=${f.mine} title="only your own messages (Alt+M)" onMouseDown=${e => e.preventDefault()} onClick=${toggleMine}>only mine</button>
+      <span class="count" aria-live="polite">${count}</span>
+      <button class="x" title="close, staying here (Esc goes back)" aria-label="close the find" onMouseDown=${e => e.preventDefault()} onClick=${() => closeFind(false)}>×</button>
+    </div>
+    ${f.error && html`<div class="find-note warn">${f.error}</div>`}
+    ${!f.folded && (!typed ? html`<div class="find-note">Words to find in the whole chat, in any case: a message must hold them all, in any order, and a "quoted phrase" as it is. Your messages, Opt's, subagents' reports and imported chats; not tool calls or their output. Alt+M: only yours.</div>`
+      : asked && !f.total && !f.busy ? html`<div class="find-note">No ${f.askedMine ? 'message of yours' : 'message'} holds ${what}. Try fewer words, or part of one ("toy" finds "toying")${f.askedMine ? ', or all messages (Alt+M)' : ''}.</div>`
+      : n > 0 && html`<div class="hits" id="find-hits" role="listbox" ref=${list} aria-label="matches, newest first">
+          ${f.hits.map((h, j) => {
+            const [mark, who] = hitWho(h);
+            return html`<div class=${'hit' + (j === f.sel ? ' sel' : '') + (j === f.shown ? ' shown' : '')} id=${'hit-' + j} key=${h.i} role="option" aria-selected=${j === f.sel}
+                title=${when(h.date)} onMouseDown=${e => e.preventDefault()} onClick=${() => showHit(j)}>
+              <span class="mark" aria-hidden="true">${mark}</span><span class="who">${who}<span class="when"> · ${hitDate(h.date)}</span></span>
+              <span class="snip">${withMarks(h.snip, f.terms)}</span></div>`;
+          })}
+          ${f.more > 0 && html`<button class="hit more" onMouseDown=${e => e.preventDefault()} onClick=${() => loadMore()}>${f.busy ? 'loading…' : `… ${(f.total - n).toLocaleString()} more, older (↓ at the last, or click)`}</button>`}
+        </div>`)}
+    <div class="find-hint">${f.folded
+      ? '↑/↓ the next match, shown at once · Enter stays here · Esc goes back where you were · a click in the box: the list'
+      : '↑/↓ choose · Enter shows it in the chat · Alt+M only yours · Esc closes'}</div>
+  </div></div>`;
+}
+
 function Scroller() {
   const ref = useRef(), inner = useRef(), edge = useRef(), vh = useRef();
   const stick = useRef(true), was = useRef({ first: -1, last: -1 });
@@ -2450,7 +2803,7 @@ function Scroller() {
   const toBottom = () => { const el = ref.current; if (el) el.scrollTop = el.scrollHeight; };
   const first = S.msgs.length ? S.msgs[0].i : -1, last = lastI;
   const shift = was.current.first >= 0 && first >= 0 && first !== was.current.first; // older came in above, or the oldest went
-  const list = useMemo(() => rows(S.msgs, S.turn.phase, S.turn.from || 0, S.notices, S.asides), [S.msgs, S.turn.phase, S.turn.from, S.notices, S.asides]);
+  const list = useMemo(() => rows(S.msgs, S.turn.phase, S.turn.from || 0, S.notices, S.asides, S.past), [S.msgs, S.turn.phase, S.turn.from, S.notices, S.asides, S.past]);
   const onResize = useMemo(() => () => { if (stick.current) toBottom(); }, []);
   // Up to the user's message, after UniiChat's (its pull request 23,
   // https://github.com/VictorTaelin/UniiChat/pull/23): the button goes up to
@@ -2474,12 +2827,20 @@ function Scroller() {
     }));
   };
   useLayoutEffect(() => {
-    const el = ref.current;
     checkUp();
     if (toEnd) { toEnd = false; stick.current = atEnd = true; setNewer(false); toBottom(); }
     else if (stick.current) toBottom();
     else if (last > was.current.last && was.current.last >= 0) setNewer(true);
     was.current = { first, last };
+    const j = S.jump; // a find's match, or the place a find's Esc goes back to
+    if (j && !j.loading && !j.done && vh.current) {
+      j.done = true;
+      const k = list.findIndex(it => it.m && it.m.i <= j.i && j.i <= (it.m.last ?? it.m.i));
+      if (k < 0) return;
+      stick.current = atEnd = false;
+      vh.current.scrollToIndex(k, { align: 'start', offset: j.offset !== undefined ? -Math.round(j.offset) : -Math.round(ref.current.clientHeight * 0.2) });
+      if (!j.quiet) markFound(ref.current, list[k].m.i, j.terms);
+    }
   });
   useEffect(() => {
     const ro = new ResizeObserver(() => {
@@ -2492,21 +2853,25 @@ function Scroller() {
     return () => ro.disconnect();
   }, []);
   const onScroll = () => {
-    const el = ref.current;
-    stick.current = atEnd = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    const el = ref.current, below = el.scrollHeight - el.scrollTop - el.clientHeight;
+    stick.current = atEnd = below < 80 && !S.past; // the past's bottom is not the end
     if (stick.current) setNewer(false);
     if (el.scrollTop < 600) loadOlder();
+    if (S.past && below < 600) loadNewer();
     checkUp();
   };
+  const now = () => { stick.current = atEnd = true; setNewer(false); toNow(); };
   return html`<div class="scroll" ref=${ref} onScroll=${onScroll}>
     <div class="column log" ref=${inner} role="log" aria-live="polite" aria-busy=${!!S.live}>
       <div class="edge" ref=${edge}>${S.conn === 'connecting' ? 'Connecting…' : first > 0 ? (S.older ? 'Loading older messages…' : '↑ older messages') : S.msgs.length ? 'The beginning of the chat' : 'An empty chat: say something.'}</div>
       <${Log} list=${list} shift=${shift} margin=${margin} scroller=${ref} onResize=${onResize} handle=${vh}/>
-      ${S.thinking && (S.turn.phase === 'thinking') && html`<div class="thinking"><div>${S.thinking}</div></div>`}
-      ${S.input && S.turn.phase === 'tool' && S.turn.tool && html`<${LiveTool} name=${S.turn.tool} raw=${S.input}/>`}
-      ${S.live && html`<div class="msg opt live"><span class="mark" aria-hidden="true">●</span><div class="body"><${Markdown} text=${S.live} live=${true}/></div></div>`}
+      ${S.past ? html`<div class="edge below">${S.newer ? 'Loading newer messages…' : html`↓ newer messages: scroll on, or <button onClick=${now}>back to now</button> (End)`}</div>` : html`
+        ${S.thinking && (S.turn.phase === 'thinking') && html`<div class="thinking"><div>${S.thinking}</div></div>`}
+        ${S.input && S.turn.phase === 'tool' && S.turn.tool && html`<${LiveTool} name=${S.turn.tool} raw=${S.input}/>`}
+        ${S.live && html`<div class="msg opt live"><span class="mark" aria-hidden="true">●</span><div class="body"><${Markdown} text=${S.live} live=${true}/></div></div>`}`}
     </div>
-    ${newer && html`<div class="newer"><button onClick=${() => { stick.current = atEnd = true; setNewer(false); toBottom(); }}>↓ new messages</button></div>`}
+    ${S.past ? html`<div class="newer past"><button title="back to the latest messages (End)" onClick=${now}>↓ back to now</button></div>`
+      : newer && html`<div class="newer"><button onClick=${() => { stick.current = atEnd = true; setNewer(false); toBottom(); }}>↓ new messages</button></div>`}
     ${up && html`<div class="column up"><button class="mine" title="up to your message (Alt+U)" aria-label="up to your message" onClick=${jumpUp}>
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 15l6-6 6 6"/></svg></button></div>`}
   </div>`;
@@ -2533,7 +2898,7 @@ function toggleMem() {
   const on = !S.memView;
   set({ memView: on, mem: null });
   if (on) memAsk(true);
-  else { clearTimeout(memTimer); memTimer = 0; memOpen.clear(); memZoom.clear(); toEnd = true; }
+  else { clearTimeout(memTimer); memTimer = 0; memOpen.clear(); memZoom.clear(); toNow(); }
 }
 
 // memAsk asks for the view again: at once, or after a pause, so a burst of
@@ -2637,6 +3002,7 @@ function App() {
     ${S.conn === 'closed' && html`<div class="banner">Lost opt-chat: reconnecting…</div>`}
     <div class=${'stage' + (S.full ? ' behind' : '')}>
       <div class="opt-pane" inert=${!!S.full}>
+        ${S.find && !S.memView && html`<${FindBar}/>`}
         ${S.memView ? html`<${MemView} lines=${S.mem} tick=${S.memTick} stored=${S.status?.viewLines}/>` : html`<${Scroller}/>`}
       </div>
       ${S.full && html`<${AgentFull} key=${S.full} a=${S.agent?.name === S.full ? S.agent : { name: S.full, steps: [], off: 0, loading: true }} s=${fullSub()}/>`}
@@ -2700,6 +3066,19 @@ addEventListener('keydown', e => {
     e.preventDefault();
     e.stopPropagation();
     if (e.code === 'KeyV') toggleMem(); else if (!S.full) document.querySelector('.mine')?.click();
+    return;
+  }
+  if ((e.metaKey || e.ctrlKey) && e.code === 'KeyF' && !e.altKey && !e.shiftKey) { // the find; in its box, in Opt's view or full screen: the browser's
+    if (e.target === findEl || S.memView || S.full) return;
+    e.preventDefault();
+    e.stopPropagation();
+    openFind();
+    return;
+  }
+  if (e.key === 'End' && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && !S.full && !S.memView &&
+      (e.target === document.body || e.target.closest?.('.scroll') || e.target === inputEl && !inputEl.value) && (S.past || !atEnd)) {
+    e.preventDefault(); // back to now: the end of the log
+    toNow();
     return;
   }
   if (e.altKey && e.code === 'KeyO' && !e.metaKey && !e.ctrlKey) { // a subagent full screen, and back to Opt

@@ -255,6 +255,17 @@ func fakeClaude() {
 			emit(map[string]any{"type": "assistant", "message": map[string]any{"content": []map[string]any{{"type": "text", "text": "grown"}},
 				"usage": map[string]any{"input_tokens": 10, "cache_read_input_tokens": 31000}}})
 			result("did the grown one")
+		case strings.Contains(in, "slow-task"): // a call that runs until interrupted; a message meanwhile waits, as Claude Code's
+			say(block{Type: "tool_use", ID: "s1", Name: "Bash", Input: []byte(`{"command":"sleep 600"}`)})
+			for l := range lines {
+				if control(l) && strings.Contains(l, `"interrupt"`) {
+					emit(map[string]any{"type": "user", "message": map[string]any{"content": []block{{Type: "text", Text: "[Request interrupted by user for tool use]"}}}})
+					emit(map[string]any{"type": "result", "subtype": "error_during_execution", "is_error": true, "result": ""})
+					break
+				}
+			}
+		case strings.Contains(in, "hurry"):
+			result("hurried: " + in)
 		case strings.Contains(in, "step-task"): // a step at a time until interrupted, as Claude Code: a queued message runs as a turn of its own
 			for n := 1; ; n++ {
 				id := fmt.Sprint("t", n)

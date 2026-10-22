@@ -171,7 +171,7 @@ func TestUserTurnReports(t *testing.T) {
 		t.Fatal(err)
 	}
 	os.WriteFile(filepath.Join(c.dir, voice.Name+".txt"), []byte("hello there\n"), 0o600)
-	if out, ok := a.TellUser("[Rest]", "", []attachment{voice}); !ok {
+	if out, ok := a.TellUser("[Rest]", "", []attachment{voice}, false); !ok {
 		t.Fatal(out)
 	}
 	waitFor(t, "its reply", func() bool { return strings.Contains(c.ZoomAgent("Rest"), "hello there\\n</attachment>") })
@@ -194,7 +194,7 @@ func TestUserTurnReports(t *testing.T) {
 	// At work on its task, the user's message: the task's end reports.
 	a.Spawn("Work", "wait-for-message", "", "", 0, nil)
 	waitFor(t, "Work waiting", func() bool { return strings.Contains(c.ZoomAgent("Work"), "agent: waiting") })
-	if out, ok := a.TellUser("Work", "banana", nil); !ok {
+	if out, ok := a.TellUser("Work", "banana", nil, false); !ok {
 		t.Fatal(out)
 	}
 	if got := report(); !strings.HasPrefix(got, "[Work] got: "+userHead+"banana") {
@@ -205,7 +205,7 @@ func TestUserTurnReports(t *testing.T) {
 	a.Spawn("Mixed", "first", "", "", 0, nil)
 	report()
 	waitFor(t, "Mixed at rest", func() bool { return agentState(a, "Mixed") == "resting" })
-	if out, ok := a.TellUser("Mixed", "wait-for-message", nil); !ok {
+	if out, ok := a.TellUser("Mixed", "wait-for-message", nil, false); !ok {
 		t.Fatal(out)
 	}
 	waitFor(t, "Mixed waiting", func() bool { return strings.Contains(c.ZoomAgent("Mixed"), "agent: waiting") })
@@ -226,13 +226,60 @@ func TestUserTurnReports(t *testing.T) {
 	a.Spawn("Stop", "first", "", "", 0, nil)
 	report()
 	waitFor(t, "Stop at rest", func() bool { return agentState(a, "Stop") == "resting" })
-	a.TellUser("Stop", "wait-for-stop", nil)
+	a.TellUser("Stop", "wait-for-stop", nil, false)
 	waitFor(t, "Stop at work", func() bool { return strings.Contains(c.ZoomAgent("Stop"), "agent: working") })
 	a.StopAgent("Stop")
 	waitFor(t, "Stop halted", func() bool { return agentState(a, "Stop") == "halted" })
 	none()
 	if got := workLines(c, "[Stop] stopped"); len(got) != 0 {
 		t.Fatalf("logged: %q", got)
+	}
+}
+
+// Sent now, the user's message cuts short the call a subagent at work has
+// underway, and it goes on with the message at once, its task still Opt's;
+// one at rest takes it as any message.
+func TestTellUserNow(t *testing.T) {
+	c, _ := fakeChat(t, t.TempDir(), 100)
+	a, _ := fakeAgent(t, c)
+	reported := make(chan string, 2)
+	a.report = func(text string) { reported <- text }
+	report := func() string {
+		select {
+		case got := <-reported:
+			return got
+		case <-time.After(10 * time.Second):
+			t.Fatal("no report")
+			return ""
+		}
+	}
+	a.Spawn("Slow", "slow-task", "", "", 0, nil)
+	waitFor(t, "its long call", func() bool { return strings.Contains(c.ZoomAgent("Slow"), "sleep 600") })
+	if out, ok := a.TellUser("Slow", "hurry", nil, true); !ok || out != "Sent: [Slow] was interrupted to read it now." {
+		t.Fatal(out, ok)
+	}
+	if got := report(); !strings.HasPrefix(got, "[Slow] hurried: "+userHead+"hurry") {
+		t.Fatalf("its report: %q", got)
+	}
+	log := c.ZoomAgent("Slow")
+	call, told, cut := strings.Index(log, "sleep 600"), strings.Index(log, "user: hurry"), strings.Index(log, "cut: ")
+	if call < 0 || told < call || cut < told || strings.Count(log, "user: hurry") != 1 {
+		t.Fatalf("its log: %q", log)
+	}
+	if n := strings.Count(strings.Join(fakeFiles(a, ".ctl"), ""), `"interrupt"`); n != 1 {
+		t.Fatalf("%d interrupts", n)
+	}
+	if got := workLines(c, "[user → Slow]"); len(got) != 1 {
+		t.Fatalf("the chat's notes: %q", got)
+	}
+
+	waitFor(t, "Slow at rest", func() bool { return agentState(a, "Slow") == "resting" })
+	if out, ok := a.TellUser("Slow", "hurry again", nil, true); !ok || !strings.HasPrefix(out, "Sent: [Slow] is at work on it") {
+		t.Fatal(out, ok)
+	}
+	waitFor(t, "its answer", func() bool { return strings.Contains(c.ZoomAgent("Slow"), "hurried: "+userHead+"hurry again") })
+	if n := strings.Count(strings.Join(fakeFiles(a, ".ctl"), ""), `"interrupt"`); n != 1 {
+		t.Fatalf("%d interrupts", n)
 	}
 }
 
@@ -245,7 +292,7 @@ func TestUserTurnSurvivesRestart(t *testing.T) {
 	a.report = func(text string) { c.Log("work", text) }
 	a.Spawn("Cut", "first", "", "", 0, nil)
 	waitFor(t, "Cut at rest", func() bool { return agentState(a, "Cut") == "resting" })
-	a.TellUser("Cut", "wait-for-stop", nil)
+	a.TellUser("Cut", "wait-for-stop", nil, false)
 	waitFor(t, "Cut at work", func() bool { return strings.Contains(c.ZoomAgent("Cut"), "agent: working") })
 	a.quit()
 	if r, _ := a.loadRecord("Cut"); !r.Cut || !r.User {

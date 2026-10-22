@@ -74,6 +74,7 @@ type Agent struct {
 	subs        map[string]*sub          // this run's subagents, as the page's rail shows them: see subs.go
 	halts       map[string]*halt         // each subagent's call underway, at work or at rest, by name: see StopAgent
 	held        map[string][]tell        // tells for a subagent in a loop, at work: sent as its turn ends; see loop.go
+	subLive     map[string]*agentLive    // what each subagent at work is writing now: see agentDelta
 	userTurn    map[string]bool          // a subagent's turn underway is the user's: it reports to no one; see tell
 	recMu       sync.Mutex               // agents/<Name>.json: see resume.go
 	live        map[*proc]struct{}       // turns and subagents underway: a mode switch reaches them
@@ -485,7 +486,7 @@ func (a *Agent) startCall(ctx context.Context, model, effort string, r role, win
 	switch r {
 	case roleCompact: // partial messages: its response's start lets the calls waiting on its prefix go (ack)
 		args = append(args, "--settings", noTools, "--include-partial-messages")
-	case roleTurn: // the reply streams to the pages as it is written
+	case roleTurn, roleAgent: // the reply streams to the pages as it is written
 		args = append(args, "--include-partial-messages")
 	}
 	cmd := exec.CommandContext(ctx, "claude", args...)

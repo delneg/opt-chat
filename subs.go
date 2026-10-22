@@ -34,6 +34,8 @@ type sub struct {
 	StepAt  int64  `json:"stepAt,omitzero"`  // unix ms of the latest
 	User    bool   `json:"user,omitzero"`    // its turn underway, or its last, is the user's: it answers the user, not Opt
 	Compact bool   `json:"compact,omitzero"` // the page asked it to compact at its next step
+	Phase   string `json:"phase,omitzero"`   // at work: thinking, writing or tool, as a turn's
+	Tool    string `json:"tool,omitzero"`    // in phase tool: the tool it calls
 }
 
 // subsKept is how many ended subagents the rail keeps listing.
@@ -98,12 +100,83 @@ type (
 		Step step   `json:"step"`
 	}
 	stepsReply struct {
-		T     string `json:"t"` // steps
-		Name  string `json:"name"`
-		Steps []step `json:"steps"`
-		Cut   bool   `json:"cut,omitzero"` // the log's start is left out
+		T     string     `json:"t"` // steps
+		Name  string     `json:"name"`
+		Steps []step     `json:"steps"`
+		Cut   bool       `json:"cut,omitzero"` // the log's start is left out
+		Live  *agentLive `json:"live,omitzero"`
+	}
+	agentDeltaUpdate struct {
+		T    string `json:"t"` // agentDelta
+		Name string `json:"name"`
+		K    string `json:"k,omitzero"` // text, thinking or input; none, with R: all of them
+		S    string `json:"s,omitzero"`
+		R    bool   `json:"r,omitzero"` // it starts again: what came before goes
 	}
 )
+
+// agentLive is what a subagent at work is writing now, which streams to
+// the pages as a turn's reply does (--include-partial-messages): its reply,
+// its thinking and a tool call's input, each until its step is logged.
+type agentLive struct {
+	Text     string `json:"text,omitzero"`
+	Thinking string `json:"thinking,omitzero"`
+	Input    string `json:"input,omitzero"`
+}
+
+// agentDelta adds s to what the subagent name is writing, of kind k, or
+// with reset writes it anew; with neither k nor s, it has stopped writing.
+func (a *Agent) agentDelta(name, k, s string, reset bool) {
+	if s == "" && !reset {
+		return
+	}
+	a.mu.Lock()
+	if a.subLive == nil {
+		a.subLive = map[string]*agentLive{}
+	}
+	w := a.subLive[name]
+	if w == nil {
+		w = &agentLive{}
+		a.subLive[name] = w
+	}
+	f := w.field(k)
+	switch {
+	case f == nil:
+		delete(a.subLive, name)
+	case reset:
+		*f = s
+	default:
+		*f += s
+	}
+	a.mu.Unlock()
+	a.chat.hub.send(agentDeltaUpdate{T: "agentDelta", Name: name, K: k, S: s, R: reset})
+}
+
+func (w *agentLive) field(k string) *string {
+	return map[string]*string{"text": &w.Text, "thinking": &w.Thinking, "input": &w.Input}[k]
+}
+
+// liveLogged drops what the subagent name was writing of kind k, now a
+// step in its log; the pages drop it as the step comes.
+func (a *Agent) liveLogged(name, k string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if w := a.subLive[name]; w != nil {
+		*w.field(k) = ""
+	}
+}
+
+// liveOf is what the subagent name is writing now, for a page that opens
+// it; nil: nothing.
+func (a *Agent) liveOf(name string) *agentLive {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if w := a.subLive[name]; w != nil && *w != (agentLive{}) {
+		c := *w
+		return &c
+	}
+	return nil
+}
 
 // stepsMax is how much of a log the rail gets at first: its end.
 const stepsMax = 512 << 10
@@ -112,7 +185,7 @@ const stepsMax = 512 << 10
 // "@" and the unix ms it was written, and on a tool call and its echo "#"
 // and the call's id; "tool@1761134400000#toolu_01: ". Logs from before
 // have the kind alone, "tool: ".
-var stepStart = regexp.MustCompile(`(?m)^(task|on|opt|user|agent|tool|echo|loop|compacted)(?:@(\d+)(?:#(\S+?))?)?: `)
+var stepStart = regexp.MustCompile(`(?m)^(task|on|opt|user|agent|tool|echo|loop|compacted|cut)(?:@(\d+)(?:#(\S+?))?)?: `)
 
 // stepHead is s's head in the log, as stepStart reads it.
 func stepHead(s step) string {

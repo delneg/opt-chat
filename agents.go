@@ -3,6 +3,7 @@ package main
 import (
 	"cmp"
 	"context"
+	"encoding/json/v2"
 	"fmt"
 	"maps"
 	"os"
@@ -129,9 +130,10 @@ func (a *Agent) Spawn(name, task, effort, model string, window int, loop *loopHo
 // an agent with the input off, https://github.com/VictorTaelin/UniiChat;
 // here the user talks to it.)
 type tell struct {
-	user bool    // the user's, from the page
-	text string  // as its log has it
-	msg  []block // the user's, as the subagent gets it: text, images, files
+	user   bool    // the user's, from the page
+	text   string  // as its log has it
+	msg    []block // the user's, as the subagent gets it: text, images, files
+	logged bool    // in its log already: sent now (tellNow), its turn ended first
 }
 
 func (t tell) kind() string {
@@ -206,9 +208,10 @@ func (a *Agent) Tell(name, text string) string {
 
 // TellUser hands the subagent name the user's message from the page, its
 // text and attachments, as Tell hands it Opt's, and notes it in the chat,
-// starting no turn, so Opt knows what the user told it. False, with why,
-// when it took nothing.
-func (a *Agent) TellUser(name, text string, atts []attachment) (string, bool) {
+// starting no turn, so Opt knows what the user told it. With now, one at
+// work gets it at once, as Cmd+Enter sends Opt a message: see tellNow.
+// False, with why, when it took nothing.
+func (a *Agent) TellUser(name, text string, atts []attachment, now bool) (string, bool) {
 	name = agentName(name)
 	a.mu.Lock()
 	_, working := a.running[name]
@@ -219,7 +222,14 @@ func (a *Agent) TellUser(name, text string, atts []attachment) (string, bool) {
 	}
 	c := a.chat
 	m := c.compose(text, atts)
-	out, ok := a.tell(name, tell{user: true, text: m.full(), msg: c.content(m)})
+	t := tell{user: true, text: m.full(), msg: c.content(m)}
+	out, ok := "", false
+	if now {
+		out, ok = a.tellNow(name, t)
+	}
+	if !ok {
+		out, ok = a.tell(name, t)
+	}
 	if ok {
 		c.Log("work", userLine(c, name, text, atts), m.images...)
 	}
@@ -299,8 +309,32 @@ func (a *Agent) tell(name string, ts ...tell) (string, bool) {
 
 func (a *Agent) logTells(name string, ts []tell) {
 	for _, t := range ts {
-		a.agentWrite(name, t.kind(), t.text)
+		if !t.logged {
+			a.agentWrite(name, t.kind(), t.text)
+		}
 	}
+}
+
+// tellNow interrupts the subagent name at work for the user's message t,
+// as Cmd+Enter stops Opt's turn for one: the tool calls it has underway
+// are cut short, and it goes on with t at once, its task still whoever's
+// it was. A tell waits for its step to end, which a long command makes a
+// long wait. False when it is not at work in a way an interrupt can cut
+// (starting, compacting, in a loop): t goes as a tell then.
+func (a *Agent) tellNow(name string, t tell) (string, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	p, h, s := a.running[name], a.halts[name], a.subs[name]
+	if p == nil || h == nil || s == nil || s.State != "working" || a.looping(name) {
+		return "", false
+	}
+	if len(h.now) == 0 && !p.control("opt-now", map[string]any{"subtype": "interrupt"}) {
+		return "", false
+	}
+	a.logTells(name, []tell{t})
+	t.logged = true
+	h.now = append(h.now, t)
+	return fmt.Sprintf("Sent: [%s] was interrupted to read it now.", name), true
 }
 
 // anchored is the message that sets a compacted subagent to work again: the
@@ -362,9 +396,10 @@ func (a *Agent) resume(name string, ts []tell, auto bool) (string, bool) {
 type halt struct {
 	ctx     context.Context
 	cancel  context.CancelFunc
-	byUser  bool // stopped from the page; under a.mu
-	compact bool // the page asked it to compact at its next step; under a.mu
-	told    int  // messages sent to it at work, queued in its turn; under a.mu
+	byUser  bool   // stopped from the page; under a.mu
+	compact bool   // the page asked it to compact at its next step; under a.mu
+	told    int    // messages sent to it at work, queued in its turn; under a.mu
+	now     []tell // the user's, sent now: it was interrupted for them (tellNow); under a.mu
 }
 
 // haltLocked makes the halt of the subagent name's call about to run; a.mu held.
@@ -578,6 +613,15 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 	// then compacts it (2). A step ends once each of its tool calls has its
 	// result: open counts those without.
 	forced, open, told, quiet, midCompacted := 0, 0, 0, 2, false
+	phase := func(ph, tool string) { a.setSub(name, func(s *sub) { s.Phase, s.Tool = ph, tool }) }
+	cutOpen := func() { // a turn or call ended, with calls underway: the page shows them cut short
+		if open > 0 {
+			a.agentWrite(name, "cut", "its tool calls underway were cut short")
+		}
+		open = 0
+		phase("", "")
+		a.agentDelta(name, "", "", true)
+	}
 	stepEnd := func() {
 		a.mu.Lock()
 		defer a.mu.Unlock()
@@ -635,6 +679,38 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 			})
 			return
 		}
+		if e.Type == "stream_event" { // what it writes, as it writes it, as a turn's reply
+			var s streamEvent
+			if acking || json.Unmarshal(e.Event, &s) != nil {
+				return
+			}
+			switch s.Type {
+			case "message_start":
+				phase("thinking", "")
+			case "content_block_start":
+				switch s.ContentBlock.Type {
+				case "text":
+					a.agentDelta(name, "text", "", true)
+					phase("writing", "")
+				case "tool_use":
+					a.agentDelta(name, "input", "", true)
+					phase("tool", strings.TrimPrefix(s.ContentBlock.Name, "mcp__opt__"))
+				case "thinking":
+					a.agentDelta(name, "thinking", "", true)
+					phase("thinking", "")
+				}
+			case "content_block_delta":
+				switch s.Delta.Type {
+				case "text_delta":
+					a.agentDelta(name, "text", s.Delta.Text, false)
+				case "thinking_delta":
+					a.agentDelta(name, "thinking", s.Delta.Thinking, false)
+				case "input_json_delta":
+					a.agentDelta(name, "input", s.Delta.JSON, false)
+				}
+			}
+			return
+		}
 		if e.Type == "assistant" {
 			if u := e.Message.Usage; u.Input+u.Read+u.Write > 0 {
 				size = u.Input + u.Read + u.Write
@@ -645,8 +721,10 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 		for _, b := range e.blocks() {
 			switch {
 			case e.Type == "assistant" && b.Type == "text" && !acking:
+				a.liveLogged(name, "text")
 				a.agentWrite(name, "agent", b.Text)
 			case e.Type == "assistant" && b.Type == "tool_use":
+				a.liveLogged(name, "input")
 				call := toolCall(b)
 				a.setSub(name, func(s *sub) { s.Step, s.StepAt = head(call, 400), nowMs(); s.Steps++ })
 				a.agentWriteRef(name, "tool", call, b.ID)
@@ -659,6 +737,7 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 		}
 		if results > 0 && open <= 0 {
 			open = 0
+			phase("thinking", "") // with every result in, as a turn's
 			stepEnd()
 		}
 	}
@@ -702,7 +781,7 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 			each(e)
 			continue
 		}
-		open = 0
+		cutOpen()
 		lines := c.viewNow()
 		a.mu.Lock()
 		if r := a.resting[name]; r != nil && r.p == p && r.compacting { // the compaction's end, not a report
@@ -742,9 +821,17 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 			if a.resting == nil {
 				a.resting = map[string]*rest{}
 			}
-			a.resting[name] = &rest{p: p, until: time.Now().Add(agentRest), task: task, compacting: true, goOn: true}
+			a.resting[name] = &rest{p: p, until: time.Now().Add(agentRest), task: task, compacting: true, goOn: true, pending: h.now}
+			h.now = nil
 			a.mu.Unlock()
 			p.send(textBlock(compactAsk))
+			continue
+		}
+		if len(h.now) > 0 && e.IsError && e.Subtype == "error_during_execution" { // interrupted for the user's message: it goes on with it
+			ts := h.now
+			h.now = nil
+			a.mu.Unlock()
+			p.send(tellBlocks(ts, "")...)
 			continue
 		}
 		// Asked to compact at a step, but its turn ended first: compacted
@@ -809,9 +896,9 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 			delete(a.resting, oldest)
 			a.subLocked(oldest, func(s *sub) { s.State = "ended" })
 		}
-		late := a.held[name] // tells that came as its loop ended
+		late := append(a.held[name], h.now...) // tells that came as its loop ended, or as it ended its turn
 		if len(late) > 0 {
-			a.held[name] = nil
+			a.held[name], h.now = nil, nil
 		}
 		user := a.userTurn[name]
 		delete(a.userTurn, name)
@@ -842,6 +929,7 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 			}
 		})
 	}
+	cutOpen()
 	a.mu.Lock()
 	working := a.running[name] == p // its task, or a tell's, left without a reply
 	if r := a.resting[name]; r != nil && r.p == p {

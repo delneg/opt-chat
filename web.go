@@ -276,7 +276,7 @@ type request struct {
 	Paths  []string     `json:"paths"`  // send: typed, to attach; null: not looked for yet
 	Skip   []string     `json:"skip"`   // send: typed, not to attach
 	Chosen []string     `json:"chosen"` // send: typed and hidden, to attach
-	Now    bool         `json:"now"`    // send: and stop the turn underway for it
+	Now    bool         `json:"now"`    // send: and stop the turn underway for it; tellAgent: and interrupt it at work for it
 	ID     int          `json:"id"`     // around: the message; newer: the page's last
 	N      int          `json:"n"`      // zoom: line id+n
 	Before int          `json:"before"`
@@ -474,7 +474,7 @@ func (w *webServer) serve(req request) any {
 		if strings.TrimSpace(req.Text) == "" && len(atts) == 0 {
 			return sentReply{T: "sent", Seq: req.Seq}
 		}
-		if out, ok := h.agent.TellUser(req.Name, req.Text, atts); !ok {
+		if out, ok := h.agent.TellUser(req.Name, req.Text, atts, req.Now); !ok {
 			return w.failed(req, errors.New(out))
 		}
 		c.hub.setStatus(currentStatus(c, h.agent))
@@ -539,7 +539,7 @@ func (w *webServer) serve(req request) any {
 		if err != nil {
 			return noticeUpdate{T: "notice", Level: "warn", S: fmt.Sprintf("No log for [%s]: %v", name, err)}
 		}
-		return stepsReply{T: "steps", Name: name, Steps: steps, Cut: cut}
+		return stepsReply{T: "steps", Name: name, Steps: steps, Cut: cut, Live: h.agent.liveOf(name)}
 	case "compactAgent": // the page's compact: now at rest, at its next step at work
 		out, ok := h.agent.CompactAgent(agentName(req.Name))
 		c.hub.setStatus(currentStatus(c, h.agent))

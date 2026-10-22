@@ -36,8 +36,8 @@ cache over.
 ## What the page does
 
 - It keeps Claude Code's keys. Enter sends, Esc stops the turn, Shift+Tab
-  cycles the permission mode, Alt+P picks the model, `/` lists your skills
-  (mid-sentence too), `@` completes paths, and `?` lists the rest.
+  cycles the permission mode, Alt+P picks the model, ⌘F finds in the whole
+  chat, `/` lists your skills, `@` completes paths, and `?` lists the rest.
 - A message typed while Opt works is queued and reaches Opt between its
   tool calls, or starts the next turn.
 - You attach files by dropping, pasting or typing a path. Images and PDFs go

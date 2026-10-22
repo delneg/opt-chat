@@ -270,15 +270,15 @@ func (w *webServer) upload(rw http.ResponseWriter, r *http.Request) {
 
 // request is what a page sends on its WebSocket.
 type request struct {
-	T      string       `json:"t"` // send, tellAgent, edit, remove, pull, now, stop, history, paths, memview, zoom, steps, agentContext, ...
+	T      string       `json:"t"` // send, tellAgent, edit, remove, pull, now, stop, history, find, around, newer, paths, memview, zoom, steps, agentContext, ...
 	Text   string       `json:"text"`
 	Files  []attachment `json:"files"`  // send: uploaded; tellAgent takes the fields of send it uses, as send means them
 	Paths  []string     `json:"paths"`  // send: typed, to attach; null: not looked for yet
 	Skip   []string     `json:"skip"`   // send: typed, not to attach
 	Chosen []string     `json:"chosen"` // send: typed and hidden, to attach
 	Now    bool         `json:"now"`    // send: and stop the turn underway for it
-	ID     int          `json:"id"`
-	N      int          `json:"n"` // zoom: line id+n
+	ID     int          `json:"id"`     // around: the message; newer: the page's last
+	N      int          `json:"n"`      // zoom: line id+n
 	Before int          `json:"before"`
 	Seq    int          `json:"seq"`
 	Key    string       `json:"key"`    // send: the same on a send again after a reconnect
@@ -291,6 +291,7 @@ type request struct {
 	Action string       `json:"action"` // mcp: on, off, reconnect, signin; skills: set; plugins: on, off; empty: list
 	Name   string       `json:"name"`   // mcp, skills: which; steps, tellAgent, agentContext, compactAgent: the subagent's
 	State  string       `json:"state"`  // skills: on, off, name-only, user-invocable-only
+	Mine   bool         `json:"mine"`   // find: the user's own messages alone
 }
 
 type (
@@ -524,6 +525,10 @@ func (w *webServer) serve(req request) any {
 		before := min(max(req.Before, 0), len(c.msgs))
 		from := c.whole(max(0, before-page))
 		return historyReply{T: "history", Msgs: c.msgs[from:before], Asides: c.asidesIn(from, before)}
+	case "around": // a find's match far back: the log around it (find.go)
+		return c.around(req.ID)
+	case "newer": // and scrolling down from there, toward the end
+		return c.newer(req.ID)
 	case "memview": // the page shows the chat as Opt's view (tree.go)
 		return memViewReply{T: "memview", Lines: c.memView()}
 	case "zoom":
@@ -607,10 +612,11 @@ func (w *webServer) command(a *Agent, req request) (any, bool) {
 	return nil, false
 }
 
-// slow are the requests that ask Claude Code, which can take seconds.
+// slow are the requests that ask Claude Code, which can take seconds, and
+// those that read much: the page's sends go on meanwhile.
 func slow(a *Agent, req request) bool {
 	switch req.T {
-	case "models", "mcp", "skills", "plugins", "files", "usage", "agentContext": // agentContext reads a session file, which can be big
+	case "models", "mcp", "skills", "plugins", "files", "usage", "agentContext", "find": // agentContext reads a session file, which can be big; find, the whole log
 		return true
 	case "send":
 		return asks(a, req.Text)
@@ -621,6 +627,10 @@ func slow(a *Agent, req request) bool {
 func (w *webServer) serveSlow(ctx context.Context, req request) any {
 	a := w.h.agent
 	switch req.T {
+	case "find": // the page's find: matches, newest first, a page at a time (find.go)
+		r := w.c.Find(req.Text, req.Before, req.Mine)
+		r.Seq = req.Seq
+		return r
 	case "agentContext": // the full-screen view's: what the subagent was given
 		name := agentName(req.Name)
 		if r, ok := a.agentContext(name); ok {

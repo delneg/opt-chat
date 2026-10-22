@@ -430,6 +430,55 @@ a { color: var(--blue); }
 .mine:hover, .mine:focus-visible { color: var(--fg); background: var(--user-bg); }
 .mine svg { width: 1.1em; height: 1.1em; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 
+/* the find (FindBar): a box at the top of the chat, like the input below,
+   and its matches under it, like the / menu's; the log's message it shows
+   gets a ring a moment, and its words a highlight (markFound) */
+.findbar { flex: none; border-bottom: 1px solid var(--border); background: var(--bg); }
+.findbar .column { padding-top: .6em; padding-bottom: .45em; }
+.find-box { border: 1px solid var(--dim); border-radius: 6px; display: flex; align-items: baseline; gap: 1.5ch; padding: .35em 1ch .35em 0; }
+.find-box:focus-within { box-shadow: 0 0 0 1px color-mix(in srgb, var(--dim) 30%, transparent); }
+.find-box .gt { flex: none; width: 3ch; text-align: center; color: var(--dim); }
+.find-box input { flex: 1; min-width: 6ch; font: inherit; color: inherit; background: transparent; border: 0; outline: 0; padding: 0; margin: 0; }
+.find-box input::placeholder { color: var(--faint); }
+.find-box .only { flex: none; color: var(--faint); font-size: .9em; padding: 0 .7ch; border-radius: 4px; box-shadow: 0 0 0 1px var(--border); white-space: nowrap; }
+.find-box .only:hover { color: var(--fg); }
+.find-box .only.on { color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.find-box .count { flex: none; color: var(--faint); font-size: .9em; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.find-box .x { flex: none; color: var(--faint); padding: 0 .3ch; }
+.find-box .x:hover { color: var(--fg); }
+.find-box button:focus-visible { outline: 2px solid var(--dim); outline-offset: 2px; }
+.find-note { color: var(--dim); padding: .45em 3ch .1em; }
+.find-note.warn { color: var(--yellow); }
+.find-hint { color: var(--faint); font-size: .85em; padding: .3em 3ch 0; }
+.hits { max-height: 42vh; overflow-y: auto; padding: .35em 0 0; }
+.hit { display: grid; grid-template-columns: 3ch minmax(0, 36ch) minmax(0, 1fr); gap: 0 1.5ch; padding: .2em 1ch .2em 0; border-radius: 4px; cursor: pointer; color: var(--dim); }
+.hit .mark { text-align: center; }
+.hit .who { color: var(--fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hit .when { color: var(--faint); }
+.hit .snip { overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; }
+.hit.sel { background: var(--chip); color: var(--fg); }
+.hit.shown .mark { color: var(--accent); }
+.hit.more { display: block; width: 100%; text-align: left; padding-left: 4.5ch; color: var(--faint); font-size: .9em; }
+.hit.more:hover { color: var(--fg); }
+.hits mark { background-color: #f5d97a; color: inherit; border-radius: 2px; }
+::highlight(find) { background-color: #f5d97a; color: inherit; } /* apart: a browser without it drops the rule */
+@media (max-width: 640px) { /* a phone: who above the words */
+  .hit { grid-template-columns: 3ch minmax(0, 1fr); }
+  .hit .snip { grid-column: 2; }
+}
+.row-m.flash { border-radius: 4px; animation: found 2.4s ease-out; }
+@keyframes found {
+  0%, 35% { box-shadow: 0 0 0 2px var(--accent), 0 0 0 7px color-mix(in srgb, var(--accent) 14%, transparent); }
+  100% { box-shadow: 0 0 0 2px transparent; }
+}
+@media (prefers-reduced-motion: reduce) { .row-m.flash { animation: none; box-shadow: 0 0 0 2px var(--accent); } }
+/* the past a find showed: its bottom, and the way back to now */
+.edge.below { padding: .5em 0 1em; }
+.edge.below button { color: var(--blue); }
+.edge.below button:hover { text-decoration: underline; text-underline-offset: .25em; }
+.newer.past button { color: var(--bg); background: var(--blue); border-color: var(--blue); }
+.newer.past button:hover { background: color-mix(in srgb, var(--blue) 85%, var(--fg)); }
+
 /* Opt's view (MemView): each line a block, "id+n" and its summary, opening
    into its halves, after UniiChat's .block and .open */
 .footer .memv.on button { color: var(--accent); }

@@ -1101,12 +1101,11 @@ func (c *Chat) Search(text string, before int) string {
 	if before <= 0 || before > len(msgs) {
 		before = len(msgs)
 	}
-	re := regexp.MustCompile("(?i)" + regexp.QuoteMeta(text))
 	lookups := lookupRefs(msgs)
 	var hits []int
 	total := 0
 	for i := before - 1; i >= 0; i-- {
-		if m := msgs[i]; !lookups[m.Ref] && re.MatchString(m.Text) {
+		if m := msgs[i]; !lookups[m.Ref] && hasFold(m.Text, text) {
 			if total++; len(hits) < searchPage {
 				hits = append(hits, i)
 			}
@@ -1132,21 +1131,8 @@ func (c *Chat) Search(text string, before int) string {
 	c.mu.Lock()
 	for _, i := range hits {
 		m := msgs[i]
-		at := re.FindStringIndex(m.Text)
-		from, to := max(0, at[0]-100), min(len(m.Text), at[1]+150)
-		for from > 0 && !utf8.RuneStart(m.Text[from]) {
-			from--
-		}
-		for to < len(m.Text) && !utf8.RuneStart(m.Text[to]) {
-			to++
-		}
-		snip := flat(m.Text[from:to])
-		if from > 0 {
-			snip = "…" + snip
-		}
-		if to < len(m.Text) {
-			snip += "…"
-		}
+		at, end := indexFold(m.Text, text)
+		snip := flat(snippet(m.Text, at, end, 100, 150))
 		fmt.Fprintf(&b, "%d+1|%s: %s (%s; in line %s)\n", i, m.Kind, snip, m.Date.Local().Format("2006-01-02"), c.viewLine(i).name())
 	}
 	c.mu.Unlock()

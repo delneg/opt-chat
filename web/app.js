@@ -2777,7 +2777,7 @@ function FindBar() {
     </div>
     ${f.error && html`<div class="find-note warn">${f.error}</div>`}
     ${!f.folded && (!typed ? html`<div class="find-note">Words to find in the whole chat, in any case: a message must hold them all, in any order, and a "quoted phrase" as it is. Your messages, Opt's, subagents' reports and imported chats; not tool calls or their output. Alt+M: only yours.</div>`
-      : asked && !f.total && !f.busy ? html`<div class="find-note">No ${f.askedMine ? 'message of yours' : 'message'} holds ${what}. Try fewer words, or part of one ("toy" finds "toying")${f.askedMine ? ', or all messages (Alt+M)' : ''}.</div>`
+      : asked && !f.total && !f.busy ? html`<div class="find-note">No ${f.askedMine ? 'message of yours' : 'message'} holds ${what}. Try fewer words, or part of one ("pars" finds "parser")${f.askedMine ? ', or all messages (Alt+M)' : ''}.</div>`
       : n > 0 && html`<div class="hits" id="find-hits" role="listbox" ref=${list} aria-label="matches, newest first">
           ${f.hits.map((h, j) => {
             const [mark, who] = hitWho(h);

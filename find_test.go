@@ -15,7 +15,7 @@ func TestFindTerms(t *testing.T) {
 		want []string
 	}{
 		{"", nil},
-		{"  toying  ", []string{"toying"}},
+		{"  wobbling  ", []string{"wobbling"}},
 		{"Toy box toy", []string{"Toy", "box", "toy"}}, // folded when matched, not here
 		{`said "the  red   fox" twice`, []string{"said", "the red fox", "twice"}},
 		{`“smart quotes” too`, []string{"smart quotes", "too"}},
@@ -33,9 +33,9 @@ func TestIndexFold(t *testing.T) {
 		s, sub  string
 		at, end int
 	}{
-		{"I was TOYING with it", "toying", 6, 12},
+		{"I was WOBBLING with it", "wobbling", 6, 14},
 		{"toy Toy TOY", "TOY", 0, 3},
-		{"no match here", "toying", -1, -1},
+		{"no match here", "wobbling", -1, -1},
 		{"tttoy", "toy", 2, 5},
 		{"Привет, ИГРУШКА", "игрушка", 14, 28},
 		{"short", "shorter", -1, -1},
@@ -58,19 +58,19 @@ func logFind(c *Chat) {
 	add := func(kind, text string) {
 		ms = append(ms, Msg{Kind: kind, Text: text, Date: at.Add(time.Duration(len(ms)) * time.Minute)})
 	}
-	add("user", "I was toying with a parser in Rust")                                  // 0
-	add("opt", "Toying is fine; the parser needs a lexer first")                       // 1
-	add("tool", `Bash {"command":"grep -r toying ."}`)                                 // 2
-	add("echo", "toying.rs: fn toying() {}")                                           // 3
-	add("work", "[Rex] report: the lexer toying is done")                              // 4
-	add("work", "[user → Rex] stop toying and ship the lexer")                         // 5
-	add("ai", "An old chat's AI said: toying parser")                                  // 6
-	add("user", "the red fox and the blue fox")                                        // 7
-	add("user", "a fox that is red, and blue skies")                                   // 8
-	add("note", "a note on toying")                                                    // 9
-	add("user", strings.Repeat("filler ", 5000)+"the hidden toying word")              // 10, in parts
-	add("user", `look <attachment name="toying.png" path="files/x.png" size="1 KB"/>`) // its mark alone
-	add("user", "voice: <attachment name=\"voice 0:03.webm\" path=\"files/y.webm\" size=\"3 KB\">\nI keep toying with it\n</attachment>")
+	add("user", "I was wobbling with a parser in Rust")                                  // 0
+	add("opt", "Wobbling is fine; the parser needs a lexer first")                       // 1
+	add("tool", `Bash {"command":"grep -r wobbling ."}`)                                 // 2
+	add("echo", "wobbling.rs: fn wobbling() {}")                                         // 3
+	add("work", "[Rex] report: the lexer wobbling is done")                              // 4
+	add("work", "[user → Rex] stop wobbling and ship the lexer")                         // 5
+	add("ai", "An old chat's AI said: wobbling parser")                                  // 6
+	add("user", "the red fox and the blue fox")                                          // 7
+	add("user", "a fox that is red, and blue skies")                                     // 8
+	add("note", "a note on wobbling")                                                    // 9
+	add("user", strings.Repeat("filler ", 5000)+"the hidden wobbling word")              // 10, in parts
+	add("user", `look <attachment name="wobbling.png" path="files/x.png" size="1 KB"/>`) // its mark alone
+	add("user", "voice: <attachment name=\"voice 0:03.webm\" path=\"files/y.webm\" size=\"3 KB\">\nI keep wobbling with it\n</attachment>")
 	c.logMsgs(ms)
 }
 
@@ -95,21 +95,21 @@ func TestFind(t *testing.T) {
 	}
 	voice := parts - 1
 
-	r := c.Find("TOYING", 0, false)
+	r := c.Find("WOBBLING", 0, false)
 	want := []string{fmt.Sprint(voice, " user"), "10 user", "9 note", "6 ai", "5 work user → Rex", "4 work Rex", "1 opt", "0 user"}
 	if got := hitList(r); !slices.Equal(got, want) || r.Total != len(want) || r.More != 0 {
-		t.Fatalf("find toying: %q (total %d, more %d), want %q", got, r.Total, r.More, want)
+		t.Fatalf("find wobbling: %q (total %d, more %d), want %q", got, r.Total, r.More, want)
 	}
-	if h := r.Hits[4]; h.Snip != "stop toying and ship the lexer" {
+	if h := r.Hits[4]; h.Snip != "stop wobbling and ship the lexer" {
 		t.Errorf("a relay's snippet: %q", h.Snip)
 	}
-	if h := r.Hits[1]; !strings.HasPrefix(h.Snip, "…") || !strings.Contains(h.Snip, " filler filler ") || !strings.HasSuffix(h.Snip, "filler the hidden toying word") {
+	if h := r.Hits[1]; !strings.HasPrefix(h.Snip, "…") || !strings.Contains(h.Snip, " filler filler ") || !strings.HasSuffix(h.Snip, "filler the hidden wobbling word") {
 		t.Errorf("a long message's snippet: %q", h.Snip)
 	}
-	if h := r.Hits[0]; h.Snip != "voice: I keep toying with it" {
+	if h := r.Hits[0]; h.Snip != "voice: I keep wobbling with it" {
 		t.Errorf("a voice message's snippet: %q", h.Snip)
 	}
-	if h := r.Hits[7]; !h.Date.Equal(time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC)) || h.Snip != "I was toying with a parser in Rust" {
+	if h := r.Hits[7]; !h.Date.Equal(time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC)) || h.Snip != "I was wobbling with a parser in Rust" {
 		t.Errorf("the first message: %+v", h)
 	}
 
@@ -120,22 +120,22 @@ func TestFind(t *testing.T) {
 	if got := hitList(c.Find(`"red fox"`, 0, false)); !slices.Equal(got, []string{"7 user"}) {
 		t.Errorf("a phrase: %q", got)
 	}
-	if got := hitList(c.Find(`"red fox" toying`, 0, false)); got != nil {
+	if got := hitList(c.Find(`"red fox" wobbling`, 0, false)); got != nil {
 		t.Errorf("no message holds both: %q", got)
 	}
 
 	// the user's own: their messages, and what they told a subagent
-	if got := hitList(c.Find("toying", 0, true)); !slices.Equal(got, []string{fmt.Sprint(voice, " user"), "10 user", "5 work user → Rex", "0 user"}) {
+	if got := hitList(c.Find("wobbling", 0, true)); !slices.Equal(got, []string{fmt.Sprint(voice, " user"), "10 user", "5 work user → Rex", "0 user"}) {
 		t.Errorf("mine: %q", got)
 	}
-	if r := c.Find("", 0, true); r.Total != 7 || len(r.Hits) != 7 || r.Hits[len(r.Hits)-1].Snip != "I was toying with a parser in Rust" {
+	if r := c.Find("", 0, true); r.Total != 7 || len(r.Hits) != 7 || r.Hits[len(r.Hits)-1].Snip != "I was wobbling with a parser in Rust" {
 		t.Errorf("all of mine: %q, total %d", hitList(r), r.Total)
 	}
 	if r := c.Find("  ", 0, false); len(r.Hits) != 0 || r.Total != 0 || r.Terms == nil {
 		t.Errorf("nothing typed: %+v", r)
 	}
 	// before: a page from there on
-	if got := hitList(c.Find("toying", 5, false)); !slices.Equal(got, []string{"4 work Rex", "1 opt", "0 user"}) {
+	if got := hitList(c.Find("wobbling", 5, false)); !slices.Equal(got, []string{"4 work Rex", "1 opt", "0 user"}) {
 		t.Errorf("before 5: %q", got)
 	}
 }
@@ -188,7 +188,7 @@ func BenchmarkFind(b *testing.B) {
 		}
 		c.logMsgs(ms)
 	}
-	for _, q := range []string{"toying", "parser lexer", `"red fox"`, "e"} {
+	for _, q := range []string{"wobbling", "parser lexer", `"red fox"`, "e"} {
 		b.Run(q, func(b *testing.B) {
 			for b.Loop() {
 				c.Find(q, 0, false)
@@ -197,7 +197,7 @@ func BenchmarkFind(b *testing.B) {
 	}
 	b.Run("search", func(b *testing.B) {
 		for b.Loop() {
-			c.Search("toying", 0)
+			c.Search("wobbling", 0)
 		}
 	})
 }
@@ -228,13 +228,13 @@ func TestWebFind(t *testing.T) {
 	}
 	ws.next("hello", typ("hello"))
 
-	ws.send(map[string]any{"t": "find", "text": "toying", "seq": 4})
+	ws.send(map[string]any{"t": "find", "text": "wobbling", "seq": 4})
 	u := ws.next("found", typ("found"))
 	hits := u["hits"].([]any)
-	if u["seq"].(float64) != 4 || u["total"].(float64) != 8 || len(hits) != 8 || u["more"].(float64) != 0 || u["terms"].([]any)[0] != "toying" {
+	if u["seq"].(float64) != 4 || u["total"].(float64) != 8 || len(hits) != 8 || u["more"].(float64) != 0 || u["terms"].([]any)[0] != "wobbling" {
 		t.Fatalf("found: %v", u)
 	}
-	if h := hits[len(hits)-1].(map[string]any); h["i"].(float64) != 0 || h["kind"] != "user" || h["snip"] != "I was toying with a parser in Rust" || h["date"] != "2026-09-01T10:00:00Z" {
+	if h := hits[len(hits)-1].(map[string]any); h["i"].(float64) != 0 || h["kind"] != "user" || h["snip"] != "I was wobbling with a parser in Rust" || h["date"] != "2026-09-01T10:00:00Z" {
 		t.Fatalf("a hit: %v", h)
 	}
 	ws.send(map[string]any{"t": "find", "text": "line", "mine": true, "seq": 5})

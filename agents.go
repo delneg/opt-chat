@@ -311,11 +311,16 @@ func anchored(lines []string, name, task string, msg []block) []block {
 	return second
 }
 
-func (a *Agent) agentWrite(name, kind, text string) {
-	if err := appendRaw(a.agentLog(name), []byte(kind+": "+text+"\n\n")); err != nil {
+func (a *Agent) agentWrite(name, kind, text string) { a.agentWriteRef(name, kind, text, "") }
+
+// agentWriteRef logs a step of the subagent name with when it was written
+// and, on a tool call and its echo, the call's id: see stepHead.
+func (a *Agent) agentWriteRef(name, kind, text, ref string) {
+	s := step{Kind: kind, Text: text, At: nowMs(), Ref: ref}
+	if err := appendRaw(a.agentLog(name), []byte(stepHead(s)+text+"\n\n")); err != nil {
 		warn("[%s] log: %v", name, err)
 	}
-	a.chat.hub.send(stepUpdate{T: "step", Name: name, Step: step{Kind: kind, Text: text}})
+	a.chat.hub.send(stepUpdate{T: "step", Name: name, Step: s})
 }
 
 // resume sets a subagent whose call has ended to work again: its saved
@@ -644,11 +649,11 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 			case e.Type == "assistant" && b.Type == "tool_use":
 				call := toolCall(b)
 				a.setSub(name, func(s *sub) { s.Step, s.StepAt = head(call, 400), nowMs(); s.Steps++ })
-				a.agentWrite(name, "tool", call)
+				a.agentWriteRef(name, "tool", call, b.ID)
 				open++
 			case e.Type == "user" && b.Type == "tool_result":
 				out, _ := resultContent(b.Content)
-				a.agentWrite(name, "echo", clip(out, clipMax))
+				a.agentWriteRef(name, "echo", clip(out, clipMax), b.ToolID)
 				open, results = open-1, results+1
 			}
 		}
@@ -863,12 +868,13 @@ const compactAsk = "/compact Keep what is needed to go on with your task: what w
 // goOn sets a subagent compacted mid-task to work again.
 const goOn = "It was compacted in the middle of the task, between two steps: go on with it where you left off."
 
-// ZoomAgent gives a subagent's whole chat.
+// ZoomAgent gives a subagent's whole chat, its steps' times and ids left
+// out.
 func (c *Chat) ZoomAgent(name string) string {
 	name = agentName(name)
 	b, err := os.ReadFile(filepath.Join(c.dir, "agents", name+".log"))
 	if name == "" || err != nil {
 		return fmt.Sprintf("No subagent [%s].", name)
 	}
-	return string(b)
+	return string(plainSteps(b))
 }

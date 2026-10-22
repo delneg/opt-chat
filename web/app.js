@@ -163,7 +163,7 @@ function onUpdate(u) {
         asides: mergeAsides(u.reset && !S.past ? [] : S.asides, u.asides || []),
       });
       if (S.jump?.loading) send({ t: 'around', id: S.jump.i }); // asked before the connection dropped
-      if (S.find?.busy) askFind(true);
+      if (S.find && (S.find.busy || S.find.text !== (S.find.asked ?? '') || S.find.mine !== !!S.find.askedMine)) askFind(true); // asked, or typed, while not connected
       for (const s of sending.values()) send(s.payload); // the connection may have dropped it: the key makes it once
       if (S.panel) { set({ panel: { ...S.panel, busy: true, acting: false } }); send({ t: S.panel.kind }); } // a reply lost with the connection
       if (S.picker && (!S.models || S.modelsError)) send({ t: 'models' });

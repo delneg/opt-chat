@@ -76,7 +76,7 @@ func fakeChat(t *testing.T, dir string, size int) (*Chat, *atomic.Int64) {
 
 func waitIdle(t *testing.T, c *Chat) {
 	t.Helper()
-	deadline := time.After(10 * time.Second)
+	deadline := time.After(60 * time.Second) // the race detector makes the biggest tests ten times as slow
 	for {
 		c.mu.Lock()
 		idle := len(c.busy) == 0 && len(c.ready0) == 0 && len(c.readyM) == 0

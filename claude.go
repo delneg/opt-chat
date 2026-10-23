@@ -35,6 +35,7 @@ type Agent struct {
 	model, effort   string // turns
 	amodel, aeffort string // subagents
 	cmodel, ceffort string // compactions
+	cbare           bool   // memory summary calls on a different model from the turns get no tools
 	perm, cwd       string
 	tools           string
 	ownConfig       bool              // turns and subagents get the user's Claude Code skills, plugins and MCP servers
@@ -433,6 +434,7 @@ func (a *Agent) startCall(ctx context.Context, model, effort string, r role, win
 	dirs, own := slices.Clone(a.dirs), a.ownConfig && r != roleCompact
 	settings, claudeMd := a.ownSettings(window), a.claudeMd
 	system := a.systemNow()
+	bare := r == roleCompact && a.cbare && model != a.model
 	a.mu.Unlock()
 	switch r {
 	case roleAgent:
@@ -447,6 +449,13 @@ func (a *Agent) startCall(ctx context.Context, model, effort string, r role, win
 	}
 	// Every role gets the same system prompt.
 	tools := a.tools
+	if bare {
+		// Its tools only let it read the turns' prefix from the cache, which
+		// is per model. Listed, they bring Claude Code's tool reminders, such
+		// as Bash's commit attribution naming this call's model, and a
+		// summary can take one for the chat's own words.
+		tools = ""
+	}
 	if own {
 		tools = withTools(tools, "Skill", "ToolSearch") // ToolSearch: MCP servers' tools load as needed, not in every prompt
 	}

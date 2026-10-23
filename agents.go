@@ -882,6 +882,11 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 		final := e.Result
 		if e.IsError {
 			final = "failed: " + final
+			if line := a.limitHitLocked(e.Result, name); line != "" {
+				final += " " + line
+			}
+		} else {
+			a.limitWentLocked()
 		}
 		if lp.hook != nil {
 			a.mu.Unlock() // the hook takes a while

@@ -89,6 +89,9 @@ var (
 			"(after its report, or stopped by a restart of opt-chat), with all it knew, and reports again.",
 			schema([]string{"name", "message"}, map[string]any{"name": str, "message": str})),
 	}
+	oweTool = tool("owe", "Add to your owed list a thing the user asked for in message from (a user's message) and you haven't done. "+
+		"Each turn opens with the list; only the user closes an item, with /done. With neither from nor text, it lists the items.",
+		schema(nil, map[string]any{"from": num, "text": str}))
 	wakeTool = tool("wake", "Set a message to yourself, at a time: then opt-chat starts a turn with \""+wakeFrame+"<time>: <message>\", as a report does. "+
 		"Kept across restarts; one missed while opt-chat was down comes once as it starts. "+
 		"at: a duration from now (90m, 2h), a time (21:30: today, or tomorrow once passed) or a date and time (2026-10-20 09:00), local. "+
@@ -110,10 +113,13 @@ func (a *Agent) mcpList() []map[string]any {
 			}
 		}
 	}
+	if a.owed != nil {
+		tools = append(slices.Clip(tools), oweTool)
+	}
 	if a.wakes == nil {
 		return tools
 	}
-	return append(tools, wakeTool)
+	return append(slices.Clip(tools), wakeTool)
 }
 
 // withWindowMax is the spawn tool t with autocompact's maximum at most.
@@ -177,6 +183,7 @@ type toolArgs struct {
 	Before  int            `json:"before"`
 	At      string         `json:"at"`
 	Cancel  int            `json:"cancel"`
+	From    int            `json:"from"`
 }
 
 // callTool runs one tool and returns its text and the images that go with it.
@@ -213,6 +220,8 @@ func callTool(a *Agent, fromAgent bool, tool string, x toolArgs) (string, []stri
 		return a.Tell(x.Name, x.Message), nil
 	case tool == "wake":
 		return a.wakeTool(fromAgent, x), nil
+	case tool == "owe":
+		return a.oweTool(fromAgent, x), nil
 	}
 	return "No tool " + tool + ".", nil
 }

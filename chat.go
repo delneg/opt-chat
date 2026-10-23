@@ -523,6 +523,30 @@ func (c *Chat) markAcks() {
 	}
 }
 
+// markMatching marks for redo each message's line that matches re while its
+// message doesn't, so the line holds what its message lacks, and every line
+// built on it: a claim a compaction added, which later lines copied (see
+// docs/2026-10-23-faithful-lines.md). It returns how many it marked.
+func (c *Chat) markMatching(re *regexp.Regexp) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var marks []any
+	for i, m := range c.msgs {
+		k := key{0, i}
+		if !c.built(k) || !re.MatchString(c.tree[k]) || re.MatchString(m.Text) {
+			continue
+		}
+		for p := k; c.built(p) && !c.redo[p]; p = p.parent() {
+			c.redo[p] = true
+			marks = append(marks, Node{L: p.L, I: p.I, Text: c.tree[p], Size: len(c.tree[p]), Redo: true})
+		}
+	}
+	if len(marks) > 0 {
+		c.appendDay("tree", marks...)
+	}
+	return len(marks)
+}
+
 // need queues node k, or builds it at once when it is free. A line to
 // redo waits for its halves to be redone first.
 func (c *Chat) need(k key) {

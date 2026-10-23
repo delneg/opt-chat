@@ -1042,3 +1042,39 @@ func TestCompactTailUnchanged(t *testing.T) {
 		t.Fatalf("checked %d tails, %d of them not empty", checked, tails)
 	}
 }
+
+// -redo marks a message's line that holds what its message lacks, and the
+// lines built on it, and keeps the marks in the tree's log: a line whose
+// message says it too stays.
+func TestMarkMatching(t *testing.T) {
+	dir := t.TempDir()
+	c, err := openChat(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range 4 {
+		c.Log("tool", fmt.Sprint("commit ", i, map[bool]string{true: " (should be Brand X)"}[i == 3], strings.Repeat(" x", 400))) // over 512: a model's line
+	}
+	c.mu.Lock()
+	for l := range 3 {
+		for i := range 4 >> l {
+			c.setNode(key{l, i}, "line "+key{l, i}.name())
+		}
+	}
+	c.setNode(key{0, 1}, "commit 1, should be Brand X")
+	c.setNode(key{0, 3}, "commit 3, should be Brand X")
+	c.flushNodes()
+	c.mu.Unlock()
+	if n := c.markMatching(regexp.MustCompile(`Brand X`)); n != 3 {
+		t.Fatalf("marked %d, want 3: 0+1, 0+2, 0+4", n)
+	}
+	c.lock.Close() // as at a restart
+	again, err := openChat(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := slices.SortedFunc(maps.Keys(again.redo), func(a, b key) int { return cmp.Compare(a.L*100+a.I, b.L*100+b.I) })
+	if want := []key{{0, 1}, {1, 0}, {2, 0}}; !slices.Equal(got, want) {
+		t.Fatalf("after a restart, to redo: %v, want %v", got, want)
+	}
+}

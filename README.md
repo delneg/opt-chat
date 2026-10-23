@@ -68,10 +68,13 @@ cache over.
 | `-agent-model`, `-agent-effort` | `opus`, `high` | for subagents |
 | `-agent-compact-max` | `400000` | compact a subagent's context past this, between two steps; `0`: never |
 | `-compact-model`, `-compact-effort` | `sonnet`, `medium` | for summaries (the recipe's: `haiku`) |
+| `-compact-bare` | on | summaries on another model than turns list no tools, so Claude Code's tool reminders stay out of them |
 | `-permission-mode` | `auto` | `manual`, `acceptEdits` or `auto` |
 | `-tools` | `Bash,Read,Edit,Write,WebSearch,WebFetch` | Claude Code tools |
 | `-claude-config` | on | your skills, plugins, MCP servers and settings |
 | `-claude-md`, `-wake` | on | the CLAUDE.md files of the folders Opt works in; wake-ups |
+| `-owed` | on | Opt's owed list, outside memory: each item cites your message; only you close one (`/owed`, `/done N`) |
+| `-redo` | | at start, rebuild the lines that match a regexp their message doesn't: claims a summary added |
 | `-auto-resume` | on | resume a cut-off turn and subagents at start |
 | `-import` | | import past chats first; see `-import-since`, `-import-tools`, `-import-skip` in the guide |
 | `-addr` | last run's port | `127.0.0.1:port` |

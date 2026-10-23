@@ -39,10 +39,12 @@ func main() {
 	cmodel := flag.String("compact-model", "sonnet", "model for compactions (the recipe's: haiku)")
 	ceffort := flag.String("compact-effort", "medium", "effort for compactions")
 	jobs := flag.Int("jobs", defaultJobs, "compactions running at once, the chat's before an import's")
+	cbare := flag.Bool("compact-bare", true, "compactions on another model than turns list no tools: they share no cache with turns, and Claude Code adds tool reminders, such as a commit attribution naming the compaction's model, that summaries took for the chat's")
 	perm := flag.String("permission-mode", "auto", "Claude Code permission mode to start in: manual, acceptEdits or auto (Shift+Tab cycles them)")
 	tools := flag.String("tools", "Bash,Read,Edit,Write,WebSearch,WebFetch", "Claude Code tools")
 	ownConfig := flag.Bool("claude-config", true, "give turns and subagents your Claude Code skills, plugins, MCP servers and settings (never its hooks, CLAUDE.md or memory)")
 	claudeMd := flag.Bool("claude-md", true, "with -claude-config, give turns and subagents the CLAUDE.md files of the folders they work in (never ~/.claude/CLAUDE.md)")
+	owed := flag.Bool("owed", true, "keep Opt's owed list in <dir>/owed.jsonl: what the user asked for and Opt hasn't done, each citing the user's message; only the user closes an item (/done)")
 	wake := flag.Bool("wake", true, "let Opt set wake-ups: messages to itself at a time, kept in <dir>/wake.jsonl")
 	autoResume := flag.Bool("auto-resume", true, fmt.Sprintf("as opt-chat starts, resume Opt's turn and the subagents a quit, a crash or /reload cut off mid-task, under a day ago, up to %d times in a row", resumeMax))
 	hideEmail := flag.Bool("hide-email", true, "drop your Claude account's email from the context Claude Code adds to calls: always in compactions, and in turns and subagents with -claude-config=false")
@@ -57,6 +59,8 @@ func main() {
 	evalPath := flag.String("eval", "", "ask this file's questions (JSON lines with \"q\") about the chat as side questions, write the answers to -eval-out, and quit")
 	evalOut := flag.String("eval-out", "answers.jsonl", "where -eval writes its answers")
 	evalPar := flag.Int("eval-par", 4, "questions -eval asks at once")
+	redo := flag.String("redo", "", "at start, build again each message's line that matches this regular expression while its message doesn't, and the lines built on them: a claim its compaction added")
+	evalCompact := flag.String("eval-compact", "", "build again the tree lines this file names (JSON lines with \"l\", \"i\", \"runs\"), as compactions would now, write them to -eval-out without keeping them, and quit")
 	flag.Parse()
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGUSR1) // at once: unhandled, it would end opt-chat; a reload waits for the start's end
@@ -115,8 +119,8 @@ func main() {
 		hb.print = webPrinter()
 	}
 	h := &harness{}
-	a := &Agent{chat: c, system: systemPrompt(agentsMD, *wake), agentsMD: agentsMD, claudeMd: *claudeMd, model: *model, effort: *effort,
-		amodel: *amodel, aeffort: *aeffort, cmodel: *cmodel, ceffort: *ceffort, perm: *perm, cwd: *cwd, tools: *tools, ownConfig: *ownConfig, mcpOff: saved.MCPOff, skillsSet: saved.Skills, pluginsSet: saved.Plugins, agentWindow: saved.AgentAutocompact, agentCap: *agentCap, recall: *recall,
+	a := &Agent{chat: c, system: systemPrompt(agentsMD, *wake, *owed), agentsMD: agentsMD, claudeMd: *claudeMd, model: *model, effort: *effort,
+		amodel: *amodel, aeffort: *aeffort, cmodel: *cmodel, ceffort: *ceffort, cbare: *cbare, perm: *perm, cwd: *cwd, tools: *tools, ownConfig: *ownConfig, mcpOff: saved.MCPOff, skillsSet: saved.Skills, pluginsSet: saved.Plugins, agentWindow: saved.AgentAutocompact, agentCap: *agentCap, recall: *recall,
 		running: map[string]*proc{}, writing: map[string]chan struct{}{}, report: func(text string) { h.input(message{kind: "work", text: text}) }, autoResume: *autoResume}
 	a.life, a.stop = context.WithCancel(context.Background())
 	h.agent = a
@@ -135,6 +139,21 @@ func main() {
 			fatal("eval: %v", err)
 		}
 		return
+	}
+	if *evalCompact != "" { // nothing kept: the lines go to -eval-out
+		err := runEvalCompact(a, *evalCompact, *evalOut, *evalPar)
+		a.quit()
+		if err != nil {
+			fatal("eval-compact: %v", err)
+		}
+		return
+	}
+	if *redo != "" {
+		re, err := regexp.Compile(*redo)
+		if err != nil {
+			fatal("-redo: %v", err)
+		}
+		dim(fmt.Sprintf("[-redo: %d lines to build again]", c.markMatching(re)))
 	}
 	recovered, cut := a.recoverAgents()
 	logAll(c, recovered) // in the chat, for the next turn: none starts now
@@ -177,6 +196,15 @@ func main() {
 	}
 	if rl != nil {
 		a.onReload = func() { go reload() }
+	}
+	if *owed {
+		o, err := loadOwed(*dir)
+		if err != nil {
+			fatal("owed: %v", err)
+		}
+		a.mu.Lock()
+		a.owed = o
+		a.mu.Unlock()
 	}
 	if *wake { // after the hub: one missed while down starts a turn now
 		w, err := startWaker(*dir, func(text string) { h.input(message{kind: "work", text: text}) })
@@ -268,11 +296,14 @@ func main() {
 }
 
 // systemPrompt is the prompt for a chat whose instructions are in
-// agentsMD, with the wake tool listed when on.
-func systemPrompt(agentsMD string, wake bool) string {
+// agentsMD, with the wake and owe tools listed when on.
+func systemPrompt(agentsMD string, wake, owed bool) string {
 	s := strings.ReplaceAll(prompt, "{{AGENTS.md}}", agentsMD)
 	if wake {
 		s = strings.Replace(s, "\n\n# Turns\n", "\n"+wakePrompt+"\n# Turns\n", 1)
+	}
+	if owed {
+		s = strings.Replace(s, "\n\n# Turns\n", "\n"+owedPrompt+"\n# Turns\n", 1)
 	}
 	return s
 }
@@ -598,7 +629,7 @@ func (h *harness) loop() {
 var (
 	commandWord = regexp.MustCompile(`(?s)^\s*/([A-Za-z][\w:.-]*)(?:\s+(.*?))?\s*$`) // "/word args", never a path like /Users/me/shot.png
 	modelName   = regexp.MustCompile(`^[\w.:\[\]-]+$`)
-	commands    = []string{"model", "effort", "mode", "autocompact", "mcp", "skills", "plugins", "agents", "status", "usage", "btw", "reload", "help"}
+	commands    = []string{"model", "effort", "mode", "autocompact", "mcp", "skills", "plugins", "agents", "status", "usage", "btw", "reload", "owed", "done", "help"}
 )
 
 // command runs a line that starts with /word, and says what it did; false
@@ -638,6 +669,9 @@ func command(a *Agent, line string) (string, bool, error) {
 	}
 	if word == "autocompact" {
 		return autocompact(a, arg)
+	}
+	if word == "owed" || word == "done" {
+		return owedCommand(a, word, arg), true, nil
 	}
 	if word == "reload" {
 		if a.onReload == nil {
@@ -686,6 +720,7 @@ func command(a *Agent, line string) (string, bool, error) {
 			"/skills [on|off name] your Claude Code skills: list them, or turn one on or off for Opt\n" +
 			"/plugins [on|off id] your Claude Code plugins (skills and MCP servers together), as name@marketplace\n" +
 			"/agents             list the subagents at work\n" +
+			"/owed, /done N      Opt's owed list: list it, or close item N (only you can)\n" +
 			"/status             Claude Code's version and account, this run's settings, the view and the plan's usage\n" +
 			"/usage [day|week|run] the plan's limits, what uses them, and what Opt's calls spent\n" +
 			"/btw question       a side question: answered beside the chat, which never sees it\n" +

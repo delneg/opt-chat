@@ -35,6 +35,7 @@ type Agent struct {
 	model, effort   string // turns
 	amodel, aeffort string // subagents
 	cmodel, ceffort string // compactions
+	cbare           bool   // compactions on another model than turns list no tools
 	perm, cwd       string
 	tools           string
 	ownConfig       bool              // turns and subagents get the user's Claude Code skills, plugins and MCP servers
@@ -54,6 +55,7 @@ type Agent struct {
 	autoResume bool              // a start resumes the subagents a quit, crash or reload cut off: see resume.go
 	onReload   func()            // /reload's: see reload.go; nil: none
 	wakes      *waker            // the wake tool's (-wake); nil: off
+	owed       *owedList         // the owe tool's (-owed); nil: off
 	noEmail    string            // the plugin that drops the account's email from calls' context, by folder; "": none. See email.go
 
 	life  context.Context // canceled at quit: every call stops
@@ -433,6 +435,7 @@ func (a *Agent) startCall(ctx context.Context, model, effort string, r role, win
 	dirs, own := slices.Clone(a.dirs), a.ownConfig && r != roleCompact
 	settings, claudeMd := a.ownSettings(window), a.claudeMd
 	system := a.systemNow()
+	bare := r == roleCompact && a.cbare && model != a.model
 	a.mu.Unlock()
 	switch r {
 	case roleAgent:
@@ -447,6 +450,13 @@ func (a *Agent) startCall(ctx context.Context, model, effort string, r role, win
 	}
 	// Every role gets the same system prompt.
 	tools := a.tools
+	if bare {
+		// Its tools only let it read the turns' prefix from the cache, which
+		// is per model. Listed, they bring Claude Code's reminders: Bash's
+		// commit attribution names this call's model, and summaries wrote
+		// down the chat's commits as crediting the wrong one.
+		tools = ""
+	}
 	if own {
 		tools = withTools(tools, "Skill", "ToolSearch") // ToolSearch: MCP servers' tools load as needed, not in every prompt
 	}
@@ -864,7 +874,7 @@ func (a *Agent) Compact(ctx context.Context, lines []string, stable int, task []
 		return "", err
 	}
 	p.send(rest...)
-	best, acks := "", 0
+	best, acks, listed := "", 0, false
 	for try := 1; ; {
 		e, ok := p.next()
 		if !ok && best != "" {
@@ -898,6 +908,14 @@ func (a *Agent) Compact(ctx context.Context, lines []string, stable int, task []
 				"<input>: write its one line now, as the task above says."))
 			continue
 		}
+		// A list of owed items <input> lacks came from <chat>: memory keeps
+		// no such list, and a line copies it forward as if its input said it.
+		if !listed && owedHead.MatchString(line) && !owedHead.MatchString(blocksText(task)) {
+			listed = true
+			p.send(textBlock("Your line lists owed or open items that <input> doesn't hold: they came\n" +
+				"from <chat>. Write the whole line again for the same <input>, without them."))
+			continue
+		}
 		if best == "" || len(line) < len(best) {
 			best = line
 		}
@@ -910,6 +928,18 @@ func (a *Agent) Compact(ctx context.Context, lines []string, stable int, task []
 			"the whole line again for the same <input>, cutting just enough of the\n"+
 			"least valuable items to fit before this cut:\n%s| ← LIMIT", len(line), head(line, nodeMax))))
 	}
+}
+
+// owedHead is the head of a list of owed or open items, which summaries
+// copied from line to line (see docs/2026-10-23-faithful-lines.md).
+var owedHead = regexp.MustCompile(`(?i)\b(owed|open|open items?|pending|to-?do)\s*:`)
+
+func blocksText(bs []block) string {
+	var b strings.Builder
+	for _, x := range bs {
+		b.WriteString(x.Text)
+	}
+	return b.String()
 }
 
 // echoedHead is a line's id+n| head, which a compaction sees on the lines it
@@ -1087,7 +1117,7 @@ func (t *Turn) Run(ctx context.Context, msgs []message) error {
 	h.setTurn(func(lt *liveTurn) {
 		lt.Phase, lt.Partial, lt.From, lt.Backlog, lt.Written, lt.Tool, lt.Context = "reading", partial, from, 0, 0, "", 0
 	})
-	input := a.atWork()
+	input := append(a.atWork(), a.owedNote()...)
 	// Recall reads the log while the call starts. It looks before the
 	// messages of this turn: one logged already (by a call that died) would
 	// find itself.

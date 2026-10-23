@@ -225,6 +225,10 @@ func fakeClaude() {
 			result("Ok.")
 		case strings.Contains(in, "was the reply to the view's first message only"):
 			result("the line at last")
+		case strings.Contains(in, "lists owed or open items that <input> doesn't hold"):
+			result("tool: ran it")
+		case strings.Contains(in, "Compaction:") && strings.Contains(in, "adds-owed"):
+			result("tool: ran it. Owed: a thing from the chat")
 		case strings.Contains(in, "Compaction:") && strings.Contains(in, "answers-ok"):
 			ackAlways = strings.Contains(in, "always")
 			result("ok")
@@ -533,7 +537,28 @@ func TestCompact(t *testing.T) {
 	if err == nil {
 		t.Fatalf("an ok twice became the line %q", got)
 	}
-	if n, u := a.takeCompactions(); n != 6 || u.Read == 0 {
+	// A list of owed items its input lacks came from the chat: asked again
+	// without it. One its input holds stays.
+	got, err = a.Compact(context.Background(), nil, 0, []block{textBlock("Compaction: adds-owed")})
+	if err != nil || got != "tool: ran it" {
+		t.Fatalf("an owed list from the chat was kept: %q, %v", got, err)
+	}
+	got, err = a.Compact(context.Background(), nil, 0, []block{textBlock("Compaction: adds-owed, as Owed: says")})
+	if err != nil || got != "tool: ran it. Owed: a thing from the chat" {
+		t.Fatalf("an owed list in the input was dropped: %q, %v", got, err)
+	}
+	// On another model than turns, with -compact-bare, it lists no tools:
+	// Claude Code's reminders for them named its model in commits.
+	a.cbare = true
+	if _, err := a.Compact(context.Background(), nil, 0, []block{textBlock("Compaction: x")}); err != nil {
+		t.Fatal(err)
+	}
+	all := calls()
+	if args := all[len(all)-1]; flagOf(args, "--tools") != "" || flagOf(args, "--model") != "small" {
+		t.Fatalf("bare compaction args: %q", args)
+	}
+	a.cbare = false
+	if n, u := a.takeCompactions(); n != 9 || u.Read == 0 {
 		t.Fatalf("compactions counted: %d, %v", n, u)
 	}
 }

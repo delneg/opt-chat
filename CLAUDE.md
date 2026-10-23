@@ -50,6 +50,7 @@ land there. The web tests go through real HTTP and WebSocket connections.
 | `attach.go`, `mention.go` | attachments; the `@` path menu |
 | `import.go` | importing past chats |
 | `ccconfig.go`, `control.go`, `perms.go`, `limits.go` | the user's Claude Code setup, Claude Code's own lists, permission modes, usage limits |
+| `limitresume.go` | a usage limit's reset time, read from its message; the resume at the reset, kept in `<dir>/resume.json` |
 | `prompt.md` | the system prompt |
 | `web/` | the page: Preact and htm, no build step; `web/vendor/` is vendored as is |
 

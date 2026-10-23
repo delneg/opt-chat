@@ -44,7 +44,9 @@ func serveMCP(a *Agent) (string, string, error) {
 			resp["error"] = map[string]any{"code": -32601, "message": "Method not found: " + req.Method}
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.MarshalWrite(w, resp)
+		// Sorted keys: Claude Code puts the tools as served at the head of
+		// every call's cached prefix, so their bytes must not change.
+		json.MarshalWrite(w, resp, json.Deterministic(true))
 	})
 	go http.Serve(ln, mux)
 	cfg := func(url string) string {

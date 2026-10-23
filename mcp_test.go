@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json/v2"
+	"io"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -58,6 +59,23 @@ func TestMCP(t *testing.T) {
 	}
 	if code, _ := call(`{"jsonrpc":"2.0","method":"notifications/initialized"}`); code != http.StatusAccepted {
 		t.Fatalf("notification: %d", code)
+	}
+	// Claude Code sends the tools as served, ahead of everything in the
+	// cached prefix: one byte off from call to call and nothing after them
+	// reads back.
+	raw := func() string {
+		resp, err := http.Post(url, "application/json", strings.NewReader(`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return string(b)
+	}
+	for first, i := raw(), 0; i < 20; i++ {
+		if raw() != first {
+			t.Fatal("tools/list differs between calls")
+		}
 	}
 	if _, out := call(`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`); len(out["result"].(map[string]any)["tools"].([]any)) != 5 {
 		t.Fatalf("tools/list: %v", out)

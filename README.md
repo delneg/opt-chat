@@ -75,7 +75,7 @@ cache over.
 | `-auto-resume` | on | resume a cut-off turn and subagents at start |
 | `-import` | | import past chats first; see `-import-since`, `-import-tools`, `-import-skip` in the guide |
 | `-addr` | last run's port | `127.0.0.1:port` |
-| `-open` | `true` | open the page in the browser |
+| `-open`, `-sounds` | on | open the page in the browser; play what happens from [peon-ping](https://github.com/PeonPing/peon-ping)'s sound pack |
 | `-recall` | `8` | raw messages sharing your message's rare words, given to each turn |
 | `-repl` | off | chat in the terminal |
 

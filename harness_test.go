@@ -530,8 +530,12 @@ func TestSendNowAsSettleEnds(t *testing.T) {
 				})
 			}
 		}
-		h.input(message{kind: "user", text: "hello"})
-		h.input(message{kind: "user", text: "second"})
+		// Both wait before the turn starts: the hook above takes h.mu
+		// under hub.mu, so nothing else may hold h.mu while it settles.
+		h.mu.Lock()
+		h.enqueue(message{kind: "user", text: "hello"})
+		h.enqueue(message{kind: "user", text: "second"})
+		h.mu.Unlock()
 		waitFor(t, "an answer", func() bool {
 			return slices.ContainsFunc(logged(c), func(s string) bool { return strings.HasPrefix(s, "opt: answer to") })
 		})

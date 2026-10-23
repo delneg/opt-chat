@@ -54,6 +54,8 @@ type Agent struct {
 	autoResume bool              // a start resumes the subagents a quit, crash or reload cut off: see resume.go
 	onReload   func()            // /reload's: see reload.go; nil: none
 	wakes      *waker            // the wake tool's (-wake); nil: off
+	resumes    *resumer          // resumes at a usage limit's reset (-resume-at-reset); nil: off
+	resetGrace time.Duration     // after the reset, before they go out
 	noEmail    string            // the plugin that drops the account's email from calls' context, by folder; "": none. See email.go
 
 	life  context.Context // canceled at quit: every call stops

@@ -207,9 +207,25 @@ func fakeClaude() {
 		switch {
 		case strings.HasSuffix(text, viewGoesOn):
 			if strings.Contains(text, "slow-ack") {
-				time.Sleep(300 * time.Millisecond)
+				select {
+				case <-time.After(300 * time.Millisecond):
+				case <-stop: // as Claude Code, which exits on SIGTERM
+					return
+				}
 			}
 			result("ok")
+		case strings.Contains(in, "turn-hit-limit") || strings.Contains(in, "agent-hit-limit"): // the plan's limit, once, resetting in a second or two
+			kind := "agent"
+			if strings.Contains(in, "turn-hit-limit") {
+				kind = "turn"
+			}
+			flag := base + ".limit-" + kind
+			if _, err := os.Stat(flag); err == nil {
+				result("went on after the limit")
+			} else {
+				os.WriteFile(flag, nil, 0o600)
+				emit(map[string]any{"type": "result", "is_error": true, "result": fmt.Sprintf("Claude AI usage limit reached|%d", time.Now().Add(2*time.Second).Unix())})
+			}
 		case strings.Contains(in, "Too long:") && longTries >= 0: // each try a byte shorter, a head echoed
 			longTries++
 			result(fmt.Sprintf("3+1|%s", strings.Repeat("y", 700-longTries)))

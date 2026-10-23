@@ -563,6 +563,7 @@ func TestStopKeepsReportsLogged(t *testing.T) {
 		defer h.turn.mu.Unlock()
 		return h.turn.open && h.turn.p == nil
 	})
+	waitFor(t, "the call to start", func() bool { b, _ := os.ReadFile(fakeArgsFile[h.agent]); return len(b) > 0 })
 	h.input(message{kind: "work", text: "[Scout] found it"})
 	if _, ok := h.stop(); !ok {
 		t.Fatal("stop")

@@ -44,6 +44,8 @@ func main() {
 	ownConfig := flag.Bool("claude-config", true, "give turns and subagents your Claude Code skills, plugins, MCP servers and settings (never its hooks, CLAUDE.md or memory)")
 	claudeMd := flag.Bool("claude-md", true, "with -claude-config, give turns and subagents the CLAUDE.md files of the folders they work in (never ~/.claude/CLAUDE.md)")
 	wake := flag.Bool("wake", true, "let Opt set wake-ups: messages to itself at a time, kept in <dir>/wake.jsonl")
+	resumeAtReset := flag.Bool("resume-at-reset", true, "when the plan's usage limit stops Opt's turn or a subagent, start a turn at the reset and resume the subagents, from <dir>/resume.json")
+	resetGrace := flag.Duration("reset-grace", 90*time.Second, "how long after the reset -resume-at-reset waits")
 	autoResume := flag.Bool("auto-resume", true, fmt.Sprintf("as opt-chat starts, resume Opt's turn and the subagents a quit, a crash or /reload cut off mid-task, under a day ago, up to %d times in a row", resumeMax))
 	hideEmail := flag.Bool("hide-email", true, "drop your Claude account's email from the context Claude Code adds to calls: always in compactions, and in turns and subagents with -claude-config=false")
 	importPath := flag.String("import", "", "import past chats, then chat: a ~/.claude or ~/.codex directory, a session's .jsonl, a Claude or ChatGPT export (.zip), or a text file whose lines become notes")
@@ -187,6 +189,16 @@ func main() {
 		a.wakes = w
 		a.mu.Unlock()
 		defer w.stop()
+	}
+	if *resumeAtReset {
+		r, err := startResumer(*dir, a.resumeAfterLimit)
+		if err != nil {
+			fatal("resume.json: %v", err)
+		}
+		a.mu.Lock()
+		a.resumes, a.resetGrace = r, *resetGrace
+		a.mu.Unlock()
+		defer r.stop()
 	}
 	stopStatus := make(chan struct{})
 	go watchStatus(c, a, hb, stopStatus)
@@ -579,7 +591,12 @@ func (h *harness) loop() {
 		quitting := h.quitting && cut && !h.stopped
 		h.agent.turnEnded(quitting)
 		if note := endNote(err, cut, h.stopped, quitting); note != "" { // for Opt's next turn
+			if err != nil && !cut {
+				note = strings.TrimSpace(note + " " + h.agent.limitHit(err.Error(), ""))
+			}
 			c.Log("work", note)
+		} else if err == nil && !cut {
+			h.agent.limitWent()
 		}
 		h.turn = nil
 		var left []queued

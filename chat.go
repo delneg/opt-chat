@@ -735,6 +735,7 @@ func (c *Chat) build(k key, compact compactor, ctxLines []string, stable int, ta
 		}
 		// It fails while other lines get built: its source, cut, stands in.
 		c.hub.notice("warn", "compaction %s failed %d times while other lines were built: its line is its source, cut and marked: %v", k.name(), f.n, err)
+		c.hub.sound(soundError)
 		text = c.fallback(k)
 	} else {
 		c.written++

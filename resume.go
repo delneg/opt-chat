@@ -198,6 +198,7 @@ func (a *Agent) resumeCut(names []string) {
 		case user: // the user's turn: Opt never hears of it
 			if !ok {
 				a.chat.hub.notice("warn", "[%s] %s", name, out)
+				a.chat.hub.sound(soundError)
 			}
 		case ok:
 			back = append(back, "["+name+"]")

@@ -91,6 +91,7 @@ func (h *harness) reload(r *reloader) error {
 	a := h.agent
 	c := a.chat
 	c.hub.notice("info", "[reload: building opt-chat]")
+	c.hub.sound(soundAck) // and the new opt-chat's start
 	out := r.exe + ".new"
 	if err := r.build(out); err != nil {
 		os.Remove(out)

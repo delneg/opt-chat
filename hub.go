@@ -22,6 +22,7 @@ type hub struct {
 	status  status
 	last    *turnEnd
 	print   func(any) // the terminal's share of each update; nil: none
+	sounds  *sounder  // nil: none (see sound.go)
 }
 
 // client is one page's outbox. A page that falls behind is dropped, and
@@ -363,7 +364,21 @@ func (h *hub) setAsks(asks []ask) {
 	if h == nil {
 		return
 	}
-	h.change(func() { h.asks = asks }, asksUpdate{T: "asks", Asks: asks})
+	asked := false
+	h.change(func() {
+		asked = slices.ContainsFunc(asks, func(q ask) bool { return !slices.ContainsFunc(h.asks, func(o ask) bool { return o.ID == q.ID }) })
+		h.asks = asks
+	}, asksUpdate{T: "asks", Asks: asks})
+	if asked {
+		h.sound(soundAsk)
+	}
+}
+
+// sound plays a sound of category cat, if sounds are on.
+func (h *hub) sound(cat string) {
+	if h != nil {
+		h.sounds.sound(cat)
+	}
 }
 
 func (h *hub) setStatus(s status) {

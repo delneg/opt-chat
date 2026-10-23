@@ -232,6 +232,7 @@ func (a *Agent) TellUser(name, text string, atts []attachment, now bool) (string
 	}
 	if ok {
 		c.Log("work", userLine(c, name, text, atts), m.images...)
+		c.hub.sound(soundAck)
 	}
 	return out, ok
 }
@@ -276,6 +277,7 @@ func (a *Agent) tell(name string, ts ...tell) (string, bool) {
 		a.note(name, func(r *agentRecord) { r.State = "working" })
 		a.userTurnLocked(name, !opt)
 		a.chat.hub.notice("info", "[%s] back at work", name)
+		a.chat.hub.sound(soundAck)
 	case p == nil:
 		return fmt.Sprintf("[%s] is starting: tell it again in a moment.", name), false
 	case a.looping(name):
@@ -526,6 +528,9 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 		user := a.userTurn[name]
 		delete(a.userTurn, name)
 		a.mu.Unlock()
+		if state == "failed" { // stopped by the user, a quit or a reload: no sound
+			a.chat.hub.sound(soundError)
+		}
 		var now agentRecord
 		a.note(name, func(r *agentRecord) {
 			r.State = state
@@ -572,9 +577,11 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 	var lines []string
 	if resumed {
 		a.chat.hub.notice("info", "[%s] resumed on %s", name, strings.TrimSpace(model+" "+effort))
+		a.chat.hub.sound(soundStart)
 	} else {
 		a.agentWrite(name, "task", task)
 		a.chat.hub.notice("info", "[%s] started on %s", name, strings.TrimSpace(model+" "+effort))
+		a.chat.hub.sound(soundStart)
 		a.agentWrite(name, "on", strings.TrimSpace(model+" "+effort))
 		if err := c.settle(h.ctx, func(int, int) {}); err != nil {
 			report(failed(err))
@@ -670,6 +677,7 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 			}
 			a.agentWrite(name, "compacted", fmt.Sprintf("mid-task: %d tokens to %d", e.Compact.Pre, e.Compact.Post))
 			a.chat.hub.notice("info", "[%s]'s context was compacted mid-task, between two steps, %s tokens to %s", name, k(e.Compact.Pre), k(e.Compact.Post))
+			a.chat.hub.sound(soundLimit)
 			midCompacted = forced == 0 // its next message, after its report, brings the view and its task again
 			a.setSub(name, func(s *sub) {
 				s.Context = size
@@ -913,6 +921,7 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 		} else {
 			send(final)
 		}
+		a.chat.hub.sound(soundDone)
 		if len(late) > 0 {
 			a.tell(name, late...)
 		}

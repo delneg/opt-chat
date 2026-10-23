@@ -53,6 +53,7 @@ func main() {
 	repl := flag.Bool("repl", false, "chat in the terminal instead of the browser")
 	addr := flag.String("addr", "", "where the web chat listens, as 127.0.0.1:port (empty: the last run's port when free, else any)")
 	open := flag.Bool("open", true, "open the web chat in the browser")
+	sounds := flag.Bool("sounds", true, "play what happens (Opt took your message or ended its turn, a subagent started, reported or failed, a question waits, something broke) from the sound pack peon-ping plays, at its volume; peon toggle mutes them")
 	recall := flag.Int("recall", 8, "messages from the whole log that share your message's rare words, given raw to each turn (0: none)")
 	evalPath := flag.String("eval", "", "ask this file's questions (JSON lines with \"q\") about the chat as side questions, write the answers to -eval-out, and quit")
 	evalOut := flag.String("eval-out", "answers.jsonl", "where -eval writes its answers")
@@ -109,6 +110,9 @@ func main() {
 	}
 	agentsMD := filepath.Join(*dir, "AGENTS.md")
 	hb := newHub()
+	if *sounds {
+		hb.sounds = newSounder(peonDir())
+	}
 	if *repl {
 		hb.print = replPrinter()
 	} else {
@@ -173,6 +177,7 @@ func main() {
 		}
 		if err := h.reload(rl); err != nil {
 			hb.notice("warn", "reload: %v", err)
+			hb.sound(soundError)
 		}
 	}
 	if rl != nil {
@@ -190,6 +195,7 @@ func main() {
 	}
 	stopStatus := make(chan struct{})
 	go watchStatus(c, a, hb, stopStatus)
+	hb.sound(soundStart)
 
 	quit := func() {
 		c.mu.Lock()
@@ -324,6 +330,9 @@ func (h *harness) input(m message) {
 	if h.aside(m) {
 		return
 	}
+	if m.kind == "user" {
+		h.agent.chat.hub.sound(soundAck)
+	}
 	// A report joins the turn underway at once, and so does the user's
 	// message while a tool call runs: the model gets it with the result.
 	// It is sent without h.mu, as everything sent to a call is: a write to
@@ -350,6 +359,9 @@ func (h *harness) input(m message) {
 func (h *harness) inputNow(m message) {
 	if h.aside(m) {
 		return
+	}
+	if m.kind == "user" {
+		h.agent.chat.hub.sound(soundAck)
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -572,6 +584,7 @@ func (h *harness) loop() {
 		err := t.Run(ctx, msgs)
 		if err != nil && ctx.Err() == nil {
 			c.hub.notice("warn", "turn: %v", err)
+			c.hub.sound(soundError)
 		}
 		h.agent.setWoken(false)
 		h.mu.Lock()
@@ -589,6 +602,9 @@ func (h *harness) loop() {
 		}
 		if !h.stopped { // stopped: they stay in the log, unanswered, as stop says
 			h.queue = append(left, h.queue...)
+		}
+		if err == nil && !cut && len(h.queue) == 0 { // done, and no turn follows: the user's turn
+			c.hub.sound(soundDone)
 		}
 		h.mu.Unlock()
 		cancel()

@@ -13,7 +13,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -50,8 +49,7 @@ type sounder struct {
 	dir  string                                  // peon-ping's: config.json, packs/
 	play func(file string, volume float64) error // the sound, to its end
 	in   chan string
-	mu   sync.Mutex
-	last map[string]string // the file each category played last: not twice in a row
+	last map[string]string // the file each category played last: not twice in a row; run's, one sound at a time
 }
 
 // peonDir is where peon-ping keeps its config and packs.
@@ -187,13 +185,11 @@ func (s *sounder) playOne(cat string) error {
 	if len(files) == 0 {
 		return nil
 	}
-	s.mu.Lock()
 	if len(files) > 1 {
 		files = slices.DeleteFunc(files, func(f string) bool { return f == s.last[cat] })
 	}
 	file := files[rand.IntN(len(files))]
 	s.last[cat] = file
-	s.mu.Unlock()
 	if !strings.Contains(file, "/") { // an older pack's: bare names, in sounds/
 		file = filepath.Join("sounds", file)
 	}

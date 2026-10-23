@@ -603,7 +603,7 @@ func (h *harness) loop() {
 		if !h.stopped { // stopped: they stay in the log, unanswered, as stop says
 			h.queue = append(left, h.queue...)
 		}
-		if err == nil && !cut && len(h.queue) == 0 { // done, and no turn follows: the user's turn
+		if err == nil && !cut && !h.stopped && len(h.queue) == 0 { // done, and no turn follows: the user's turn
 			c.hub.sound(soundDone)
 		}
 		h.mu.Unlock()

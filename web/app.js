@@ -1261,10 +1261,21 @@ const MsgView = memo(({ m, echo, state }) => {
       return html`<div class="msg ai" title=${when(m.date)}><span class="mark" aria-hidden="true">○</span><div class="body"><${Markdown} text=${m.text}/></div></div>`;
     case 'tool': return html`<${ToolMsg} m=${m} echo=${echo} state=${state}/>`;
     case 'echo': return html`<${ToolMsg} echo=${m} state="done"/>`;
+    case 'thought': return html`<${ThoughtMsg} m=${m}/>`;
     case 'work': return html`<${WorkMsg} m=${m}/>`;
     default: return html`<${NoteMsg} m=${m}/>`;
   }
 });
+
+// ThoughtMsg is a subagent's thinking, kept in its log as it showed while it
+// thought; a long one folds to its first lines until clicked.
+function ThoughtMsg({ m }) {
+  const [open, setOpen] = useKept('th' + m.i, false);
+  const lines = m.text.split('\n');
+  const long = lines.length > 6 || m.text.length > 600;
+  const toggle = () => { if (long && !getSelection().toString()) setOpen(!open); }; // not when selecting its text
+  return html`<div class="thinking kept" title=${when(m.date)} role=${long ? 'button' : undefined} tabindex=${long ? 0 : undefined} onClick=${toggle}><div>${open || !long ? m.text : lines.slice(0, 6).join('\n').slice(0, 600)}${long && !open && html`<span class="more">${'\n'}… (click to expand)</span>`}</div></div>`;
+}
 
 function Markdown({ text, live }) {
   return html`<div class="md" dangerouslySetInnerHTML=${{ __html: live ? mdLive(text) : md(text) }}/>`;
@@ -2233,7 +2244,7 @@ function addStep(name, s) {
   if (a?.name !== name || a.loading) return; // a step that came before its log is in the log
   const steps = a.steps.concat([s]);
   const cut = steps.length > agentStepsMax;
-  const live = { agent: 'text', tool: 'input' }[s.kind]; // what it was writing, now in its log
+  const live = { agent: 'text', thinking: 'thinking', tool: 'input' }[s.kind]; // what it was writing, now in its log
   set({ agent: { ...a, steps: cut ? steps.slice(-agentStepsMax) : steps, off: a.off + (cut ? 1 : 0), cut: a.cut || cut },
     ...(live && S.alive?.[live] ? { alive: { ...S.alive, [live]: '' } } : {}) });
 }
@@ -2403,6 +2414,7 @@ function stepMsgs(name, steps, off) {
       case 'task': out.push({ kind: 'user', from: 'task from Opt', text: s.text, ...at }); break;
       case 'opt': out.push({ kind: 'user', from: 'Opt told it', text: s.text, ...at }); break;
       case 'loop': out.push({ kind: 'user', text: 'Stop hook: ' + s.text, ...at }); break;
+      case 'thinking': out.push({ kind: 'thought', text: s.text, ...at }); break;
       case 'agent': out.push({ kind: 'opt', text: s.text, ...at }); break;
       case 'tool': case 'echo': out.push({ kind: s.kind, text: s.text, ref: s.ref, ...at }); break;
       case 'compacted': { // "mid-task: " or, at rest, nothing before the sizes

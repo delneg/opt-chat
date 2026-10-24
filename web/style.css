@@ -142,6 +142,9 @@ a { color: var(--blue); }
 
 /* live turn */
 .thinking { color: var(--dim); font-style: italic; white-space: pre-wrap; max-height: 9em; overflow: hidden; display: flex; flex-direction: column-reverse; margin: 0 0 1em 2ch; border-left: 2px solid var(--border); padding-left: 1.5ch; }
+.thinking.kept { max-height: none; display: block; }
+.thinking.kept[role=button] { cursor: pointer; }
+.thinking .more { color: var(--faint); font-style: normal; }
 .notice { color: var(--dim); margin: 0 0 1em; white-space: pre-wrap; display: grid; grid-template-columns: 2ch 1fr; }
 .notice.warn { color: var(--yellow); }
 /* a side question (/btw): set apart from the chat, which never sees it */

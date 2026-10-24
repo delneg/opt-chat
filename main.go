@@ -364,6 +364,19 @@ func (h *harness) inputNow(m message) {
 		h.agent.chat.hub.sound(soundAck)
 	}
 	h.mu.Lock()
+	t := h.turn
+	if h.quitting {
+		t = nil
+	}
+	h.mu.Unlock()
+	// While a tool call runs, m joins the call and the call is cut, so
+	// that the model reads it now, in the same call (see Turn.hurry).
+	if t != nil && m.kind == "user" && t.inTool() && t.Send(&m) {
+		h.agent.setWoken(false)
+		t.hurry()
+		return
+	}
+	h.mu.Lock()
 	defer h.mu.Unlock()
 	if !h.enqueue(m) {
 		return
@@ -465,13 +478,17 @@ func (h *harness) pull(id int) (message, bool) {
 }
 
 // sendNow stops the turn underway, or the wait before it, and starts the
-// next one at once with the queue; false when nothing waits.
+// next one at once with the queue; with none queued, it cuts the tool calls
+// underway for the user's messages that wait for their results. False when
+// nothing waits.
 func (h *harness) sendNow() bool {
 	h.mu.Lock()
-	defer h.mu.Unlock()
+	t := h.turn
 	if !h.running || !slices.ContainsFunc(h.queue, func(q queued) bool { return q.kind == "user" }) {
-		return false
+		h.mu.Unlock()
+		return t != nil && t.hurry() // the user's messages that wait for a tool call's result
 	}
+	defer h.mu.Unlock()
 	h.hurry = true
 	if h.cancel != nil {
 		h.cancel()

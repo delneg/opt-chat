@@ -109,7 +109,8 @@ type liveTurn struct {
 	From     int    `json:"from"`             // the turn's first message: a tool call after it, unanswered, is running
 	Text     string `json:"text,omitzero"`    // in a hello only: the reply being written
 	Thinking string `json:"thinking,omitzero"`
-	Input    string `json:"input,omitzero"` // the tool call's input as it is written: JSON, partial
+	Input    string `json:"input,omitzero"`   // the tool call's input as it is written: JSON, partial
+	Waiting  int    `json:"waiting,omitzero"` // the user's messages sent in during its tool calls, read with their results; send now cuts them
 }
 
 type queueItem struct {

@@ -721,7 +721,7 @@ async function submit(now) {
   if (submitting) return;
   const to = target();
   if (!inputEl.value.trim() && !S.atts.length) {
-    if (!to && now && S.queue.length) send({ t: 'now' }); // full screen: nothing; Esc interrupts the agent, so a double Enter never stops it
+    if (!to && now && (S.queue.length || S.turn.waiting)) send({ t: 'now' }); // full screen: nothing; Esc interrupts the agent, so a double Enter never stops it
     return;
   }
   if (S.conn !== 'open') { notice('warn', 'Not connected: your message stays in the input until opt-chat is back.'); return; }
@@ -1246,7 +1246,8 @@ function AsideView({ a }) {
   </div>`;
 }
 
-function refusal(out) { return out.startsWith('The user doesn\'t want to proceed with this tool use.') || out === 'The user said no to this call.'; }
+const CUT_ECHO = 'Interrupted: the user sent a message to read now.'; // a call send now cut: see cutEcho in claude.go
+function refusal(out) { return out.startsWith('The user doesn\'t want to proceed with this tool use.') || out === 'The user said no to this call.' || out === CUT_ECHO; }
 
 const MsgView = memo(({ m, echo, state }) => {
   switch (m.kind) {
@@ -1504,7 +1505,7 @@ function ToolMsg({ m, echo, state }) {
     <div class="body">
       ${tool && html`<div class="head" role="button" tabindex="0" aria-expanded=${open} onClick=${toggle}><span class="name">${tool.name}</span><span class="args">(${toolArgs(tool.name, tool.input, tool.raw)})</span>${ran >= 1000 && html`<span class="took" title="how long it ran">${elapsed(ran)}</span>`}</div>`}
       ${echo && !open && sum && html`<div class="result" role="button" tabindex=${tool ? -1 : 0} onClick=${toggle}><span aria-hidden="true">  ⎿</span><span class="lines">${sum} <span class="more">(click to expand)</span></span></div>`}
-      ${echo && !open && refused && html`<div class="result" role="button" tabindex=${tool ? -1 : 0} onClick=${toggle}><span aria-hidden="true">  ⎿</span><span class="cut-note">${state === 'cut' ? 'Interrupted' : 'No (you said no)'}</span></div>`}
+      ${echo && !open && refused && html`<div class="result" role="button" tabindex=${tool ? -1 : 0} onClick=${toggle}><span aria-hidden="true">  ⎿</span><span class="cut-note">${state === 'cut' || out === CUT_ECHO ? 'Interrupted' : 'No (you said no)'}</span></div>`}
       ${echo && !open && !sum && !refused && html`<div class="result" role="button" tabindex=${tool ? -1 : 0} onClick=${toggle}><span aria-hidden="true">  ⎿</span><span class="lines">${lines.slice(0, 3).map(l => oneLine(l, 160)).join('\n') || '(no output)'}${lines.length > 3 && html`<span class="more">${'\n'}… +${lines.length - 3} lines (click to expand)</span>`}</span></div>`}
       ${state === 'cut' && !echo && html`<div class="result"><span aria-hidden="true">  ⎿</span><span class="cut-note">Interrupted</span></div>`}
       ${open && html`<div class="full">
@@ -1838,6 +1839,7 @@ function Spinner({ turn, chars, queued }) {
   if (turn.phase === 'settling' && turn.written) meta.push(`${count(turn.written, 'line')} written`);
   meta.push(html`<button title="stop the turn" onClick=${() => send({ t: 'stop' })}>esc to interrupt</button>`);
   if (queued || turn.phase === 'settling') meta.push(html`<button title="stop the turn and send the queue now" onClick=${() => send({ t: 'now' })}>⌘⏎ send now</button>`);
+  else if (turn.waiting) meta.push(html`<button title="your message waits for the tool call's result: cut the call so Opt reads it now" onClick=${() => send({ t: 'now' })}>⌘⏎ read mine now</button>`);
   return html`<div class="spinner"><span><${Glyph}/>${verb}…</span><span class="meta">(${meta.map((x, j) => html`${j ? ' · ' : ''}${x}`)})</span>
     ${turn.partial > 0 && html`<span class="meta">memory partial: ${count(turn.partial, 'message')} not summarized yet</span>`}</div>`;
 }
@@ -1954,7 +1956,7 @@ function Help() {
   const rows = [
     ['Enter', 'send; while Opt works, queue'],
     ['Shift+Enter', 'new line'],
-    ['⌘/Ctrl+Enter', 'send now: stop the turn and send; full screen, interrupt the subagent at work to read it now'],
+    ['⌘/Ctrl+Enter', 'send now: stop the turn and send; while a tool call runs, cut it so Opt reads your message now (empty input: the messages that wait for it); full screen, interrupt the subagent at work to read it now'],
     ['Esc', 'stop the turn; queued messages come back here'],
     ['↑ / ↓', 'your earlier messages; ↑ on an empty input edits the last queued'],
     ['drop · paste · 📎', 'attach files, each where the caret is; a path you type (/… or ~/…) attaches its file'],
@@ -1995,7 +1997,7 @@ function Input() {
       <${Chips}/>
       <span class="gt" aria-hidden="true">${to ? '→' : '▸'}</span>
       <textarea ref=${ref} rows="1" spellcheck="false" aria-label=${to ? `Message [${to}]` : 'Message Opt'}
-        placeholder=${to ? `Message [${to}]…` : S.turn.phase ? 'Queue a message for Opt…' : 'Message Opt'}
+        placeholder=${to ? `Message [${to}]…` : S.turn.phase === 'tool' ? 'Message Opt: read as the tool call ends · ⌘⏎ cuts it to read now…' : S.turn.phase ? 'Queue a message for Opt…' : 'Message Opt'}
         onInput=${() => { histPos = -1; keepDraft(); if (S.cmdSel || S.cmdShut !== null) set({ cmdSel: 0, cmdShut: null }); autosize(); placesGone(); lookForPaths(); lookForMention(); tick(n => n + 1); }}
         onKeyUp=${e => { if (e.key.startsWith('Arrow') || e.key === 'Home' || e.key === 'End') { lookForMention(); tick(n => n + 1); } }}
         onClick=${() => { lookForMention(); tick(n => n + 1); }}

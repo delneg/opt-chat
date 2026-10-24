@@ -1009,8 +1009,15 @@ type Turn struct {
 	p        *proc     // set once the view and input are sent
 	pending  []message // taken while the view was being sent
 	tools    int       // tool calls started and not answered
+	waiting  int       // the user's messages sent in while they run: read with their results
+	cut      bool      // interrupted for them (hurry): their results are cut
 	answered bool      // its last result went well: set by Run, read once it returns
 }
+
+const (
+	refused = "The user doesn't want to proceed with this tool use." // how Claude Code answers a call cut short, as for a no
+	cutEcho = "Interrupted: the user sent a message to read now."    // what the chat logs for one hurry cut
+)
 
 // inTool reports whether a tool call is running: a message sent now reaches
 // the model with its result, as soon as it could.
@@ -1022,8 +1029,40 @@ func (t *Turn) inTool() bool {
 
 func (t *Turn) countTools(n int) {
 	t.mu.Lock()
-	t.tools = max(0, t.tools+n)
-	t.mu.Unlock()
+	defer t.mu.Unlock()
+	if t.tools = max(0, t.tools+n); t.tools == 0 && t.waiting > 0 { // read with the results
+		t.setWaiting(0)
+	}
+}
+
+// setWaiting tells the pages how many of the user's messages wait for the
+// tool calls underway; t.mu held.
+func (t *Turn) setWaiting(n int) {
+	t.waiting = n
+	t.agent.chat.hub.setTurn(func(lt *liveTurn) { lt.Waiting = n })
+}
+
+// hurry interrupts the tool calls underway, so that the model reads now the
+// user's messages that wait for their results: Claude Code cuts them, ends
+// the turn, and answers the messages in the same call. False when none
+// wait.
+func (t *Turn) hurry() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if !t.open || t.p == nil || t.tools == 0 || t.waiting == 0 {
+		return false
+	}
+	if !t.cut && !t.p.control("opt-now", map[string]any{"subtype": "interrupt"}) {
+		return false
+	}
+	t.cut = true
+	return true
+}
+
+func (t *Turn) hurried() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.cut
 }
 
 // Send hands a message to the running call, between its tool calls. When it
@@ -1047,6 +1086,9 @@ func (t *Turn) Send(m *message) bool {
 	if !t.p.send(c.content(*m)...) {
 		t.open = false
 		return false
+	}
+	if m.kind == "user" && t.tools > 0 {
+		t.setWaiting(t.waiting + 1)
 	}
 	return true
 }
@@ -1205,6 +1247,9 @@ func (t *Turn) Run(ctx context.Context, msgs []message) error {
 			for _, b := range e.blocks() {
 				if b.Type == "tool_result" {
 					out, imgs := resultContent(b.Content)
+					if t.hurried() && strings.HasPrefix(out, refused) {
+						out = cutEcho
+					}
 					var names []string
 					for _, img := range imgs {
 						if name, err := c.saveImage(img); err == nil {
@@ -1254,7 +1299,7 @@ func (t *Turn) Run(ctx context.Context, msgs []message) error {
 		t.answered = !e.IsError
 		if !e.IsError {
 			failed = "" // a later result went well: the turn did not fail
-		} else if ctx.Err() == nil && !p.declined.Load() {
+		} else if ctx.Err() == nil && !p.declined.Load() && !(t.hurried() && e.Subtype == "error_during_execution") {
 			failed = e.failure()
 		}
 		// Claude Code delivers a message sent mid-run into this same result,

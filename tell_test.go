@@ -262,7 +262,7 @@ func TestTellUserNow(t *testing.T) {
 		t.Fatalf("its report: %q", got)
 	}
 	log := c.ZoomAgent("Slow")
-	call, told, cut := strings.Index(log, "sleep 600"), strings.Index(log, "user: hurry"), strings.Index(log, "cut: ")
+	call, told, cut := strings.Index(log, "sleep 600"), strings.Index(log, "user: hurry"), strings.Index(log, "echo: The user doesn't want to proceed") // as Claude Code answers a call cut
 	if call < 0 || told < call || cut < told || strings.Count(log, "user: hurry") != 1 {
 		t.Fatalf("its log: %q", log)
 	}

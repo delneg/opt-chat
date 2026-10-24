@@ -578,23 +578,6 @@ func TestStopKeepsReportsLogged(t *testing.T) {
 	}
 }
 
-// Send now while a tool call runs stops the turn, rather than slipping the
-// message into it.
-func TestSendNowDuringTool(t *testing.T) {
-	c, _ := fakeChat(t, t.TempDir(), 100)
-	record(c)
-	h := newHarness(t, c)
-	h.input(message{kind: "user", text: "wait-for-message"})
-	waitFor(t, "the tool call", func() bool { return hasLogged(c, `tool: Bash {"command":"wait"}`) })
-	h.inputNow(message{kind: "user", text: "right now"})
-	waitFor(t, "the next turn", func() bool {
-		return slices.ContainsFunc(logged(c), func(s string) bool { return strings.HasPrefix(s, "opt: answer to") && strings.Contains(s, "right now") })
-	})
-	if hasLogged(c, "opt: got: right now") {
-		t.Fatal("send now went into the running turn")
-	}
-}
-
 // While a tool runs the spinner says so: the message's end, which Claude
 // Code sends as the tool starts, does not turn it back to thinking.
 func TestToolPhase(t *testing.T) {
@@ -638,5 +621,41 @@ func TestToolInputStreams(t *testing.T) {
 	waitFor(t, "the turn to end", h.idle)
 	if lt, _ := hubState(c); lt.Input != "" || !hasLogged(c, `tool: Bash {"command":"echo hi"}`) {
 		t.Fatalf("after: %+v, %q", lt, logged(c))
+	}
+}
+
+// While a tool call runs, the user's message joins the call and waits for
+// its result; send now (or a message sent now) cuts the call, and the model
+// answers the message in the same call, with no failure.
+func TestSendNowCutsTool(t *testing.T) {
+	for _, now := range []bool{false, true} {
+		c, _ := fakeChat(t, t.TempDir(), 100)
+		r := record(c)
+		h := newHarness(t, c)
+		h.input(message{kind: "user", text: "slow-task"})
+		waitFor(t, "the tool call", func() bool { lt, _ := hubState(c); return lt.Phase == "tool" })
+		if now {
+			h.inputNow(message{kind: "user", text: "look here"})
+		} else {
+			h.input(message{kind: "user", text: "look here"})
+			waitFor(t, "the message to wait", func() bool { lt, _ := hubState(c); return lt.Waiting == 1 })
+			if !h.sendNow() {
+				t.Fatal("send now did nothing")
+			}
+		}
+		waitFor(t, "the turn to end", h.idle)
+		got := logged(c)
+		read := func(s string) bool {
+			return strings.HasPrefix(s, "opt: read now: ") && strings.Contains(s, "look here")
+		}
+		if !slices.Contains(got, "echo: "+cutEcho) || !slices.ContainsFunc(got, read) {
+			t.Fatalf("now %v: logged %q", now, got)
+		}
+		if w := r.warnings(); len(w) > 0 {
+			t.Fatalf("now %v: warned %q", now, w)
+		}
+		if h.sendNow() {
+			t.Fatal("send now with nothing waiting")
+		}
 	}
 }

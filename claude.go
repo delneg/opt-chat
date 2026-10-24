@@ -1010,7 +1010,7 @@ type Turn struct {
 	pending  []message // taken while the view was being sent
 	tools    int       // tool calls started and not answered
 	waiting  int       // the user's messages sent in while they run: read with their results
-	cut      bool      // interrupted for them (hurry): their results are cut
+	cut      bool      // interrupted for them (hurry), until the cut ends in a result: their results are cut
 	answered bool      // its last result went well: set by Run, read once it returns
 }
 
@@ -1059,10 +1059,16 @@ func (t *Turn) hurry() bool {
 	return true
 }
 
-func (t *Turn) hurried() bool {
+// hurried reports whether hurry cut the tool calls underway; done, the cut
+// ends with the result it brings, so a later refusal or failure is real.
+func (t *Turn) hurried(done bool) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return t.cut
+	cut := t.cut
+	if done {
+		t.cut = false
+	}
+	return cut
 }
 
 // Send hands a message to the running call, between its tool calls. When it
@@ -1247,7 +1253,7 @@ func (t *Turn) Run(ctx context.Context, msgs []message) error {
 			for _, b := range e.blocks() {
 				if b.Type == "tool_result" {
 					out, imgs := resultContent(b.Content)
-					if t.hurried() && strings.HasPrefix(out, refused) {
+					if strings.HasPrefix(out, refused) && t.hurried(false) {
 						out = cutEcho
 					}
 					var names []string
@@ -1297,9 +1303,10 @@ func (t *Turn) Run(ctx context.Context, msgs []message) error {
 		}
 		u.add(e.Usage)
 		t.answered = !e.IsError
+		cut := e.Subtype == "error_during_execution" && t.hurried(true) // the hurry's: the messages' answer follows
 		if !e.IsError {
 			failed = "" // a later result went well: the turn did not fail
-		} else if ctx.Err() == nil && !p.declined.Load() && !(t.hurried() && e.Subtype == "error_during_execution") {
+		} else if ctx.Err() == nil && !p.declined.Load() && !cut {
 			failed = e.failure()
 		}
 		// Claude Code delivers a message sent mid-run into this same result,

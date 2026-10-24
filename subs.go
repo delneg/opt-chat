@@ -157,13 +157,17 @@ func (w *agentLive) field(k string) *string {
 }
 
 // liveLogged drops what the subagent name was writing of kind k, now a
-// step in its log; the pages drop it as the step comes.
-func (a *Agent) liveLogged(name, k string) {
+// step in its log, and gives it; the pages drop it as the step comes.
+func (a *Agent) liveLogged(name, k string) string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if w := a.subLive[name]; w != nil {
-		*w.field(k) = ""
+	w := a.subLive[name]
+	if w == nil {
+		return ""
 	}
+	s := *w.field(k)
+	*w.field(k) = ""
+	return s
 }
 
 // liveOf is what the subagent name is writing now, for a page that opens
@@ -185,7 +189,7 @@ const stepsMax = 512 << 10
 // "@" and the unix ms it was written, and on a tool call and its echo "#"
 // and the call's id; "tool@1761134400000#toolu_01: ". Logs from before
 // have the kind alone, "tool: ".
-var stepStart = regexp.MustCompile(`(?m)^(task|on|opt|user|agent|tool|echo|loop|compacted|cut)(?:@(\d+)(?:#(\S+?))?)?: `)
+var stepStart = regexp.MustCompile(`(?m)^(task|on|opt|user|agent|thinking|tool|echo|loop|compacted|cut)(?:@(\d+)(?:#(\S+?))?)?: `)
 
 // stepHead is s's head in the log, as stepStart reads it.
 func stepHead(s step) string {
@@ -265,15 +269,24 @@ func stepHeads(b []byte) [][]int {
 }
 
 // plainSteps is a log with each entry's head its kind alone, as logs had
-// before times were kept: what Opt reads of a subagent.
+// before times were kept, and its thinking left out: what Opt reads of a
+// subagent, what it did.
 func plainSteps(b []byte) []byte {
 	var out []byte
-	last := 0
+	last, skip := 0, false
 	for _, m := range stepHeads(b) {
-		out = append(out, b[last:m[0]]...)
+		if !skip {
+			out = append(out, b[last:m[0]]...)
+		}
+		if skip = string(b[m[2]:m[3]]) == "thinking"; skip {
+			continue
+		}
 		out = append(out, b[m[2]:m[3]]...)
 		out = append(out, ": "...)
 		last = m[1]
+	}
+	if skip {
+		return out
 	}
 	return append(out, b[last:]...)
 }

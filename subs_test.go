@@ -92,3 +92,15 @@ func TestStepHeads(t *testing.T) {
 		t.Fatalf("an id with a colon: %+v", got)
 	}
 }
+
+// A subagent's thinking is in its log, for the page, and out of what Opt
+// reads of it, wherever it is.
+func TestThinkingSteps(t *testing.T) {
+	log := "thinking@1: first\n\nmore\n\ntool@2#t1: Bash x\n\nthinking@3: then\n\necho@4#t1: out\n\nthinking@5: last\n\n"
+	if got := parseSteps([]byte(log)); len(got) != 5 || got[0] != (step{Kind: "thinking", Text: "first\n\nmore", At: 1}) {
+		t.Fatalf("%+v", got)
+	}
+	if got := string(plainSteps([]byte(log))); got != "tool: Bash x\n\necho: out\n\n" {
+		t.Fatalf("plain: %q", got)
+	}
+}

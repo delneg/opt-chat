@@ -741,6 +741,14 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 		results := 0
 		for _, b := range e.blocks() {
 			switch {
+			case e.Type == "assistant" && b.Type == "thinking" && !acking:
+				s := a.liveLogged(name, "thinking") // as it streamed: the block may come without its text
+				if b.Thinking != "" {
+					s = b.Thinking
+				}
+				if s != "" {
+					a.agentWrite(name, "thinking", s)
+				}
 			case e.Type == "assistant" && b.Type == "text" && !acking:
 				a.liveLogged(name, "text")
 				a.agentWrite(name, "agent", b.Text)

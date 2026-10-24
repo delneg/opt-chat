@@ -399,12 +399,20 @@ func fakeClaude() {
 			stream(map[string]any{"type": "message_start", "message": map[string]any{"usage": map[string]any{"output_tokens": 5}}})
 			stream(map[string]any{"type": "content_block_start", "content_block": map[string]any{"type": "thinking"}})
 			stream(map[string]any{"type": "content_block_delta", "delta": map[string]any{"type": "thinking_delta", "thinking": "hmm"}})
+			say(block{Type: "thinking", Thinking: "hmm"})
 			stream(map[string]any{"type": "content_block_start", "content_block": map[string]any{"type": "text"}})
 			stream(map[string]any{"type": "content_block_delta", "delta": map[string]any{"type": "text_delta", "text": "Hello"}})
 			stream(map[string]any{"type": "content_block_delta", "delta": map[string]any{"type": "text_delta", "text": " world"}})
 			say(textBlock("Hello world"))
 			stream(map[string]any{"type": "message_delta", "usage": map[string]any{"output_tokens": 42}})
 			emit(map[string]any{"type": "result", "result": "Hello world"})
+		case strings.Contains(in, "stream-think-bare"): // its thinking streamed, its block without it
+			stream(map[string]any{"type": "content_block_start", "content_block": map[string]any{"type": "thinking"}})
+			stream(map[string]any{"type": "content_block_delta", "delta": map[string]any{"type": "thinking_delta", "thinking": "first, "}})
+			stream(map[string]any{"type": "content_block_delta", "delta": map[string]any{"type": "thinking_delta", "thinking": "then"}})
+			say(block{Type: "thinking"})
+			say(textBlock("Hello world"))
+			result("Hello world")
 		case strings.Contains(in, "stream-tool"):
 			stream(map[string]any{"type": "message_start", "message": map[string]any{"usage": map[string]any{"output_tokens": 1}}})
 			stream(map[string]any{"type": "content_block_start", "content_block": map[string]any{"type": "tool_use", "name": "Bash"}})
@@ -1346,5 +1354,33 @@ func TestAckReleases(t *testing.T) {
 	})
 	if err != nil || !slices.Equal(held, []bool{true, true, false}) {
 		t.Fatalf("held %v, err %v", held, err)
+	}
+}
+
+// A subagent's thinking is logged as a step before what it then wrote, as
+// its block gives it or, without, as it streamed, and is left out of what
+// Opt reads of it.
+func TestSubagentThinking(t *testing.T) {
+	c, _ := fakeChat(t, t.TempDir(), 100)
+	a, _ := fakeAgent(t, c)
+	a.report = func(string) {}
+	for _, tc := range []struct{ name, task, want string }{
+		{"Thinker", "stream-reply", "hmm"},
+		{"Streamer", "stream-think-bare", "first, then"}, // only as it streamed
+	} {
+		name, want := tc.name, tc.want
+		a.Spawn(name, tc.task, "", "", 0, nil)
+		var steps []step
+		waitFor(t, "its reply logged", func() bool {
+			steps, _, _ = a.steps(name)
+			return slices.ContainsFunc(steps, func(s step) bool { return s.Kind == "agent" })
+		})
+		i := slices.IndexFunc(steps, func(s step) bool { return s.Kind == "thinking" })
+		if i < 0 || steps[i].Text != want || steps[i+1].Kind != "agent" {
+			t.Fatalf("%s steps: %+v", name, steps)
+		}
+		if z := c.ZoomAgent(name); strings.Contains(z, want) || !strings.Contains(z, "Hello world") {
+			t.Fatalf("%s zoom: %q", name, z)
+		}
 	}
 }

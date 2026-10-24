@@ -687,7 +687,8 @@ func TestStopAgent(t *testing.T) {
 		t.Fatal("no stop at rest")
 	}
 	waitState("Scout", "ended")
-	if !a.ClearAgent("Scout") || state("Scout") != "" {
+	waitFor(t, "Scout's call to end", func() bool { return a.ClearAgent("Scout") }) // "ended" comes just before
+	if state("Scout") != "" {
 		t.Fatal("Scout not cleared")
 	}
 

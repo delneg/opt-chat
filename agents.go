@@ -281,6 +281,10 @@ func (a *Agent) tell(name string, ts ...tell) (string, bool) {
 	case p == nil:
 		return fmt.Sprintf("[%s] is starting: tell it again in a moment.", name), false
 	case a.looping(name):
+		a.logTells(name, ts) // in its log at once, as a tell at work
+		for i := range ts {
+			ts[i].logged = true
+		}
 		a.held[name] = append(a.held[name], ts...)
 		if opt && a.userTurn[name] {
 			a.userTurnLocked(name, false)
@@ -321,21 +325,29 @@ func (a *Agent) logTells(name string, ts []tell) {
 // as Cmd+Enter stops Opt's turn for one: the tool calls it has underway
 // are cut short, and it goes on with t at once, its task still whoever's
 // it was. A tell waits for its step to end, which a long command makes a
-// long wait. False when it is not at work in a way an interrupt can cut
-// (starting, compacting, in a loop): t goes as a tell then.
+// long wait, and in a loop for its turn to end. In a loop, t goes first
+// when the cut turn ends, ahead of the Stop hook's next message (see
+// loopStep); between two of its turns, the interrupt finds nothing to cut
+// and t goes as the next. False when it is not at work in a way an
+// interrupt can cut (starting, compacting): t goes as a tell then.
 func (a *Agent) tellNow(name string, t tell) (string, bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	p, h, s := a.running[name], a.halts[name], a.subs[name]
-	if p == nil || h == nil || s == nil || s.State != "working" || a.looping(name) {
+	if p == nil || h == nil || s == nil || s.State != "working" {
 		return "", false
 	}
-	if len(h.now) == 0 && !p.control("opt-now", map[string]any{"subtype": "interrupt"}) {
+	if !h.cut && !p.control("opt-now", map[string]any{"subtype": "interrupt"}) {
 		return "", false
 	}
+	h.cut = true
 	a.logTells(name, []tell{t})
 	t.logged = true
-	h.now = append(h.now, t)
+	if a.looping(name) {
+		a.held[name] = append(a.held[name], t)
+	} else {
+		h.now = append(h.now, t)
+	}
 	return fmt.Sprintf("Sent: [%s] was interrupted to read it now.", name), true
 }
 
@@ -402,6 +414,7 @@ type halt struct {
 	compact bool   // the page asked it to compact at its next step; under a.mu
 	told    int    // messages sent to it at work, queued in its turn; under a.mu
 	now     []tell // the user's, sent now: it was interrupted for them (tellNow); under a.mu
+	cut     bool   // interrupted for the user's message, until its turn's result; under a.mu
 }
 
 // haltLocked makes the halt of the subagent name's call about to run; a.mu held.
@@ -792,6 +805,7 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 		cutOpen()
 		lines := c.viewNow()
 		a.mu.Lock()
+		h.cut = false
 		if r := a.resting[name]; r != nil && r.p == p && r.compacting { // the compaction's end, not a report
 			r.compacting, r.compacted = false, true
 			a.subLocked(name, func(s *sub) { s.State = "resting" })

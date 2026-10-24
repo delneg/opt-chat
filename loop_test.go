@@ -230,3 +230,34 @@ func TestAgentLoopCompacts(t *testing.T) {
 		t.Fatalf("report %q, log %q", got, log)
 	}
 }
+
+// Sent now to a subagent in a loop, the user's message cuts its turn and
+// goes first, with a tell held for the turn's end, ahead of the hook, which
+// then sees a turn of the user's. Both are in its log at once.
+func TestAgentLoopTellNow(t *testing.T) {
+	c, _ := fakeChat(t, t.TempDir(), 100)
+	a, _ := fakeAgent(t, c)
+	report, _ := loopReports(t, a)
+	l := loopHookFor(t, `[ $n -le 1 ] && echo '{"decision":"block","reason":"go on '$n'"}'; exit 0`)
+	a.Spawn("Loop", "slow-task", "", "", 0, l)
+	waitFor(t, "its long call", func() bool { return strings.Contains(c.ZoomAgent("Loop"), "sleep 600") })
+	if _, ok := a.TellUser("Loop", "first", nil, false); !ok || !strings.Contains(c.ZoomAgent("Loop"), "user: first") {
+		t.Fatalf("a tell held for its turn's end is not in its log: %q", c.ZoomAgent("Loop"))
+	}
+	if out, ok := a.TellUser("Loop", "hurry", nil, true); !ok || out != "Sent: [Loop] was interrupted to read it now." {
+		t.Fatal(out, ok)
+	}
+	if got := report(); !strings.Contains(got, fmt.Sprintf("answer to %q", loopFeedback+"go on 1")) {
+		t.Fatalf("report: %q", got)
+	}
+	log := c.ZoomAgent("Loop")
+	if told, hurried := strings.Index(log, "user: hurry"), strings.Index(log, "agent: hurried: "); told < 0 || hurried < told || strings.Count(log, "user: hurry") != 1 {
+		t.Fatalf("its log: %q", log)
+	}
+	if n := strings.Count(strings.Join(fakeFiles(a, ".ctl"), ""), `"interrupt"`); n != 1 {
+		t.Fatalf("%d interrupts", n)
+	}
+	if in := hookInputs(t, l); len(in) != 2 || in[0]["stop_hook_active"] != false || !strings.HasPrefix(in[0]["last_assistant_message"].(string), "hurried: ") {
+		t.Fatalf("hook inputs: %v", in)
+	}
+}

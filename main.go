@@ -38,6 +38,7 @@ func main() {
 	agentCap := flag.Int("agent-compact-max", 400_000, fmt.Sprintf("compact a subagent's context once it passes this many tokens, between two steps (%dk to %dk; 0: never). The chat's own never compacts", windowMin/1000, windowMax/1000))
 	cmodel := flag.String("compact-model", "sonnet", "model for compactions (the recipe's: haiku)")
 	ceffort := flag.String("compact-effort", "medium", "effort for compactions")
+	cbare := flag.Bool("compact-bare", true, "memory summary calls (compactions) on a different model from the turns get no tools: they share no cache with turns, and Claude Code adds tool reminders, such as a commit attribution naming the summary call's model, that summaries took for the chat's")
 	jobs := flag.Int("jobs", defaultJobs, "compactions running at once, the chat's before an import's")
 	perm := flag.String("permission-mode", "auto", "Claude Code permission mode to start in: manual, acceptEdits or auto (Shift+Tab cycles them)")
 	tools := flag.String("tools", "Bash,Read,Edit,Write,WebSearch,WebFetch", "Claude Code tools")
@@ -120,7 +121,7 @@ func main() {
 	}
 	h := &harness{}
 	a := &Agent{chat: c, system: systemPrompt(agentsMD, *wake), agentsMD: agentsMD, claudeMd: *claudeMd, model: *model, effort: *effort,
-		amodel: *amodel, aeffort: *aeffort, cmodel: *cmodel, ceffort: *ceffort, perm: *perm, cwd: *cwd, tools: *tools, ownConfig: *ownConfig, mcpOff: saved.MCPOff, skillsSet: saved.Skills, pluginsSet: saved.Plugins, agentWindow: saved.AgentAutocompact, agentCap: *agentCap, recall: *recall,
+		amodel: *amodel, aeffort: *aeffort, cmodel: *cmodel, ceffort: *ceffort, cbare: *cbare, perm: *perm, cwd: *cwd, tools: *tools, ownConfig: *ownConfig, mcpOff: saved.MCPOff, skillsSet: saved.Skills, pluginsSet: saved.Plugins, agentWindow: saved.AgentAutocompact, agentCap: *agentCap, recall: *recall,
 		running: map[string]*proc{}, writing: map[string]chan struct{}{}, report: func(text string) { h.input(message{kind: "work", text: text}) }, autoResume: *autoResume}
 	a.life, a.stop = context.WithCancel(context.Background())
 	h.agent = a

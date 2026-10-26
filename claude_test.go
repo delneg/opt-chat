@@ -550,7 +550,18 @@ func TestCompact(t *testing.T) {
 	if err == nil {
 		t.Fatalf("an ok twice became the line %q", got)
 	}
-	if n, u := a.takeCompactions(); n != 6 || u.Read == 0 {
+	// A summary call on a different model from the turns, with -compact-bare,
+	// gets no tools: Claude Code's reminders for them reached the summaries.
+	a.cbare = true
+	if _, err := a.Compact(context.Background(), nil, 0, []block{textBlock("Compaction: x")}); err != nil {
+		t.Fatal(err)
+	}
+	all := calls()
+	if args := all[len(all)-1]; flagOf(args, "--tools") != "" || flagOf(args, "--model") != "small" {
+		t.Fatalf("bare compaction args: %q", args)
+	}
+	a.cbare = false
+	if n, u := a.takeCompactions(); n != 7 || u.Read == 0 {
 		t.Fatalf("compactions counted: %d, %v", n, u)
 	}
 }

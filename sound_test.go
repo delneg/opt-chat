@@ -41,10 +41,10 @@ type played struct {
 	volume float64
 }
 
-// testSounder plays to a channel, not a speaker.
-func testSounder(dir string) (*sounder, chan played) {
+// testSounder plays to a channel, not a speaker, with these chimes.
+func testSounder(dir string, chimes map[string]string) (*sounder, chan played) {
 	ch := make(chan played, 16)
-	s := &sounder{dir: dir, in: make(chan string, 64), last: map[string]string{},
+	s := &sounder{dir: dir, in: make(chan string, 64), last: map[string]string{}, chimes: chimes,
 		play: func(file string, v float64) error { ch <- played{file, v}; return nil }}
 	go s.run()
 	return s, ch
@@ -81,7 +81,7 @@ func TestSounds(t *testing.T) {
 		soundDone:  {"sounds/done1.wav", "sounds/done2.wav"},
 		soundStart: {"../../escape.wav"},
 	})
-	s, ch := testSounder(dir)
+	s, ch := testSounder(dir, nil)
 	s.sound(soundAck)
 	s.sound(soundError)
 	s.sound(soundAck)
@@ -104,7 +104,7 @@ func TestSounds(t *testing.T) {
 // names play; without peon-ping, none.
 func TestSoundsOff(t *testing.T) {
 	dir := peonFixture(t, `{"enabled":false,"active_pack":"pk"}`, "manifest.json", map[string][]string{soundAck: {"ack.wav"}})
-	s, ch := testSounder(dir)
+	s, ch := testSounder(dir, nil)
 	s.sound(soundAck)
 	silence(t, ch)
 	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{"active_pack":"pk"}`), 0o600); err != nil {
@@ -121,6 +121,27 @@ func TestSoundsOff(t *testing.T) {
 	nobody.sound(soundAck)
 }
 
+// A category with a chime plays it, at the pack's volume, in place of the
+// pack's sound; one whose chime is missing plays the pack's.
+func TestSoundChime(t *testing.T) {
+	dir := peonFixture(t, `{"volume":0.3,"default_pack":"pk"}`, "openpeon.json", map[string][]string{
+		soundLimit: {"sounds/limit.wav"}, soundAck: {"sounds/ack.wav"},
+	})
+	chime := filepath.Join(dir, "chime.aiff")
+	if err := os.WriteFile(chime, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, ch := testSounder(dir, map[string]string{soundLimit: chime, soundAck: filepath.Join(dir, "gone.aiff")})
+	s.sound(soundLimit)
+	if p := heard(t, ch); p != (played{chime, 0.3}) {
+		t.Fatalf("played %+v, want the chime", p)
+	}
+	s.sound(soundAck)
+	if p := heard(t, ch); !strings.HasSuffix(p.file, "ack.wav") {
+		t.Fatalf("played %+v, want the pack's", p)
+	}
+}
+
 // The user's message is taken and Opt's turn ends: the last sound is the
 // end's; a turn the user stops ends without one.
 func TestTurnSounds(t *testing.T) {
@@ -129,7 +150,7 @@ func TestTurnSounds(t *testing.T) {
 	dir := peonFixture(t, `{"default_pack":"pk"}`, "openpeon.json", map[string][]string{
 		soundAck: {"sounds/ack.wav"}, soundDone: {"sounds/done.wav"}, soundError: {"sounds/err.wav"},
 	})
-	s, ch := testSounder(dir)
+	s, ch := testSounder(dir, nil)
 	c.hub.sounds = s
 	h := newHarness(t, c)
 	h.input(message{kind: "user", text: "hello"})
@@ -161,7 +182,7 @@ func TestAgentSounds(t *testing.T) {
 	dir := peonFixture(t, `{"default_pack":"pk"}`, "openpeon.json", map[string][]string{
 		soundStart: {"sounds/start.wav"}, soundDone: {"sounds/done.wav"}, soundLimit: {"sounds/limit.wav"}, soundError: {"sounds/err.wav"},
 	})
-	s, ch := testSounder(dir)
+	s, ch := testSounder(dir, nil)
 	c.hub.sounds = s
 	a, _ := fakeAgent(t, c)
 	a.report = func(string) {}

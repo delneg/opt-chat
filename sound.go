@@ -50,6 +50,9 @@ type sounder struct {
 	play func(file string, volume float64) error // the sound, to its end
 	in   chan string
 	last map[string]string // the file each category played last: not twice in a row; run's, one sound at a time
+	// chimes are the categories played by a sound of the system's in place
+	// of the pack's, when the file is there.
+	chimes map[string]string
 }
 
 // peonDir is where peon-ping keeps its config and packs.
@@ -70,9 +73,18 @@ func newSounder(dir string) *sounder {
 	if _, err := os.Stat(filepath.Join(dir, "config.json")); err != nil {
 		return nil
 	}
-	s := &sounder{dir: dir, play: playFile, in: make(chan string, 64), last: map[string]string{}}
+	s := &sounder{dir: dir, play: playFile, in: make(chan string, 64), last: map[string]string{}, chimes: systemChimes()}
 	go s.run()
 	return s
+}
+
+// systemChimes are the categories a Mac plays by one of its own sounds: a
+// compaction is routine, and a pack's resource.limit is often an alarm.
+func systemChimes() map[string]string {
+	if runtime.GOOS != "darwin" {
+		return nil
+	}
+	return map[string]string{soundLimit: "/System/Library/Sounds/Purr.aiff"}
 }
 
 // sound plays a sound of category cat, unless one more important comes with
@@ -148,7 +160,7 @@ type cespPack struct {
 }
 
 // playOne plays a sound of category cat from the pack peon-ping plays now,
-// unless its sounds are off or the pack has none of cat.
+// or its chime, unless its sounds are off or the pack has none of cat.
 func (s *sounder) playOne(cat string) error {
 	b, err := os.ReadFile(filepath.Join(s.dir, "config.json"))
 	if err != nil {
@@ -160,6 +172,15 @@ func (s *sounder) playOne(cat string) error {
 	}
 	if cfg.Enabled != nil && !*cfg.Enabled {
 		return nil
+	}
+	volume := 0.5
+	if cfg.Volume != nil {
+		volume = min(max(*cfg.Volume, 0), 1)
+	}
+	if f := s.chimes[cat]; f != "" {
+		if _, err := os.Stat(f); err == nil {
+			return s.play(f, volume)
+		}
 	}
 	name := cmp.Or(cfg.DefaultPack, cfg.ActivePack, "peon")
 	if name != filepath.Base(name) {
@@ -192,10 +213,6 @@ func (s *sounder) playOne(cat string) error {
 	s.last[cat] = file
 	if !strings.Contains(file, "/") { // an older pack's: bare names, in sounds/
 		file = filepath.Join("sounds", file)
-	}
-	volume := 0.5
-	if cfg.Volume != nil {
-		volume = min(max(*cfg.Volume, 0), 1)
 	}
 	return s.play(filepath.Join(pack, file), volume)
 }

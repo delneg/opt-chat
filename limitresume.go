@@ -24,7 +24,6 @@ import (
 // that model's calls alone. A limit that hits again moves the time; a stale
 // time or a string of hits backs off, so nothing loops faster than the
 // reset. One that runs again and finishes waits no more.
-// formal/limitresume model-checks all this.
 
 // limitMax is how many resumes in a row a limit gets before opt-chat stops
 // resuming on its own; one that went well starts the count over.

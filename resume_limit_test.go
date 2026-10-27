@@ -268,7 +268,7 @@ func TestResumer(t *testing.T) {
 
 // A rate_limit_event that refuses one model's weekly window speaks for that
 // model's calls only: a subagent on another model that fails for another
-// reason is not waiting on it. Found by formal/limitresume (NoWaitOnNonLimit).
+// reason is not waiting on it. Found by a TLA+ model of the resume (property NoWaitOnNonLimit).
 func TestModelLimitEventIsNotEveryones(t *testing.T) {
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	a := newHarness(t, c).agent
@@ -284,7 +284,7 @@ func TestModelLimitEventIsNotEveryones(t *testing.T) {
 
 // A subagent the limit stopped that was set to work again and finished
 // before the reset is not told at the reset to pick up where it stopped.
-// Found by formal/limitresume (NoResumeOfFinished).
+// Found by a TLA+ model of the resume (property NoResumeOfFinished).
 func TestResumeSkipsSubagentThatFinished(t *testing.T) {
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	a := newHarness(t, c).agent
@@ -312,7 +312,7 @@ func TestResumeSkipsSubagentThatFinished(t *testing.T) {
 
 // Each one the limit stopped goes on at its own reset: a subagent stopped
 // by the five-hour window is not held until Opt's weekly Opus reset. Found
-// by formal/limitresume (NoLateResume).
+// by a TLA+ model of the resume (property NoLateResume).
 func TestResumeEachAtItsOwnReset(t *testing.T) {
 	var f fired
 	r, err := startResumer(t.TempDir(), func(s resumeState) { f.add(strings.Join(stoppedBy(s), ",")) })

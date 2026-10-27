@@ -82,8 +82,56 @@ func TestLimitReset(t *testing.T) {
 			t.Errorf("limitReset(%q) read a time", in)
 		}
 	}
-	if usageLimit("overloaded") || usageLimit("Request rejected (429)") {
-		t.Error("usageLimit read a failure that is no plan limit")
+}
+
+// Only the plan's usage limit resumes at a reset. Other limits carry no
+// reset time, so taking one for it would wait for the five-hour reset and
+// resume a call that fails the same way again.
+func TestUsageLimitWording(t *testing.T) {
+	for _, in := range []string{
+		"You've hit your session limit · resets 4am (Asia/Manila)",
+		"You've hit your weekly limit · resets Oct 26, 11am (UTC)",
+		"You've hit your Opus limit · resets Oct 26, 11am (UTC)",
+		"You've hit your Sonnet limit · resets Oct 26, 11am (UTC)",
+		"You've reached your Fable limit.",
+		"You've hit your limit · resets 12am (UTC)",
+		"Usage limit reached · resets 3pm",
+		"Claude AI usage limit reached|1792720194",
+		"API Error: usage limit reached",
+		"Claude usage limit reached. Your limit will reset at 5pm (UTC).",
+		"5-hour limit reached ∙ resets 16:00 (UTC)",
+		"Opus weekly limit reached ∙ resets Oct 26, 11am",
+		"Lower-priority mode ended · you have reached your weekly usage limit",
+	} {
+		if !usageLimit(in) {
+			t.Errorf("usageLimit(%q) = false, want true", in)
+		}
+	}
+	for _, in := range []string{
+		"Context limit reached · /compact or /clear to continue",
+		`API Error: 429 {"type":"error","error":{"type":"rate_limit_error","message":"Rate limit reached for requests"}}`,
+		"Error: max turns limit reached",
+		"Output token limit reached",
+		"Server is temporarily limiting requests (not your usage limit) · Rate limited",
+		"You've hit your monthly spend limit.",
+		"You've hit your channel's monthly spend limit.",
+		"You've hit your monthly limit, raise it below, or it resets next month.",
+		"You've hit your team's shared budget. /model to switch models.",
+		"You've hit your usage credit limit",
+		"Your group's usage limit is set to $0",
+		"Your org's monthly usage limit reached",
+		"You're out of usage credits. Run /usage-credits to keep using it",
+		"Your org is out of usage · contact your admin",
+		"This request would exceed your account's rate limit",
+		"spend limit reached (daily; resets 2026-08-08 00:00 UTC)",
+		"overloaded",
+		"Request rejected (429)",
+		"Prompt is too long",
+		"",
+	} {
+		if usageLimit(in) {
+			t.Errorf("usageLimit(%q) = true, want false", in)
+		}
 	}
 }
 

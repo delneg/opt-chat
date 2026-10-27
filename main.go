@@ -627,7 +627,7 @@ func (h *harness) loop() {
 			}
 			c.Log("work", note)
 		} else if err == nil && !cut {
-			h.agent.limitWent()
+			h.agent.limitWent("")
 		}
 		h.turn = nil
 		var left []queued

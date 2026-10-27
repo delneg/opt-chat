@@ -4,6 +4,7 @@ import (
 	"encoding/json/v2"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -19,8 +20,11 @@ import (
 // limit resets. opt-chat reads that time, keeps it in <dir>/resume.json (so
 // it outlasts a restart, as wake-ups do), and at the reset starts one turn
 // and sets each subagent the limit stopped to work again from its saved
-// session. A limit that hits again moves the time; a stale time or a
-// string of hits backs off, so nothing loops faster than the reset.
+// session. Each waits for its own reset, since a model's weekly limit stops
+// that model's calls alone. A limit that hits again moves the time; a stale
+// time or a string of hits backs off, so nothing loops faster than the
+// reset. One that runs again and finishes waits no more.
+// formal/limitresume model-checks all this.
 
 // limitMax is how many resumes in a row a limit gets before opt-chat stops
 // resuming on its own; one that went well starts the count over.
@@ -46,6 +50,10 @@ var (
 
 // usageLimit tells whether a failure is the plan's usage limit.
 func usageLimit(text string) bool { return limitText.MatchString(text) }
+
+// justPassed is how long after a reset time named without a date its
+// message can be read and still mean that time, not the next day's or week's.
+const justPassed = 15 * time.Minute
 
 // limitReset reads when the limit resets from Claude Code's message, as
 // "You've hit your session limit · resets 4am (America/New_York)",
@@ -100,7 +108,7 @@ func limitReset(text string, now time.Time) (time.Time, bool) {
 			at = at.AddDate(0, 0, (wd-int(n.Weekday())+7)%7)
 			step = 7
 		}
-		if !at.After(now) {
+		if at.Before(now.Add(-justPassed)) {
 			at = at.AddDate(0, 0, step)
 		}
 		return at, true
@@ -117,17 +125,27 @@ func limitReset(text string, now time.Time) (time.Time, bool) {
 	return at, true
 }
 
-// resumeState is what resume.json keeps: the resume pending, if any, and
-// how many have gone out since one last went well.
+// resumeState is what resume.json keeps: who the limit stopped, each with
+// when it resumes, and how many resumes have gone out since one last went
+// well.
 type resumeState struct {
-	At     time.Time `json:"at,omitzero"`
-	Turn   bool      `json:"turn,omitzero"`   // Opt's own turn was stopped
-	Agents []string  `json:"agents,omitzero"` // subagents stopped
-	Tries  int       `json:"tries,omitzero"`
-	Fired  time.Time `json:"fired,omitzero"` // the last resume that went out
+	Due   map[string]time.Time `json:"due,omitzero"` // by subagent name; "" is Opt's turn
+	Tries int                  `json:"tries,omitzero"`
+	Fired time.Time            `json:"fired,omitzero"` // the last resume that went out
 }
 
-func (s resumeState) pending() bool { return s.Turn || len(s.Agents) > 0 }
+func (s resumeState) pending() bool { return len(s.Due) > 0 }
+
+// next is the earliest resume pending.
+func (s resumeState) next() time.Time {
+	var at time.Time
+	for _, t := range s.Due {
+		if at.IsZero() || t.Before(at) {
+			at = t
+		}
+	}
+	return at
+}
 
 type resumer struct {
 	path  string
@@ -162,7 +180,7 @@ func (r *resumer) arm() {
 		r.timer = nil
 	}
 	if r.st.pending() && !r.done {
-		r.timer = time.AfterFunc(max(0, time.Until(r.st.At)), r.due)
+		r.timer = time.AfterFunc(max(0, time.Until(r.st.next())), r.due)
 	}
 }
 
@@ -177,9 +195,9 @@ func (r *resumer) save() {
 }
 
 // note records that the limit stopped who ("" for Opt's turn) and resets at
-// reset: the resume goes out grace after it, and never sooner than a back-off
-// that grows with each resume in a row. It returns when; ok false: this many
-// in a row, so none is set.
+// reset: who's resume goes out grace after it, never sooner than a back-off
+// that grows with each resume in a row, nor sooner than one already set for
+// who. It returns when; ok false: this many in a row, so none is set.
 func (r *resumer) note(who string, reset time.Time, grace time.Duration, now time.Time) (time.Time, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -195,47 +213,59 @@ func (r *resumer) note(who string, reset time.Time, grace time.Duration, now tim
 		at = floor // a reset already past: the message was stale, or the limit is not over
 	}
 	r.st.Tries = tries
-	if r.st.At.Before(at) {
-		r.st.At = at
+	if r.st.Due == nil {
+		r.st.Due = map[string]time.Time{}
 	}
-	if who == "" {
-		r.st.Turn = true
-	} else if !slices.Contains(r.st.Agents, who) {
-		r.st.Agents = append(r.st.Agents, who)
+	if r.st.Due[who].Before(at) {
+		r.st.Due[who] = at
 	}
 	r.save()
 	r.arm()
-	return r.st.At, true
+	return r.st.Due[who], true
 }
 
-// due takes the pending resume out of the file, then hands it on: a crash
-// between the two loses one rather than repeats it.
+// due takes the resumes whose time has come out of the file, then hands
+// them on: a crash between the two loses them rather than repeats them.
 func (r *resumer) due() {
 	r.mu.Lock()
-	if r.done || !r.st.pending() {
-		r.mu.Unlock()
-		return
+	now := time.Now()
+	out := resumeState{Due: map[string]time.Time{}, Tries: r.st.Tries}
+	for who, at := range r.st.Due {
+		if !at.After(now) {
+			out.Due[who] = at
+		}
 	}
-	if d := time.Until(r.st.At); d > 0 { // moved later while the timer ran
+	if r.done || !out.pending() { // none yet: moved later while the timer ran
 		r.arm()
 		r.mu.Unlock()
 		return
 	}
-	out := r.st
-	r.st = resumeState{Tries: out.Tries + 1, Fired: time.Now()}
+	for who := range out.Due {
+		delete(r.st.Due, who)
+	}
+	r.st.Tries, r.st.Fired = out.Tries+1, now
 	r.save()
+	r.arm()
 	r.mu.Unlock()
 	r.fire(out)
 }
 
-// went clears the count: a turn or a subagent finished without the limit.
-func (r *resumer) went() {
+// went is told that who's call finished without the limit: who waits no
+// more, and the count starts over. A call that failed some other way leaves
+// who waiting, to go on at the reset.
+func (r *resumer) went(who string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.st.Tries > 0 && !r.st.pending() {
-		r.st = resumeState{}
-		r.save()
+	if _, waits := r.st.Due[who]; !waits && r.st.Tries == 0 {
+		return
 	}
+	delete(r.st.Due, who)
+	r.st.Tries = 0
+	if !r.st.pending() {
+		r.st = resumeState{}
+	}
+	r.save()
+	r.arm()
 }
 
 func (r *resumer) stop() {
@@ -280,13 +310,17 @@ func (a *Agent) limitHitLocked(text, who string) string {
 }
 
 // refusedLocked, a.mu held, tells whether Claude Code's last rate_limit_event
-// said the plan refuses requests, and until when: a plan window, not usage
-// credits nor one only bought credits lift, and not past its reset. Status
-// and resetsAt are the Agent SDK's documented fields; the rest only narrow.
+// said the plan refuses every request, and until when: a window all models
+// share, not usage credits nor one only bought credits lift, and not past its
+// reset. One model's own window (seven_day_opus, seven_day_sonnet) refuses
+// that model's calls alone, and the event does not say which call saw it, so
+// its words are what tell. Status and resetsAt are the Agent SDK's
+// documented fields; the rest only narrow.
 func (a *Agent) refusedLocked(now time.Time) (bool, time.Time) {
 	l := a.refused
 	paid := l.OverageStatus == "allowed" || l.OverageStatus == "allowed_warning"
-	if l.Status != "rejected" || paid || l.RateLimitType == "overage" || l.ErrorCode != "" || l.ResetsAt <= now.Unix() {
+	shared := l.RateLimitType == "" || l.RateLimitType == "five_hour" || l.RateLimitType == "seven_day"
+	if l.Status != "rejected" || paid || !shared || l.ErrorCode != "" || l.ResetsAt <= now.Unix() {
 		return false, time.Time{}
 	}
 	return true, time.Unix(l.ResetsAt, 0)
@@ -318,17 +352,18 @@ func cmpFirst(a, b int64) int64 {
 	return b
 }
 
-// limitWent tells the resumer that something finished without the limit.
-func (a *Agent) limitWent() {
+// limitWent tells the resumer that who ("" for Opt's turn) finished
+// without the limit.
+func (a *Agent) limitWent(who string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.limitWentLocked()
+	a.limitWentLocked(who)
 }
 
 // limitWentLocked is limitWent with a.mu held.
-func (a *Agent) limitWentLocked() {
+func (a *Agent) limitWentLocked(who string) {
 	if a.resumes != nil {
-		a.resumes.went()
+		a.resumes.went(who)
 	}
 }
 
@@ -337,10 +372,19 @@ func (a *Agent) limitWentLocked() {
 // what stopped.
 func (a *Agent) resumeAfterLimit(s resumeState) {
 	var stopped, back, left []string
-	if s.Turn {
+	if _, ok := s.Due[""]; ok {
 		stopped = append(stopped, "Opt's turn")
 	}
-	for _, name := range s.Agents {
+	var last time.Time
+	for _, at := range s.Due {
+		if at.After(last) {
+			last = at
+		}
+	}
+	for _, name := range slices.Sorted(maps.Keys(s.Due)) {
+		if name == "" {
+			continue
+		}
 		stopped = append(stopped, "["+name+"]")
 		a.mu.Lock()
 		_, working := a.running[name]
@@ -354,7 +398,7 @@ func (a *Agent) resumeAfterLimit(s resumeState) {
 			left = append(left, out)
 		}
 	}
-	text := "[opt-chat] usage limit reset at " + s.At.Local().Format("Jan 2 15:04") + "; stopped by it: " + strings.Join(stopped, ", ") + "."
+	text := "[opt-chat] usage limit reset at " + last.Local().Format("Jan 2 15:04") + "; stopped by it: " + strings.Join(stopped, ", ") + "."
 	if len(back) > 0 {
 		text += " Resumed from their saved sessions: " + strings.Join(back, ", ") + ". Each reports when done."
 	}

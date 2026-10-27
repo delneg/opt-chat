@@ -886,7 +886,7 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 				final += " " + line
 			}
 		} else {
-			a.limitWentLocked()
+			a.limitWentLocked(name)
 		}
 		if lp.hook != nil {
 			a.mu.Unlock() // the hook takes a while

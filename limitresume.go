@@ -30,7 +30,12 @@ const limitMax = 6
 const limitNote = "The usage limit has reset. Pick up where you stopped: check what state your files, workspace and branch are in before you redo anything, then finish the task as given."
 
 var (
-	limitText = regexp.MustCompile(`(?i)limit reached|(?:hit|reached) your [\w ]*limit|limit will reset`)
+	// limitText is the plan's usage limit as Claude Code words it: "You've
+	// hit your session limit", "your weekly usage limit", "Usage limit
+	// reached", "5-hour limit reached", "Your limit will reset". It names a
+	// plan window or none, so the context, rate, max turns and output token
+	// limits, spend limits, usage credits and monthly limits don't match.
+	limitText = regexp.MustCompile(`(?i)\b(?:hit|reached) your (?:(?:session|weekly|5-hour|opus|sonnet|fable) )?(?:usage )?limit\b|(?:^|[^\w\s'’]\s*|\bclaude (?:ai )?)usage limit reached|\b(?:session|weekly|5-hour|opus|sonnet|fable)(?: weekly)? limit reached|\byour limit will reset`)
 	epochRe   = regexp.MustCompile(`\|(\d{10})(?:\d{3})?\b`)
 	inRe      = regexp.MustCompile(`(?i)\bresets?\s+in\s+(\d+)\s*(hours?|hrs?|h|minutes?|mins?|m)\b`)
 	atRe      = regexp.MustCompile(`(?i)\bresets?(?:\s+at)?\s+(?:([a-z]{3,9})\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(?:at\s+)?)?(\d{1,2})(?::(\d{2}))?\s*([ap]m)?(?:\s*\(([\w/+\-]+)\))?`)

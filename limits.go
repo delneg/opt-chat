@@ -25,9 +25,16 @@ type window struct {
 	Spent  float64 `json:"spent,omitzero"`
 }
 
-// limitInfo is a rate_limit_event's.
+// limitInfo is a rate_limit_event's. Status is "rejected" while the plan
+// refuses requests, until ResetsAt, unless usage credits pay for them
+// (OverageStatus "allowed" or "allowed_warning").
 type limitInfo struct {
-	Windows map[string]struct {
+	Status        string `json:"status"` // allowed, allowed_warning or rejected
+	ResetsAt      int64  `json:"resetsAt,omitzero"`
+	RateLimitType string `json:"rateLimitType,omitzero"` // five_hour, seven_day, seven_day_opus, ...
+	OverageStatus string `json:"overageStatus,omitzero"`
+	ErrorCode     string `json:"errorCode,omitzero"` // credits_required: only bought credits lift it, no reset does
+	Windows       map[string]struct {
 		Utilization float64 `json:"utilization"` // a fraction
 		ResetsAt    int64   `json:"resetsAt"`
 	} `json:"unifiedWindows"`
@@ -38,6 +45,9 @@ const usageEvery = time.Minute // get_usage at most this often
 func (a *Agent) noteLimits(l limitInfo) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if l.Status != "" {
+		a.refused = l
+	}
 	for name, w := range l.Windows {
 		x := a.limits[name]
 		x.Name, x.Used, x.Resets = name, w.Utilization*100, w.ResetsAt

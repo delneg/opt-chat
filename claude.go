@@ -55,6 +55,8 @@ type Agent struct {
 	autoResume bool              // a start resumes the subagents a quit, crash or reload cut off: see resume.go
 	onReload   func()            // /reload's: see reload.go; nil: none
 	wakes      *waker            // the wake tool's (-wake); nil: off
+	resumes    *resumer          // resumes at a usage limit's reset (-resume-at-reset); nil: off
+	resetGrace time.Duration     // after the reset, before they go out
 	noEmail    string            // the plugin that drops the account's email from calls' context, by folder; "": none. See email.go
 
 	life  context.Context // canceled at quit: every call stops
@@ -70,6 +72,7 @@ type Agent struct {
 	cached      map[[32]byte]time.Time   // compactions' first messages in the cache, by hash: when last written or read
 	modelList   []modelInfo              // Claude Code's, once asked
 	limits      map[string]window        // the plan's usage limits, by name: see limits.go
+	refused     limitInfo                // the last rate_limit_event that gave a status: see refusedLocked
 	usageAsked  time.Time                // when get_usage was last asked
 	planRaw     jsontext.Value           // and its answer, for /usage
 	subs        map[string]*sub          // this run's subagents, as the page's rail shows them: see subs.go

@@ -32,13 +32,16 @@ const limitNote = "The usage limit has reset. Pick up where you stopped: check w
 var (
 	// limitText is the plan's usage limit as Claude Code words it: "You've
 	// hit your session limit", "your weekly usage limit", "Usage limit
-	// reached", "5-hour limit reached", "Your limit will reset". It names a
-	// plan window or none, so the context, rate, max turns and output token
-	// limits, spend limits, usage credits and monthly limits don't match.
-	limitText = regexp.MustCompile(`(?i)\b(?:hit|reached) your (?:(?:session|weekly|5-hour|opus|sonnet|fable) )?(?:usage )?limit\b|(?:^|[^\w\s'’]\s*|\bclaude (?:ai )?)usage limit reached|\b(?:session|weekly|5-hour|opus|sonnet|fable)(?: weekly)? limit reached|\byour limit will reset`)
+	// reached", "5-hour limit reached", "Your limit will reset", or a spend
+	// limit hit because a plan window ran out, which says "your session limit
+	// resets 3:45pm". It names a plan window or none, so the context, rate,
+	// max turns and output token limits, spend limits, usage credits and
+	// monthly limits don't match. It backs up the rate_limit_event, which
+	// says the same without words: see refusedLocked.
+	limitText = regexp.MustCompile(`(?i)\b(?:hit|reached) your (?:(?:session|weekly|5-hour|opus|sonnet|fable) )?(?:usage )?limit\b|(?:^|[^\w\s'’]\s*|\bclaude (?:ai )?)usage limit reached|\b(?:session|weekly|5-hour|opus|sonnet|fable)(?: weekly)? limit reached|\byour limit will reset|\byour (?:session|weekly|5-hour|opus|sonnet|fable) limit resets\b`)
 	epochRe   = regexp.MustCompile(`\|(\d{10})(?:\d{3})?\b`)
 	inRe      = regexp.MustCompile(`(?i)\bresets?\s+in\s+(\d+)\s*(hours?|hrs?|h|minutes?|mins?|m)\b`)
-	atRe      = regexp.MustCompile(`(?i)\bresets?(?:\s+at)?\s+(?:([a-z]{3,9})\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(?:at\s+)?)?(\d{1,2})(?::(\d{2}))?\s*([ap]m)?(?:\s*\(([\w/+\-]+)\))?`)
+	atRe      = regexp.MustCompile(`(?i)\bresets?(?:\s+at)?\s+(?:(mon|tue|wed|thu|fri|sat|sun)[a-z]*\.?,?\s+)?(?:([a-z]{3,9})\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(?:at\s+)?)?(\d{1,2})(?::(\d{2}))?\s*([ap]m)?(?:\s*\(([\w/+\-]+)\))?`)
 )
 
 // usageLimit tells whether a failure is the plan's usage limit.
@@ -46,7 +49,7 @@ func usageLimit(text string) bool { return limitText.MatchString(text) }
 
 // limitReset reads when the limit resets from Claude Code's message, as
 // "You've hit your session limit · resets 4am (America/New_York)",
-// "resets Oct 24, 10am (UTC)", "resets 16:00", "resets in 2 hours" or the
+// "resets Mon 12:00am", "resets Oct 24, 10am (UTC)", "resets 16:00", "resets in 2 hours" or the
 // older "usage limit reached|1760000000".
 func limitReset(text string, now time.Time) (time.Time, bool) {
 	if m := epochRe.FindStringSubmatch(text); m != nil {
@@ -65,11 +68,11 @@ func limitReset(text string, now time.Time) (time.Time, bool) {
 	if m == nil {
 		return time.Time{}, false
 	}
-	hour, _ := strconv.Atoi(m[3])
-	min, _ := strconv.Atoi(m[4])
-	switch strings.ToLower(m[5]) {
+	hour, _ := strconv.Atoi(m[4])
+	min, _ := strconv.Atoi(m[5])
+	switch strings.ToLower(m[6]) {
 	case "":
-		if m[4] == "" { // a bare number is no time
+		if m[5] == "" { // a bare number is no time
 			return time.Time{}, false
 		}
 	case "pm":
@@ -85,19 +88,25 @@ func limitReset(text string, now time.Time) (time.Time, bool) {
 		return time.Time{}, false
 	}
 	loc := time.Local
-	if l, err := time.LoadLocation(m[6]); m[6] != "" && err == nil {
+	if l, err := time.LoadLocation(m[7]); m[7] != "" && err == nil {
 		loc = l
 	}
 	n := now.In(loc)
-	if m[1] == "" {
+	if m[2] == "" { // today or the next day at that time, or the weekday named
 		at := time.Date(n.Year(), n.Month(), n.Day(), hour, min, 0, 0, loc)
+		step := 1
+		if m[1] != "" {
+			wd := strings.Index("sunmontuewedthufrisat", strings.ToLower(m[1][:3])) / 3
+			at = at.AddDate(0, 0, (wd-int(n.Weekday())+7)%7)
+			step = 7
+		}
 		if !at.After(now) {
-			at = at.AddDate(0, 0, 1)
+			at = at.AddDate(0, 0, step)
 		}
 		return at, true
 	}
-	mon, err := time.Parse("Jan", m[1][:3])
-	day, _ := strconv.Atoi(m[2])
+	mon, err := time.Parse("Jan", m[2][:3])
+	day, _ := strconv.Atoi(m[3])
 	if err != nil || day < 1 || day > 31 {
 		return time.Time{}, false
 	}
@@ -250,12 +259,17 @@ func (a *Agent) limitHit(text, who string) string {
 // limitHitLocked is limitHit with a.mu held.
 func (a *Agent) limitHitLocked(text, who string) string {
 	r, grace := a.resumes, a.resetGrace
-	if r == nil || !usageLimit(text) {
+	now := time.Now()
+	refused, until := a.refusedLocked(now)
+	if r == nil || !refused && !usageLimit(text) {
 		return ""
 	}
-	now := time.Now()
 	reset, ok := limitReset(text, now)
-	if !ok {
+	switch {
+	case ok:
+	case refused:
+		reset = until
+	default:
 		reset = a.nextResetLocked(now)
 	}
 	at, ok := r.note(who, reset, grace, now)
@@ -263,6 +277,19 @@ func (a *Agent) limitHitLocked(text, who string) string {
 		return fmt.Sprintf("opt-chat resumed after this limit %d times in a row, so it does not again on its own.", limitMax)
 	}
 	return "opt-chat starts a turn at " + at.Local().Format("Jan 2 15:04") + ", after the reset, and resumes the subagents the limit stopped."
+}
+
+// refusedLocked, a.mu held, tells whether Claude Code's last rate_limit_event
+// said the plan refuses requests, and until when: a plan window, not usage
+// credits nor one only bought credits lift, and not past its reset. Status
+// and resetsAt are the Agent SDK's documented fields; the rest only narrow.
+func (a *Agent) refusedLocked(now time.Time) (bool, time.Time) {
+	l := a.refused
+	paid := l.OverageStatus == "allowed" || l.OverageStatus == "allowed_warning"
+	if l.Status != "rejected" || paid || l.RateLimitType == "overage" || l.ErrorCode != "" || l.ResetsAt <= now.Unix() {
+		return false, time.Time{}
+	}
+	return true, time.Unix(l.ResetsAt, 0)
 }
 
 // nextResetLocked, a.mu held, is when a limit that gave no time resets: the latest of the

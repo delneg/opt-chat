@@ -72,6 +72,7 @@ type Agent struct {
 	cached      map[[32]byte]time.Time   // compactions' first messages in the cache, by hash: when last written or read
 	modelList   []modelInfo              // Claude Code's, once asked
 	limits      map[string]window        // the plan's usage limits, by name: see limits.go
+	refused     limitInfo                // the last rate_limit_event that gave a status: see refusedLocked
 	usageAsked  time.Time                // when get_usage was last asked
 	planRaw     jsontext.Value           // and its answer, for /usage
 	subs        map[string]*sub          // this run's subagents, as the page's rail shows them: see subs.go

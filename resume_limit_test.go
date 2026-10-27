@@ -68,6 +68,10 @@ func TestLimitReset(t *testing.T) {
 		{"usage limit reached, resets in 2 hours", now.Add(2 * time.Hour)},
 		{"Claude AI usage limit reached|1792720194", time.Unix(1792720194, 0)},
 		{"Claude AI usage limit reached|1792720194123", time.Unix(1792720194, 0)},
+		{"You've hit your weekly limit · resets Mon 12:00am (Asia/Manila)", time.Date(2026, 10, 26, 0, 0, 0, 0, manila)},
+		{"You've hit your weekly limit · resets Fri 9am (Asia/Manila)", time.Date(2026, 10, 23, 9, 0, 0, 0, manila)},
+		{"You've hit your weekly limit · resets Friday 7am (Asia/Manila)", time.Date(2026, 10, 30, 7, 0, 0, 0, manila)},
+		{"You've hit your monthly spend limit · raise it at https://claude.ai/settings/usage?from=cc_cli_limit_message · your session limit resets 3:45pm (Asia/Manila)", time.Date(2026, 10, 23, 15, 45, 0, 0, manila)},
 	} {
 		got, ok := limitReset(tc.in, now)
 		if !ok || !got.Equal(tc.want) {
@@ -102,6 +106,10 @@ func TestUsageLimitWording(t *testing.T) {
 		"5-hour limit reached ∙ resets 16:00 (UTC)",
 		"Opus weekly limit reached ∙ resets Oct 26, 11am",
 		"Lower-priority mode ended · you have reached your weekly usage limit",
+		"Usage limit reached · continuing automatically at 3:45pm",
+		"You've hit your monthly spend limit · raise it at https://claude.ai/settings/usage?from=cc_cli_limit_message · your session limit resets 3:45pm",
+		"You've hit your individual spend limit · ask your admin for a higher limit · your weekly limit resets Mon 12:00am",
+		"You've hit your org's monthly spend limit · visit https://claude.ai/admin-settings/usage to raise it · your Opus limit resets 3:45pm",
 	} {
 		if !usageLimit(in) {
 			t.Errorf("usageLimit(%q) = false, want true", in)
@@ -124,6 +132,16 @@ func TestUsageLimitWording(t *testing.T) {
 		"Your org is out of usage · contact your admin",
 		"This request would exceed your account's rate limit",
 		"spend limit reached (daily; resets 2026-08-08 00:00 UTC)",
+		"You've hit your monthly spend limit · raise it at https://claude.ai/settings/usage?from=cc_cli_limit_message",
+		"You've hit your individual usage limit · ask your admin for a higher limit",
+		"You've hit your channel's monthly spend limit · an org owner or channel manager can raise it in the channel's Claude settings",
+		"You've used 85% of your session limit · resets 3:45pm",
+		"API Error: Usage credits required for 1M context · run /usage-credits to turn them on",
+		"Fable 5.1 now uses usage credits · the prompt to confirm went unanswered — nothing was sent · answer it where this session is running, or /model to change",
+		"Credit balance is too low",
+		"API Error: Server is temporarily limiting requests (not your usage limit)",
+		"Request too large for the API's 32MB request limit",
+		"upstream rate limit exceeded",
 		"overloaded",
 		"Request rejected (429)",
 		"Prompt is too long",
@@ -132,6 +150,40 @@ func TestUsageLimitWording(t *testing.T) {
 		if usageLimit(in) {
 			t.Errorf("usageLimit(%q) = true, want false", in)
 		}
+	}
+}
+
+// Claude Code's rate_limit_event says when the plan refused a request and
+// until when: a failure while it stands is the limit whatever its words, and
+// resumes at the event's reset. Usage credits that still pay don't stop it,
+// nor does one only bought credits lift, and a later event that allows
+// requests clears it.
+func TestRejectedLimitEvent(t *testing.T) {
+	c, _ := fakeChat(t, t.TempDir(), 100)
+	a := newHarness(t, c).agent
+	armResume(a)
+	reset := time.Now().Add(3 * time.Hour).Truncate(time.Minute)
+	rejected := func(overage string) limitInfo {
+		return limitInfo{Status: "rejected", ResetsAt: reset.Unix(), RateLimitType: "seven_day", OverageStatus: overage}
+	}
+	const words = "API Error: request refused"
+
+	a.noteLimits(rejected("allowed"))
+	if line := a.limitHit(words, "Paid"); line != "" {
+		t.Errorf("credits still paying, limitHit = %q, want none", line)
+	}
+	a.noteLimits(limitInfo{Status: "rejected", ResetsAt: reset.Unix(), ErrorCode: "credits_required"})
+	if line := a.limitHit(words, "Credits"); line != "" {
+		t.Errorf("credits required, limitHit = %q, want none: no reset lifts it", line)
+	}
+	a.noteLimits(rejected("rejected"))
+	want := reset.Add(a.resetGrace).Local().Format("Jan 2 15:04")
+	if line := a.limitHit(words, "Worker"); !strings.Contains(line, want) {
+		t.Errorf("rejected event, limitHit = %q, want the reset %s", line, want)
+	}
+	a.noteLimits(limitInfo{Status: "allowed"})
+	if line := a.limitHit(words, "Later"); line != "" {
+		t.Errorf("after an allowed event, limitHit = %q, want none", line)
 	}
 }
 

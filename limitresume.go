@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"encoding/json/v2"
 	"errors"
 	"fmt"
@@ -338,17 +339,10 @@ func (a *Agent) nextResetLocked(now time.Time) time.Time {
 			five = w.Resets
 		}
 	}
-	if t := cmpFirst(full, five); t > 0 {
+	if t := cmp.Or(full, five); t > 0 {
 		at = time.Unix(t, 0)
 	}
 	return at
-}
-
-func cmpFirst(a, b int64) int64 {
-	if a > 0 {
-		return a
-	}
-	return b
 }
 
 // limitWent tells the resumer that who ("" for Opt's turn) finished

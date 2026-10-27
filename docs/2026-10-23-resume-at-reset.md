@@ -19,14 +19,15 @@ Now, with `-resume-at-reset` (on), `limitresume.go`:
   passed means now, not tomorrow; with none, the latest used-up window's
   reset, else an hour on;
 - keeps each caller's own reset time, and drops subagents that have finished;
-- keeps one pending resume in `<dir>/resume.json`: when, whether Opt's turn
-  was stopped, and which subagents; it outlasts a restart, and one missed
-  while down goes out as opt-chat starts;
-- `-reset-grace` (90s) after the reset, sends one report, `[opt-chat] usage
-  limit reset at <time>; stopped by it: ...`, which starts a turn, and tells
-  each stopped subagent to check its state and go on, as `tell` does.
+- keeps each stopped caller's resume time in `<dir>/resume.json` (Opt's turn
+  under "", each subagent under its name); it outlasts a restart, and one
+  missed while down goes out as opt-chat starts;
+- `-reset-grace` (90s) after a caller's reset, sends a report, `[opt-chat]
+  usage limit reset at <time>; stopped by it: ...`, for the callers due then,
+  which starts a turn, and tells each of those subagents to check its state
+  and go on, as `tell` does.
 
-A limit that hits again moves the time later, never sooner. A time already
+A limit that hits the same caller again moves its time later, never sooner. A time already
 past waits `5 min × (resumes in a row + 1)`. After six resumes in a row the
 limit stops resuming on its own; a turn or subagent that ends without the
 limit starts the count over.

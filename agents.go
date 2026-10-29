@@ -68,7 +68,7 @@ func joinEfforts() string { return strings.Join(efforts, ", ") }
 
 // Spawn starts an agent and returns at once. An empty effort is
 // -agent-effort; an empty model, -agent-model.
-func (a *Agent) Spawn(name, task, effort, model string, window int, loop *loopHook) string {
+func (a *Agent) Spawn(name, task, effort, model string, window int, loop *loopHook, mcp ...string) string {
 	if strings.TrimSpace(task) == "" {
 		return "No task given."
 	}
@@ -86,6 +86,10 @@ func (a *Agent) Spawn(name, task, effort, model string, window int, loop *loopHo
 		if bad := loop.check(); bad != "" {
 			return bad
 		}
+	}
+	grant, bad := a.checkMCP(mcp)
+	if bad != "" {
+		return bad
 	}
 	if effort == "" {
 		effort = a.aeffort
@@ -111,14 +115,20 @@ func (a *Agent) Spawn(name, task, effort, model string, window int, loop *loopHo
 		name = fmt.Sprintf("%s-%d", base, n)
 	}
 	a.running[name] = nil // reserved until its call starts
-	a.subLocked(name, func(s *sub) { *s = sub{Name: name, Model: model, Effort: effort, State: "starting", Started: nowMs()} })
+	a.subLocked(name, func(s *sub) {
+		*s = sub{Name: name, Model: model, Effort: effort, State: "starting", Started: nowMs(), MCP: grant}
+	})
 	h := a.haltLocked(name)
 	a.mu.Unlock()
 	go func() {
 		defer a.calls.Done() // after its report is in the chat
-		a.runAgent(name, h, agentRecord{Session: newSession(), Model: model, Effort: effort, Window: window, Task: task, Loop: loop}, nil)
+		a.runAgent(name, h, agentRecord{Session: newSession(), Model: model, Effort: effort, Window: window, Task: task, Loop: loop, MCP: grant}, nil)
 	}()
-	return fmt.Sprintf("Started [%s] in the background, on %s. Its report will come as a message starting \"[%s]\".", name, model, name)
+	with := ""
+	if len(grant) > 0 {
+		with = ", with " + strings.Join(grant, ", ")
+	}
+	return fmt.Sprintf("Started [%s] in the background, on %s%s. Its report will come as a message starting \"[%s]\".", name, model, with, name)
 }
 
 // tell is a message for a subagent: Opt's, by the tell tool, or the
@@ -130,10 +140,11 @@ func (a *Agent) Spawn(name, task, effort, model string, window int, loop *loopHo
 // an agent with the input off, https://github.com/VictorTaelin/UniiChat;
 // here the user talks to it.)
 type tell struct {
-	user   bool    // the user's, from the page
-	text   string  // as its log has it
-	msg    []block // the user's, as the subagent gets it: text, images, files
-	logged bool    // in its log already: sent now (tellNow), its turn ended first
+	user   bool     // the user's, from the page
+	text   string   // as its log has it
+	msg    []block  // the user's, as the subagent gets it: text, images, files
+	logged bool     // in its log already: sent now (tellNow), its turn ended first
+	grant  []string // MCP servers Opt gives it with this: see Tell
 }
 
 func (t tell) kind() string {
@@ -200,10 +211,72 @@ func (a *Agent) userTurnLocked(name string, user bool) {
 }
 
 // Tell hands a running agent Opt's message, between its tool calls, or sets
-// one at rest to work again.
-func (a *Agent) Tell(name, text string) string {
-	out, _ := a.tell(agentName(name), tell{text: text})
+// one at rest to work again; with mcp, it grants it those servers first.
+func (a *Agent) Tell(name, text string, mcp ...string) string {
+	grant, bad := a.checkMCP(mcp)
+	if bad != "" {
+		return bad
+	}
+	out, ok := a.tell(agentName(name), tell{text: text, grant: grant})
+	if ok && len(grant) > 0 {
+		out += " Granted it: " + strings.Join(grant, ", ") + "."
+	}
 	return out
+}
+
+// restartLocked sets the call underway of the subagent name, if it lacks
+// a server Opt granted it, to end and go on from its saved session, with
+// the tells that come meanwhile: an MCP server can't come into a call
+// underway, only into one starting. One at rest ends now; one at work at
+// its next step, as the page's compact interrupts it; one compacting, once
+// compacted. One in a loop has no restart: its next call has the server.
+// a.mu held.
+func (a *Agent) restartLocked(name string) {
+	h, s, p := a.halts[name], a.subs[name], a.running[name]
+	if h == nil || s == nil || h.restart != nil || a.looping(name) {
+		return
+	}
+	r := a.resting[name]
+	if r != nil {
+		if r.compacting {
+			return
+		}
+		p = r.p
+	}
+	if p == nil || !slices.ContainsFunc(s.MCP, func(m string) bool { return slices.Contains(p.deny, m) }) {
+		return
+	}
+	h.restart = []tell{}
+	if r != nil {
+		p.close()
+	}
+}
+
+// grantedNote heads the message that resumes a subagent restarted for
+// servers Opt granted it.
+func grantedNote(servers []string) string {
+	return "opt-chat restarted your call from its saved session, to give you the MCP servers Opt granted you: " + strings.Join(servers, ", ") +
+		". If you were mid-task, " + strings.ToLower(cutShort[:1]) + cutShort[1:] + " Then go on. "
+}
+
+// warnGranted tells the user which servers granted the subagent name are
+// not connected in its call, as servers says, and what to do.
+func (a *Agent) warnGranted(name string, servers []mcpServer, granted []string) {
+	if servers == nil { // Claude Code never said
+		return
+	}
+	for _, g := range granted {
+		st := "not listed"
+		if i := slices.IndexFunc(servers, func(s mcpServer) bool { return s.Name == g }); i >= 0 {
+			st = servers[i].Status
+			if servers[i].Error != "" {
+				st += " (" + servers[i].Error + ")"
+			}
+		}
+		if st != "connected" {
+			a.chat.hub.notice("warn", "[%s]: MCP server %s, granted it, is %s: /mcp to sign in (a) or reconnect (r)", name, g, st)
+		}
+	}
 }
 
 // TellUser hands the subagent name the user's message from the page, its
@@ -263,9 +336,25 @@ func (a *Agent) tell(name string, ts ...tell) (string, bool) {
 	opt := anyOpt(ts)
 	p, ok := a.running[name]
 	r, resting := a.resting[name]
-	switch {
+	if ok && p == nil {
+		return fmt.Sprintf("[%s] is starting: tell it again in a moment.", name), false
+	}
+	for _, t := range ts {
+		if len(t.grant) > 0 {
+			a.grantLocked(name, t.grant)
+			a.restartLocked(name)
+		}
+	}
+	switch h := a.halts[name]; {
+	case h != nil && h.restart != nil:
+		a.logTells(name, ts) // now, in its log, as a tell at work
+		for i := range ts {
+			ts[i].logged = true
+		}
+		h.restart = append(h.restart, ts...)
+		return fmt.Sprintf("Sent: [%s] restarts its call from its saved session, to get the MCP servers Opt granted it; it gets this then.", name), true
 	case !ok && !resting:
-		return a.resume(name, ts, false)
+		return a.resume(name, ts, false, "")
 	case !ok && r.compacting:
 		a.logTells(name, ts)
 		r.pending = append(r.pending, ts...)
@@ -278,8 +367,6 @@ func (a *Agent) tell(name string, ts ...tell) (string, bool) {
 		a.userTurnLocked(name, !opt)
 		a.chat.hub.notice("info", "[%s] back at work", name)
 		a.chat.hub.sound(soundAck)
-	case p == nil:
-		return fmt.Sprintf("[%s] is starting: tell it again in a moment.", name), false
 	case a.looping(name):
 		a.logTells(name, ts) // in its log at once, as a tell at work
 		for i := range ts {
@@ -375,7 +462,7 @@ func (a *Agent) agentWriteRef(name, kind, text, ref string) {
 // session, with all it knew, and ts, Opt's message or the user's; or, from
 // opt-chat (auto), ts is the whole message, and the turn stays whoever's
 // it was. a.mu held.
-func (a *Agent) resume(name string, ts []tell, auto bool) (string, bool) {
+func (a *Agent) resume(name string, ts []tell, auto bool, note string) (string, bool) {
 	rec, err := a.loadRecord(name)
 	switch {
 	case err != nil || rec.Session == "":
@@ -385,7 +472,7 @@ func (a *Agent) resume(name string, ts []tell, auto bool) (string, bool) {
 	case a.life.Err() != nil || a.cutting:
 		return "opt-chat is quitting.", false
 	}
-	msg := joinText(append([]block{textBlock(resumeNote(rec.State))}, tellBlocks(ts, "Opt's message:\n")...))
+	msg := joinText(append([]block{textBlock(cmp.Or(note, resumeNote(rec.State)))}, tellBlocks(ts, "Opt's message:\n")...))
 	if auto {
 		msg = tellBlocks(ts, "")
 	} else {
@@ -415,6 +502,7 @@ type halt struct {
 	told    int    // messages sent to it at work, queued in its turn; under a.mu
 	now     []tell // the user's, sent now: it was interrupted for them (tellNow); under a.mu
 	cut     bool   // interrupted for the user's message, until its turn's result; under a.mu
+	restart []tell // non-nil: its call ends, to go on from its saved session with these (see restartLocked); under a.mu
 }
 
 // haltLocked makes the halt of the subagent name's call about to run; a.mu held.
@@ -444,6 +532,7 @@ func (a *Agent) StopAgent(name string) bool {
 		working = true
 	}
 	h.byUser = working
+	h.restart = nil
 	if r := a.resting[name]; r != nil && !r.compacting {
 		r.p.close() // with its input closed, Claude Code exits at once; a SIGTERM takes seconds
 	} else {
@@ -507,6 +596,15 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 		if a.halts[name] == h {
 			delete(a.halts, name)
 			delete(a.held, name)
+		}
+		if ts := h.restart; ts != nil && h.ctx.Err() == nil {
+			var servers []string
+			if s := a.subs[name]; s != nil {
+				servers = s.MCP
+			}
+			if out, ok := a.resume(name, ts, false, grantedNote(servers)); !ok {
+				a.chat.hub.notice("warn", "[%s] did not restart: %s", name, out)
+			}
 		}
 		a.mu.Unlock()
 		h.cancel()
@@ -612,7 +710,7 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 	}
 	a.mu.Lock()
 	window = a.agentWindowLocked(window)
-	a.subLocked(name, func(s *sub) { s.Window = window })
+	a.subLocked(name, func(s *sub) { s.Window, s.MCP = window, rec.MCP })
 	a.mu.Unlock()
 	rec.State = "working"
 	a.note(name, func(r *agentRecord) { *r = rec })
@@ -620,17 +718,17 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 	if resumed {
 		flags = []string{"--resume", rec.Session}
 	}
-	p, err := a.startAgent(h.ctx, model, effort, window, flags...)
+	p, err := a.startAgent(h.ctx, name, model, effort, window, flags...)
 	if err != nil {
 		report(failed(err))
 		return
 	}
-	p.who = name // before its first message: its questions say who asks
 	a.note(name, func(r *agentRecord) { r.Pid = p.cmd.Process.Pid })
 	acking := !resumed
 	// Past its window, Claude Code compacts its context itself, between two
 	// steps. The page's compact interrupts it at a step's end (forced: 1),
-	// then compacts it (2). A step ends once each of its tool calls has its
+	// then compacts it (2); a restart (see restartLocked) interrupts it
+	// there too (3), and ends its call. A step ends once each of its tool calls has its
 	// result: open counts those without.
 	forced, open, told, quiet, midCompacted := 0, 0, 0, 2, false
 	phase := func(ph, tool string) { a.setSub(name, func(s *sub) { s.Phase, s.Tool = ph, tool }) }
@@ -649,7 +747,15 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 			told, quiet = h.told, 0
 		}
 		quiet++
-		if !h.compact || forced != 0 || quiet < 3 {
+		if forced != 0 || quiet < 3 {
+			return
+		}
+		if h.restart != nil {
+			forced = 3
+			p.control("opt-restart", map[string]any{"subtype": "interrupt"})
+			return
+		}
+		if !h.compact {
 			return
 		}
 		h.compact, forced = false, 1
@@ -771,7 +877,9 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 		}
 	}
 	var u usage
-	a.mcpSettle(p)
+	if servers, granted := a.mcpSettle(p); len(granted) > 0 {
+		a.warnGranted(name, servers, granted)
+	}
 	var second []block
 	switch {
 	case resumed && rec.Compacted: // its view and task again, as a tell after a compaction brings them
@@ -821,6 +929,7 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 			if msgs := r.pending; len(msgs) > 0 || r.goOn { // tells that waited for it; its task, cut at a step
 				delete(a.resting, name)
 				a.running[name] = p
+				a.restartLocked(name) // for a server granted as it compacted
 				a.subLocked(name, func(s *sub) {
 					s.State, s.Until = "working", 0
 					if !r.goOn {
@@ -843,6 +952,13 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 				p.send(anchored(lines, name, task, msg)...)
 			}
 			a.mu.Unlock()
+			continue
+		}
+		if forced == 3 && e.IsError && e.Subtype == "error_during_execution" { // interrupted at a step's end to restart: its call ends
+			delete(a.running, name)
+			h.restart, h.now = append(h.restart, h.now...), nil
+			a.mu.Unlock()
+			p.close()
 			continue
 		}
 		if forced == 1 && e.IsError && e.Subtype == "error_during_execution" { // interrupted at a step's end, as asked: compacted, then it goes on
@@ -952,7 +1068,12 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 		if len(late) > 0 {
 			a.tell(name, late...)
 		}
-		if compact {
+		a.mu.Lock()
+		again := h.restart != nil && a.resting[name] == r // asked while it ended its turn
+		a.mu.Unlock()
+		if again {
+			p.close()
+		} else if compact {
 			p.send(textBlock(compactAsk))
 		}
 		time.AfterFunc(agentRest, func() {

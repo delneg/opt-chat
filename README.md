@@ -46,7 +46,7 @@ cache over.
   `GROQ_API_KEY` is set. It plays in the chat; Opt reads its words.
 - Your Claude Code skills, plugins and MCP servers come along, but never
   your hooks, CLAUDE.md or memory. `/skills`, `/mcp` and `/plugins` switch
-  them for Opt alone.
+  them for Opt alone, or keep an MCP server for the subagents Opt gives it.
 - Subagents run in the background, in a rail beside the chat that stops
   and clears each. One that a quit, a crash or a reload cut off mid-task
   goes on by itself at the next start; one you stopped, when Opt tells it.

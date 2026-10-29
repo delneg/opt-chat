@@ -89,6 +89,13 @@ func statusCommand(a *Agent) string {
 	add("%s", subs)
 	add("Compactions: %s, effort %s", a.cmodel, a.ceffort)
 	up, seen, own := a.mcpUp, a.mcpSeen, a.ownConfig
+	var forAgents []string
+	for _, name := range a.mcpAgents {
+		if g := a.grantedLocked(name); len(g) > 0 {
+			name += " (granted to [" + strings.Join(g, "], [") + "])"
+		}
+		forAgents = append(forAgents, name)
+	}
 	a.mu.Unlock()
 
 	if e := c.hub.lastEnd(); e != nil {
@@ -127,6 +134,9 @@ func statusCommand(a *Agent) string {
 			line += "; not: " + strings.Join(off, ", ")
 		}
 		add("%s", line)
+	}
+	if own && len(forAgents) > 0 {
+		add("MCP servers for subagents only: %s", strings.Join(forAgents, ", "))
 	}
 	return strings.Join(lines, "\n")
 }

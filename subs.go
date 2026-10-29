@@ -21,21 +21,22 @@ import (
 
 // sub is a subagent as the rail shows it.
 type sub struct {
-	Name    string `json:"name"`
-	Model   string `json:"model"`
-	Effort  string `json:"effort"`
-	State   string `json:"state"`            // starting, working, compacting, resting, stopping, ended, failed, stopped (by a quit or crash), halted (by the user)
-	Context int    `json:"context,omitzero"` // tokens its latest request read
-	Window  int    `json:"window,omitzero"`  // compacted past this, between two steps; 0: never
-	Started int64  `json:"started"`          // unix ms: its task, or the tell that set it to work again
-	Until   int64  `json:"until,omitzero"`   // resting: unix ms its call ends at, unless told
-	Step    string `json:"step,omitzero"`    // its latest tool call
-	Steps   int    `json:"steps,omitzero"`   // its tool calls
-	StepAt  int64  `json:"stepAt,omitzero"`  // unix ms of the latest
-	User    bool   `json:"user,omitzero"`    // its turn underway, or its last, is the user's: it answers the user, not Opt
-	Compact bool   `json:"compact,omitzero"` // the page asked it to compact at its next step
-	Phase   string `json:"phase,omitzero"`   // at work: thinking, writing or tool, as a turn's
-	Tool    string `json:"tool,omitzero"`    // in phase tool: the tool it calls
+	Name    string   `json:"name"`
+	Model   string   `json:"model"`
+	Effort  string   `json:"effort"`
+	State   string   `json:"state"`            // starting, working, compacting, resting, stopping, ended, failed, stopped (by a quit or crash), halted (by the user)
+	Context int      `json:"context,omitzero"` // tokens its latest request read
+	Window  int      `json:"window,omitzero"`  // compacted past this, between two steps; 0: never
+	Started int64    `json:"started"`          // unix ms: its task, or the tell that set it to work again
+	Until   int64    `json:"until,omitzero"`   // resting: unix ms its call ends at, unless told
+	Step    string   `json:"step,omitzero"`    // its latest tool call
+	Steps   int      `json:"steps,omitzero"`   // its tool calls
+	StepAt  int64    `json:"stepAt,omitzero"`  // unix ms of the latest
+	User    bool     `json:"user,omitzero"`    // its turn underway, or its last, is the user's: it answers the user, not Opt
+	Compact bool     `json:"compact,omitzero"` // the page asked it to compact at its next step
+	Phase   string   `json:"phase,omitzero"`   // at work: thinking, writing or tool, as a turn's
+	Tool    string   `json:"tool,omitzero"`    // in phase tool: the tool it calls
+	MCP     []string `json:"mcp,omitzero"`     // the servers for subagents only Opt granted it
 }
 
 // subsKept is how many ended subagents the rail keeps listing.

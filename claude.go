@@ -41,6 +41,7 @@ type Agent struct {
 	ownConfig       bool              // turns and subagents get the user's Claude Code skills, plugins and MCP servers
 	claudeMd        bool              // and the CLAUDE.md files of the folders they work in, never the user's own
 	mcpOff          []string          // of those servers, the ones the user turned off here
+	mcpAgents       []string          // and those for subagents only: see mcpOffLocked
 	skillsSet       map[string]string // the user's skills' states set here: on, off, ...
 	pluginsSet      map[string]bool   // and plugins turned on or off here, by name@marketplace
 	skillsListed    []skill           // the skills Claude Code listed last, in its own states
@@ -296,6 +297,7 @@ type proc struct {
 
 	declined  atomic.Bool // the user said no to a tool call, which stops the call
 	who       string      // a subagent's name; empty for the turn
+	deny      []string    // the MCP servers kept out of it: see ownSettings
 	onRequest func(event) // takes Claude Code's control requests; nil: refused
 	onLimits  func(limitInfo)
 	onResult  func(event)
@@ -323,11 +325,21 @@ const (
 // ownSettings are a call's settings over the user's own: never their hooks
 // or Claude Code's auto-compaction, but for a subagent's window (see
 // start), nor their own CLAUDE.md when repos' ones load; their skills and
-// plugins on or off as set here. Under a.mu.
-func (a *Agent) ownSettings(window int) string {
+// plugins on or off as set here; deny's MCP servers kept out of the call.
+// Claude Code's mcp_toggle would keep a server off in the user's own
+// config for the folder (~/.claude.json), for every later call and their
+// own sessions there; deniedMcpServers holds for this call alone. Under a.mu.
+func (a *Agent) ownSettings(window int, deny []string) string {
 	var excludes []string
 	if a.claudeMd {
 		excludes = []string{filepath.Join(claudeConfigDir(), "CLAUDE.md")}
+	}
+	type server struct {
+		Name string `json:"serverName"`
+	}
+	var denied []server
+	for _, name := range deny {
+		denied = append(denied, server{name})
 	}
 	b, _ := json.Marshal(struct {
 		DisableAllHooks    bool              `json:"disableAllHooks"`
@@ -336,7 +348,8 @@ func (a *Agent) ownSettings(window int) string {
 		ClaudeMdExcludes   []string          `json:"claudeMdExcludes,omitzero"`
 		SkillOverrides     map[string]string `json:"skillOverrides,omitzero"`
 		EnabledPlugins     map[string]bool   `json:"enabledPlugins,omitzero"`
-	}{true, window > 0, ccWindow(window), excludes, a.skillsSet, a.pluginsSet}, json.Deterministic(true))
+		DeniedMcpServers   []server          `json:"deniedMcpServers,omitzero"`
+	}{true, window > 0, ccWindow(window), excludes, a.skillsSet, a.pluginsSet, denied}, json.Deterministic(true))
 	return string(b)
 }
 
@@ -408,16 +421,17 @@ const noTools = `{"autoCompactEnabled":false,"hooks":{"PreToolUse":[{"matcher":"
 // settings: the chat never ends, and its view never needs it. extra are a
 // subagent's session flags.
 func (a *Agent) start(ctx context.Context, model, effort string, r role, extra ...string) (*proc, error) {
-	return a.startCall(ctx, model, effort, r, 0, extra...)
+	return a.startCall(ctx, model, effort, r, 0, "", extra...)
 }
 
 // startAgent starts a subagent's call. Past window, Claude Code compacts
 // its context between two steps, never in one (see runAgent); 0: never.
-func (a *Agent) startAgent(ctx context.Context, model, effort string, window int, extra ...string) (*proc, error) {
-	return a.startCall(ctx, model, effort, roleAgent, window, extra...)
+func (a *Agent) startAgent(ctx context.Context, name, model, effort string, window int, extra ...string) (*proc, error) {
+	return a.startCall(ctx, model, effort, roleAgent, window, name, extra...)
 }
 
-func (a *Agent) startCall(ctx context.Context, model, effort string, r role, window int, extra ...string) (p *proc, err error) {
+// startCall starts a call; who is the subagent's name, "" for the chat's.
+func (a *Agent) startCall(ctx context.Context, model, effort string, r role, window int, who string, extra ...string) (p *proc, err error) {
 	if r != roleAgent {
 		window = 0 // the chat's calls never compact
 	}
@@ -435,7 +449,11 @@ func (a *Agent) startCall(ctx context.Context, model, effort string, r role, win
 	a.mu.Lock()
 	mcp, perm, allowed := a.mcpConfig, a.perm, append([]string{"mcp__opt__zoom", "mcp__opt__date", "mcp__opt__search", "mcp__opt__spawn", "mcp__opt__tell", "mcp__opt__wake"}, a.allowed...)
 	dirs, own := slices.Clone(a.dirs), a.ownConfig && r != roleCompact
-	settings, claudeMd := a.ownSettings(window), a.claudeMd
+	var deny []string
+	if r != roleControl { // the page's lists every server as it is
+		deny = a.mcpOffLocked(who)
+	}
+	settings, claudeMd := a.ownSettings(window, deny), a.claudeMd
 	system := a.systemNow()
 	bare := r == roleCompact && a.cbare && model != a.model
 	a.mu.Unlock()
@@ -526,7 +544,7 @@ func (a *Agent) startCall(ctx context.Context, model, effort string, r role, win
 	// The system prompt and tools head the cache prefix: a change to
 	// AGENTS.md leaves no entry cached for the old one.
 	prefix := fmt.Sprintf("%s %s %x", model, effort, sha256.Sum256([]byte(system+"\x00"+tools)))
-	p = &proc{prefix: prefix, ctx: ctx, cmd: cmd, done: done, onLimits: a.noteLimits}
+	p = &proc{prefix: prefix, ctx: ctx, cmd: cmd, done: done, onLimits: a.noteLimits, who: who, deny: deny}
 	cmd.Stderr = &p.stderr
 	if p.stdin, err = cmd.StdinPipe(); err != nil {
 		return nil, err
@@ -565,9 +583,6 @@ func (a *Agent) startCall(ctx context.Context, model, effort string, r role, win
 				p.reply(e.RequestID, map[string]any{"behavior": "deny", "message": "A side question changes nothing: this call is refused. Answer with what you have."}, "")
 			}
 		}
-	}
-	if own && r == roleControl { // a turn's or subagent's waits for its servers: see mcpSettle
-		go a.mcpApply(p)
 	}
 	if r != roleControl {
 		p.onResult = func(e event) { a.noteSpend(p, r, e) }

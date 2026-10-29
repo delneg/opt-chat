@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"encoding/json/v2"
 	"fmt"
@@ -8,7 +9,6 @@ import (
 	"os/exec"
 	"slices"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -17,9 +17,13 @@ import (
 // /skills and /mcp, through a control call (see control). A skill or MCP
 // server turned on or off here is opt-chat's own choice, kept in its
 // settings.json, never in Claude Code's: the user's Claude Code stays as it
-// is. Skills' states go to each call as settings (skillOverrides); servers
-// are turned off in each call as it starts, since no setting does that for
-// all of them (claude.ai's included).
+// is. Skills' states go to each call as settings (skillOverrides), and so
+// do the servers kept out of it (deniedMcpServers, claude.ai's included):
+// see ownSettings.
+//
+// A server can also be for subagents only: off in Opt's calls, so its tools
+// and instructions are not in Opt's prompt, and on in a subagent's call when
+// Opt grants it, by spawn's or tell's mcp.
 
 // mcpServer is one MCP server as /mcp shows it.
 type mcpServer struct {
@@ -28,7 +32,10 @@ type mcpServer struct {
 	Scope  string `json:"scope,omitzero"`
 	Source string `json:"source,omitzero"`
 	Error  string `json:"error,omitzero"`
-	Off    bool   `json:"off,omitzero"` // turned off here
+	Off    bool   `json:"off,omitzero"`    // turned off here
+	Agents bool   `json:"agents,omitzero"` // for subagents only
+	// Granted is the subagents at work or at rest that Opt granted it to.
+	Granted []string `json:"granted,omitzero"`
 }
 
 // mcpServers lists the user's MCP servers, as the control call sees them:
@@ -51,15 +58,23 @@ func (a *Agent) mcpServers(ctx context.Context) ([]mcpServer, error) {
 		if s.Name == "opt" { // the chat's own
 			continue
 		}
-		s.Off = slices.Contains(a.mcpOff, s.Name)
+		s.Off, s.Agents = slices.Contains(a.mcpOff, s.Name), slices.Contains(a.mcpAgents, s.Name)
+		if s.Agents {
+			s.Granted = a.grantedLocked(s.Name)
+		}
 		out = append(out, s)
 	}
 	return out, nil
 }
 
-// setMCP turns a server on or off for Opt: kept for later runs, and at
-// once in the calls underway.
-func (a *Agent) setMCP(ctx context.Context, name string, on bool) error {
+// setMCP sets a server on, off, or for subagents only ("agents"): kept for
+// later runs, from each call's start (see ownSettings): Opt's next turn, a
+// subagent's next call. A subagent keeps a server Opt granted it while the
+// server is not off.
+func (a *Agent) setMCP(ctx context.Context, name, state string) error {
+	if state != "on" && state != "off" && state != "agents" {
+		return fmt.Errorf("an MCP server is on, off or agents (for subagents only), not %q", state)
+	}
 	all, err := a.mcpServers(ctx)
 	if err != nil {
 		return err
@@ -68,55 +83,121 @@ func (a *Agent) setMCP(ctx context.Context, name string, on bool) error {
 		return fmt.Errorf("no MCP server %q", name)
 	}
 	a.mu.Lock()
-	a.mcpOff = slices.DeleteFunc(a.mcpOff, func(s string) bool { return s == name })
-	if !on {
+	other := func(s string) bool { return s == name }
+	a.mcpOff, a.mcpAgents = slices.DeleteFunc(a.mcpOff, other), slices.DeleteFunc(a.mcpAgents, other)
+	switch state {
+	case "off":
 		a.mcpOff = append(a.mcpOff, name)
+	case "agents":
+		a.mcpAgents = append(a.mcpAgents, name)
+		slices.Sort(a.mcpAgents) // as spawn's description lists them: the same bytes each turn
 	}
-	off := slices.Clone(a.mcpOff)
-	live := make([]*proc, 0, len(a.live))
-	for p := range a.live {
-		live = append(live, p)
-	}
+	off, agents := slices.Clone(a.mcpOff), slices.Clone(a.mcpAgents)
 	a.mu.Unlock()
-	if err := a.updateSettings(func(s *settings) { s.MCPOff = off }); err != nil {
-		return err
-	}
-	for _, p := range live {
-		go mcpSwitch(p, name, on)
-	}
-	cl, err := a.controller()
-	if err != nil {
-		return err
-	}
-	return mcpSwitch(cl.p, name, on)
+	return a.updateSettings(func(s *settings) { s.MCPOff, s.MCPAgents = off, agents })
 }
 
-// mcpApply turns off, in a call just started, the servers the user turned
-// off, and returns once it has.
-func (a *Agent) mcpApply(p *proc) {
-	a.mu.Lock()
+// mcpOffLocked is the servers off in a call of who, a subagent, or "" for
+// Opt's: those turned off, and those for subagents only but those Opt
+// granted who. a.mu held.
+func (a *Agent) mcpOffLocked(who string) []string {
 	off := slices.Clone(a.mcpOff)
-	a.mu.Unlock()
-	var wg sync.WaitGroup
-	for _, name := range off {
-		wg.Go(func() { mcpSwitch(p, name, false) })
+	var granted []string
+	if s := a.subs[who]; who != "" && s != nil {
+		granted = s.MCP
 	}
-	wg.Wait()
+	for _, name := range a.mcpAgents {
+		if !slices.Contains(granted, name) {
+			off = append(off, name)
+		}
+	}
+	return off
+}
+
+// grantedLocked is the subagents at work or at rest that have server, for
+// subagents only. a.mu held.
+func (a *Agent) grantedLocked(server string) []string {
+	var out []string
+	for _, name := range slices.Sorted(maps.Keys(a.subs)) {
+		_, working := a.running[name]
+		_, resting := a.resting[name]
+		if (working || resting) && slices.Contains(a.subs[name].MCP, server) {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+// checkMCP reads the servers Opt asks to grant a subagent: those for
+// subagents only it gets; one on for all it has already. Any other is
+// refused, with why and the servers there are to grant.
+func (a *Agent) checkMCP(servers []string) ([]string, string) {
+	if len(servers) == 0 {
+		return nil, ""
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if !a.ownConfig {
+		return nil, "Opt runs without the user's Claude Code setup (-claude-config=false): no MCP servers to grant."
+	}
+	var grant []string
+	for _, s := range servers {
+		why := ""
+		switch {
+		case slices.Contains(a.mcpOff, s):
+			why = s + " is off: the user turned it off in /mcp."
+		case slices.Contains(a.mcpAgents, s):
+			if !slices.Contains(grant, s) {
+				grant = append(grant, s)
+			}
+			continue
+		case slices.Contains(a.mcpSeen, s):
+			continue // on for all
+		default:
+			why = "no MCP server " + s + "."
+		}
+		return nil, why + " Servers for subagents only: " + cmp.Or(strings.Join(a.mcpAgents, ", "), "none") + "."
+	}
+	return grant, ""
+}
+
+// grantLocked gives the subagent name servers for subagents only, kept in
+// its record: its next call has them (see restartLocked for one underway).
+// a.mu held.
+func (a *Agent) grantLocked(name string, servers []string) {
+	add := func(have []string) []string {
+		for _, s := range servers {
+			if !slices.Contains(have, s) {
+				have = append(have, s)
+			}
+		}
+		return have
+	}
+	if _, err := a.loadRecord(name); err != nil {
+		return
+	}
+	a.note(name, func(r *agentRecord) { r.MCP = add(r.MCP) })
+	if s := a.subs[name]; s != nil {
+		s.MCP = add(s.MCP)
+	}
 }
 
 // mcpSettle waits, before a turn or subagent sends its view, until the MCP
 // servers connected when the last call sent its view have connected again
-// (on a run's first call: until none is pending), and those the user turned
-// off are off; for 5 seconds at most. The block Claude Code adds after the
+// (on a run's first call: until none is pending); for 5 seconds at most.
+// Those kept out of the call (see ownSettings) are never listed. The block Claude Code adds after the
 // view lists the servers connected by then: one that connected in time on
 // one turn and not on the next changed the prefix, and the view was written
 // to the cache again. A server that is always slow (or never answers) is
 // not waited for.
 //
+// A subagent's call also waits for the servers Opt granted it, and gets
+// their statuses as last asked, to say which are not there.
+//
 // Nothing else reads the call's output yet: callNow does.
-func (a *Agent) mcpSettle(p *proc) {
+func (a *Agent) mcpSettle(p *proc) (servers []mcpServer, granted []string) {
 	if !a.ownConfig {
-		return
+		return nil, nil
 	}
 	deadline := time.Now().Add(5 * time.Second)
 	wait := func() bool {
@@ -131,7 +212,10 @@ func (a *Agent) mcpSettle(p *proc) {
 		}
 	}
 	a.mu.Lock()
-	off, up, seen := slices.Clone(a.mcpOff), a.mcpUp, a.mcpSeen
+	off, up := a.mcpOffLocked(p.who), a.mcpUp
+	if s := a.subs[p.who]; p.who != "" && s != nil {
+		granted = slices.DeleteFunc(slices.Clone(s.MCP), func(n string) bool { return slices.Contains(off, n) })
+	}
 	a.mu.Unlock()
 	var connected, listed []string // as last asked; nil: never answered
 	defer func() {
@@ -144,14 +228,15 @@ func (a *Agent) mcpSettle(p *proc) {
 	for {
 		v, err := p.callNow(map[string]any{"subtype": "mcp_status"})
 		if err != nil {
-			return
+			return servers, granted
 		}
 		var r struct {
 			Servers []mcpServer `json:"mcpServers"`
 		}
 		if json.Unmarshal(v, &r) != nil {
-			return
+			return servers, granted
 		}
+		servers = r.Servers
 		settled := true
 		connected, listed = []string{}, []string{}
 		for _, s := range r.Servers {
@@ -159,41 +244,12 @@ func (a *Agent) mcpSettle(p *proc) {
 			if s.Status == "connected" {
 				connected = append(connected, s.Name)
 			}
-			switch {
-			case slices.Contains(off, s.Name) && s.Status != "disabled":
-				// Listed, maybe not yet ready to be turned off: tried again.
-				if _, err := p.callNow(map[string]any{"subtype": "mcp_toggle", "serverName": s.Name, "enabled": false}); err != nil {
-					settled = false
-				}
-			case s.Status == "pending" && (up == nil || slices.Contains(up, s.Name)):
-				settled = false
-			}
-		}
-		for _, name := range off { // listed last time, not yet: it would come on after the view went
-			if slices.Contains(seen, name) && !slices.Contains(listed, name) {
+			if s.Status == "pending" && (up == nil || slices.Contains(up, s.Name) || slices.Contains(granted, s.Name)) {
 				settled = false
 			}
 		}
 		if settled || !wait() {
-			return
-		}
-	}
-}
-
-// mcpSwitch turns a server on or off in one call. A server Claude Code has
-// not listed yet (claude.ai's come a moment after the start) is tried again
-// for a while.
-func mcpSwitch(p *proc, name string, on bool) error {
-	deadline := time.Now().Add(20 * time.Second)
-	for {
-		_, err := p.call(p.ctx, map[string]any{"subtype": "mcp_toggle", "serverName": name, "enabled": on})
-		if err == nil || !strings.Contains(err.Error(), "not found") || time.Now().After(deadline) {
-			return err
-		}
-		select {
-		case <-time.After(500 * time.Millisecond):
-		case <-p.ctx.Done():
-			return p.ctx.Err()
+			return servers, granted
 		}
 	}
 }
@@ -215,7 +271,20 @@ func (a *Agent) mcpSignIn(ctx context.Context, name string) (string, error) {
 	return r.AuthURL, nil
 }
 
+// mcpReconnect reconnects a server in the page's call, and in each call
+// underway that has it on: a subagent's that failed goes on with it.
 func (a *Agent) mcpReconnect(ctx context.Context, name string) error {
+	a.mu.Lock()
+	var live []*proc
+	for p := range a.live {
+		if !slices.Contains(a.mcpOffLocked(p.who), name) {
+			live = append(live, p)
+		}
+	}
+	a.mu.Unlock()
+	for _, p := range live {
+		go p.call(p.ctx, map[string]any{"subtype": "mcp_reconnect", "serverName": name})
+	}
 	_, err := a.control(ctx, map[string]any{"subtype": "mcp_reconnect", "serverName": name})
 	return err
 }
@@ -419,7 +488,7 @@ func (a *Agent) setPlugin(ctx context.Context, id string, on bool) error {
 }
 
 // configCommand runs /mcp, /skills and /plugins in the terminal: a list,
-// or "on name" and "off name".
+// or "on name" and "off name"; for an MCP server, "agents name" too.
 func configCommand(a *Agent, word, arg string) string {
 	if !a.ownConfig {
 		return "Opt runs without your Claude Code setup (-claude-config=false)."
@@ -429,8 +498,8 @@ func configCommand(a *Agent, word, arg string) string {
 	how, name, _ := strings.Cut(arg, " ")
 	name = strings.TrimSpace(name)
 	switch {
-	case (how == "on" || how == "off") && name != "" && word == "mcp":
-		if err := a.setMCP(ctx, name, how == "on"); err != nil {
+	case (how == "on" || how == "off" || how == "agents") && name != "" && word == "mcp":
+		if err := a.setMCP(ctx, name, how); err != nil {
 			return err.Error()
 		}
 	case (how == "on" || how == "off") && name != "" && word == "plugins":
@@ -441,6 +510,8 @@ func configCommand(a *Agent, word, arg string) string {
 		if err := a.setSkill(ctx, name, how); err != nil {
 			return err.Error()
 		}
+	case arg != "" && word == "mcp":
+		return "/mcp lists them; /mcp on NAME, off NAME or agents NAME sets one on, off or for subagents only."
 	case arg != "":
 		return "/" + word + " lists them; /" + word + " on NAME or off NAME turns one on or off."
 	}
@@ -465,8 +536,14 @@ func configCommand(a *Agent, word, arg string) string {
 		}
 		for _, s := range ss {
 			st := s.Status
-			if s.Off {
+			switch {
+			case s.Off:
 				st = "off"
+			case s.Agents:
+				st = "for subagents only, " + st
+				if len(s.Granted) > 0 {
+					st += ", granted to [" + strings.Join(s.Granted, "], [") + "]"
+				}
 			}
 			lines = append(lines, fmt.Sprintf("%-40s %s", s.Name, st))
 		}

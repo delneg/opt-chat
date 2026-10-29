@@ -19,7 +19,9 @@ func fakeFiles(a *Agent, ext string) []string {
 
 // With the user's own setup, a turn loads their settings, skills and MCP
 // servers but never their hooks, CLAUDE.md or memory; it waits for its
-// servers and turns off those turned off here before it sends the view.
+// servers before it sends the view, and its settings keep out those turned
+// off here: switched in Claude Code, they would stay off in the user's own
+// config for the folder.
 // Compactions stay bare.
 func TestOwnConfig(t *testing.T) {
 	c, _ := fakeChat(t, t.TempDir(), 100)
@@ -33,7 +35,7 @@ func TestOwnConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	args := calls()[0]
-	if flagOf(args, "--setting-sources") != "user,project,local" || flagOf(args, "--settings") != `{"disableAllHooks":true,"autoCompactEnabled":false}` ||
+	if flagOf(args, "--setting-sources") != "user,project,local" || flagOf(args, "--settings") != `{"disableAllHooks":true,"autoCompactEnabled":false,"deniedMcpServers":[{"serverName":"beta"},{"serverName":"ghost"}]}` ||
 		flagOf(args, "--tools") != "Read,Skill,ToolSearch" || slices.Contains(args, "--strict-mcp-config") || slices.Contains(args, "--disable-slash-commands") {
 		t.Fatalf("turn args: %q", args)
 	}
@@ -43,10 +45,9 @@ func TestOwnConfig(t *testing.T) {
 			t.Fatalf("turn env lacks %s: %s", kv, env)
 		}
 	}
-	// beta turned off, ghost (gone from the user's setup) never waited
-	// for, and the status asked until alpha connected.
+	// Nothing switched, and the status asked until alpha connected.
 	ctl := strings.Join(fakeFiles(a, ".ctl"), "\n")
-	if !strings.Contains(ctl, `"beta"`) || strings.Contains(ctl, `"ghost"`) || strings.Count(ctl, `"mcp_status"`) != 3 {
+	if strings.Contains(ctl, `"mcp_toggle"`) || strings.Count(ctl, `"mcp_status"`) != 3 {
 		t.Fatalf("control requests before the view:\n%s", ctl)
 	}
 
@@ -72,15 +73,32 @@ func TestWebConfig(t *testing.T) {
 	ws.send(map[string]any{"t": "mcp"})
 	u := ws.next("mcp", typ("mcp"))
 	b, _ := json.Marshal(u)
-	if strings.Contains(string(b), "SECRET") || strings.Contains(string(b), `"opt"`) || len(u["servers"].([]any)) != 2 {
+	if strings.Contains(string(b), "SECRET") || strings.Contains(string(b), `"opt"`) || len(u["servers"].([]any)) != 3 {
 		t.Fatalf("mcp: %s", b)
 	}
 	ws.send(map[string]any{"t": "mcp", "action": "off", "name": "beta"})
 	u = ws.next("mcp off", typ("mcp"))
-	if s := u["servers"].([]any)[1].(map[string]any); s["off"] != true || s["status"] != "disabled" || u["error"] != nil {
+	if s := u["servers"].([]any)[1].(map[string]any); s["off"] != true || s["status"] != "connected" || u["error"] != nil { // the page's call keeps it, to show it as it is
 		t.Fatalf("after off: %v", u)
 	}
 	if s := loadSettings(wt.c.dir); !slices.Equal(s.MCPOff, []string{"beta"}) {
+		t.Fatalf("settings: %+v", s)
+	}
+	// Enter cycles on, subagents only, off: for subagents only, the page's
+	// call keeps it on, so its status is the server's own.
+	ws.send(map[string]any{"t": "mcp", "action": "agents", "name": "beta"})
+	u = ws.next("mcp agents", typ("mcp"))
+	if s := u["servers"].([]any)[1].(map[string]any); s["agents"] != true || s["off"] != nil || s["status"] != "connected" || u["error"] != nil {
+		t.Fatalf("after agents: %v", u)
+	}
+	if s := loadSettings(wt.c.dir); len(s.MCPOff) != 0 || !slices.Equal(s.MCPAgents, []string{"beta"}) {
+		t.Fatalf("settings: %+v", s)
+	}
+	ws.send(map[string]any{"t": "mcp", "action": "off", "name": "beta"})
+	if s := ws.next("mcp off again", typ("mcp"))["servers"].([]any)[1].(map[string]any); s["off"] != true || s["agents"] != nil {
+		t.Fatalf("off again: %v", s)
+	}
+	if s := loadSettings(wt.c.dir); !slices.Equal(s.MCPOff, []string{"beta"}) || len(s.MCPAgents) != 0 {
 		t.Fatalf("settings: %+v", s)
 	}
 	ws.send(map[string]any{"t": "mcp", "action": "signin", "name": "alpha"})
@@ -103,7 +121,7 @@ func TestWebConfig(t *testing.T) {
 		t.Fatalf("settings: %+v", s)
 	}
 	a.mu.Lock()
-	set := a.ownSettings(0)
+	set := a.ownSettings(0, nil)
 	a.mu.Unlock()
 	if set != `{"disableAllHooks":true,"autoCompactEnabled":false,"skillOverrides":{"one":"off"}}` {
 		t.Fatalf("a call's settings: %s", set)
@@ -127,7 +145,7 @@ func TestWebConfig(t *testing.T) {
 		t.Fatalf("after off: %v", u)
 	}
 	a.mu.Lock()
-	set = a.ownSettings(0)
+	set = a.ownSettings(0, nil)
 	a.mu.Unlock()
 	if s := loadSettings(a.chat.dir); s.Plugins["plug@market"] != false || len(s.Plugins) != 1 ||
 		set != `{"disableAllHooks":true,"autoCompactEnabled":false,"skillOverrides":{"one":"off"},"enabledPlugins":{"plug@market":false}}` {

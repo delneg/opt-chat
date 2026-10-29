@@ -142,9 +142,10 @@ func fakeClaude() {
 				{"name": "opt", "status": "connected"},
 				{"name": "alpha", "status": alpha, "scope": "user", "source": "user", "config": map[string]any{"headers": map[string]any{"Authorization": "Bearer SECRET"}}},
 				{"name": "beta", "status": beta, "scope": "claudeai", "source": "claudeai"},
+				{"name": "gamma", "status": "failed", "scope": "user", "source": "user", "error": "connection refused"},
 			}})
 		case "mcp_toggle":
-			if name != "alpha" && name != "beta" {
+			if name != "alpha" && name != "beta" && name != "gamma" {
 				emit(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "error", "request_id": r.RequestID, "error": "Server not found: " + name}})
 				break
 			}

@@ -33,6 +33,7 @@ type agentRecord struct {
 	Resumes   int       `json:"resumes,omitzero"`   // times a start resumed it since its last result
 	Pid       int       `json:"pid,omitzero"`       // its Claude Code's, while at work: after a crash, stopped before it is resumed
 	User      bool      `json:"user,omitzero"`      // its turn underway is the user's, from the page: its end reports nothing to Opt
+	MCP       []string  `json:"mcp,omitzero"`       // the servers for subagents only granted to it
 }
 
 func (a *Agent) recordPath(name string) string {
@@ -192,7 +193,7 @@ func (a *Agent) resumeCut(names []string) {
 			note = restartUserNote
 		}
 		a.mu.Lock()
-		out, ok := a.resume(name, []tell{{text: note}}, true)
+		out, ok := a.resume(name, []tell{{text: note}}, true, "")
 		a.mu.Unlock()
 		switch {
 		case user: // the user's turn: Opt never hears of it

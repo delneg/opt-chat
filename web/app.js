@@ -647,7 +647,7 @@ const commands = [
   ['/effort', 'show or set their effort'],
   ['/mode', 'show or set the permission mode (Shift+Tab)'],
   ['/autocompact', 'compact a subagent past this context, as 250k, between two steps, under the -agent-compact-max cap (never the chat\'s)'],
-  ['/mcp', 'your Claude Code MCP servers: status, on or off, sign in'],
+  ['/mcp', 'your Claude Code MCP servers: status, on, for subagents only or off, sign in'],
   ['/skills', 'your Claude Code skills: on or off'],
   ['/plugins', 'your Claude Code plugins, their skills and MCP servers at once: on or off'],
   ['/agents', 'list the subagents at work'],
@@ -1743,7 +1743,7 @@ function panelAct(action, row, extra) {
 
 function toggleRow(row) {
   if (!row) return;
-  if (S.panel.kind === 'mcp') panelAct(row.off ? 'on' : 'off', row);
+  if (S.panel.kind === 'mcp') panelAct(row.off ? 'on' : row.agents ? 'off' : 'agents', row); // on, for subagents only, off
   else if (S.panel.kind === 'plugins') panelAct(row.on ? 'off' : 'on', row);
   else if (!row.locked_by) panelAct('set', row, { state: row.state === 'off' ? 'on' : 'off' });
 }
@@ -1780,8 +1780,10 @@ const mcpMarks = { connected: ['✔', 'ok'], pending: ['…', 'dim'], 'needs-aut
 
 function McpRow({ s }) {
   const [glyph, cls] = s.off ? ['○', 'dim'] : mcpMarks[s.status] || ['·', 'dim'];
-  const what = s.off ? 'off' : s.status === 'needs-auth' ? 'needs sign-in (a)' : s.status === 'failed' ? 'failed (r to reconnect)' : s.status;
-  return html`<span class="lbl">${s.name}</span><span class=${'st ' + cls}>${glyph} ${what}</span><span class="desc">${s.source || s.scope || ''}${s.error ? ' · ' + s.error : ''}</span>`;
+  const st = s.status === 'needs-auth' ? 'needs sign-in (a)' : s.status === 'failed' ? 'failed (r to reconnect)' : s.status;
+  const what = s.off ? 'off' : s.agents ? `subagents only · ${st}` : st;
+  const granted = s.granted?.length ? ' · granted to ' + s.granted.map(n => `[${n}]`).join(', ') : '';
+  return html`<span class="lbl">${s.name}</span><span class=${'st ' + cls}>${glyph} ${what}</span><span class="desc">${s.source || s.scope || ''}${granted}${s.error ? ' · ' + s.error : ''}</span>`;
 }
 
 function SkillRow({ s }) {
@@ -1797,8 +1799,8 @@ function PluginRow({ s }) {
 }
 
 const panels = {
-  mcp: { title: 'MCP servers', Row: McpRow, on: r => !r.off,
-    about: (on, all) => `Your Claude Code MCP servers, as its /mcp lists them: ${on.length} of ${all.length} on for Opt. Off is kept for Opt alone; a sign-in is Claude Code's.` },
+  mcp: { title: 'MCP servers', Row: McpRow, on: r => !r.off && !r.agents,
+    about: (on, all) => `Your Claude Code MCP servers, as its /mcp lists them: ${on.length} of ${all.length} on for Opt, ${all.filter(r => r.agents).length} for subagents only, which Opt gives a subagent when its task needs one. Kept for Opt alone; a sign-in is Claude Code's.` },
   skills: { title: 'Skills', Row: SkillRow, on: r => r.state !== 'off',
     about: (on, all) => `Your Claude Code skills, as its /skills lists them: ${on.length} of ${all.length} on, ${on.reduce((n, r) => n + (r.tokens || 0), 0).toLocaleString()} tokens listed. On or off is kept for Opt alone, from its next call.` },
   plugins: { title: 'Plugins', Row: PluginRow, on: r => r.on,
@@ -1822,7 +1824,7 @@ function Panel() {
       </div>`)}
       ${!rows.length && html`<div class="dim">None.</div>`}
     </div>`}
-    <div class="dim">↑/↓ · Enter or Space: on/off${mcp ? ' · a: sign in · r: reconnect' : ''} · Esc to close</div>
+    <div class="dim">↑/↓ · Enter or Space: ${mcp ? 'on, subagents only, off · a: sign in · r: reconnect' : 'on/off'} · Esc to close</div>
   </div>`;
 }
 

@@ -64,6 +64,7 @@ func importInto(t *testing.T, c *Chat, path string, o importOpts, answer string)
 // a note; Claude Code's own lines, thinking, other agents' steps and (unless
 // asked for) tools stay out; a second import adds only what is new.
 func TestImportClaudeCode(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	file := filepath.Join(home, ".claude", "projects", "-work", "s1.jsonl")
 	img := base64.StdEncoding.EncodeToString([]byte(pngHead))
@@ -162,6 +163,7 @@ func TestImportClaudeCode(t *testing.T) {
 // earlier import, and a session imported before is the same session when
 // only its history is left.
 func TestImportHistory(t *testing.T) {
+	t.Parallel()
 	home := filepath.Join(t.TempDir(), ".claude")
 	ms := func(at string) int64 { d, _ := time.Parse(time.RFC3339, at); return d.UnixMilli() }
 	typed := func(session, project, at, text string, pasted ...string) obj {
@@ -231,6 +233,7 @@ func TestImportHistory(t *testing.T) {
 
 // Codex sessions: injected context and subagents' sessions stay out.
 func TestImportCodex(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	item := func(at string, p obj) obj { return obj{"type": "response_item", "timestamp": at, "payload": p} }
 	jsonl(t, filepath.Join(home, ".codex", "sessions", "2026", "09", "01", "rollout-1.jsonl"),
@@ -268,6 +271,7 @@ func TestImportCodex(t *testing.T) {
 // handed back by an Esc is imported once: dropped when the next prompt
 // sends it again, kept when it does not.
 func TestImportQueuedAndRefs(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	queued := func(at, text string) obj {
 		return obj{"type": "attachment", "timestamp": at, "attachment": obj{"type": "queued_command", "commandMode": "prompt", "prompt": text, "origin": obj{"kind": "human"}}}
@@ -311,6 +315,7 @@ func TestImportQueuedAndRefs(t *testing.T) {
 // Claude's and ChatGPT's exports: Claude's from its .zip; ChatGPT's along the
 // branch the user last saw, without hidden messages or thoughts.
 func TestImportExports(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	claude := []obj{{
 		"name": "Trip", "created_at": "2026-05-01T12:00:00.000000Z",
@@ -369,6 +374,7 @@ func TestImportExports(t *testing.T) {
 
 // A text file's lines become notes, once the user says yes.
 func TestImportNotes(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "memories.txt")
 	os.WriteFile(path, []byte("I like tea\n\n  I dislike rain  \n"), 0o600)
 	c, _ := fakeChat(t, t.TempDir(), 100)
@@ -390,6 +396,7 @@ func TestImportNotes(t *testing.T) {
 
 // The estimate counts one call per line over 512 bytes, up the tree.
 func TestSummaryCalls(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		at    int
 		sizes []int
@@ -412,6 +419,7 @@ func TestSummaryCalls(t *testing.T) {
 // a session's note and the messages after it older than it, up to the
 // first that is not, and never the chat's own.
 func TestMarkOldImports(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	day := func(d, h int) time.Time { return time.Date(2026, 10, d, h, 0, 0, 0, time.UTC) }
 	path := filepath.Join(dir, "main", "2026-10-01.jsonl")

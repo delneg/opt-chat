@@ -75,6 +75,7 @@ func silence(t *testing.T, ch chan played) {
 // sound is not played twice in a row; a sound outside the pack is never
 // played.
 func TestSounds(t *testing.T) {
+	t.Parallel()
 	dir := peonFixture(t, `{"enabled":true,"volume":0.3,"default_pack":"pk","categories":{"task.complete":false}}`, "openpeon.json", map[string][]string{
 		soundAck:   {"sounds/ack.wav"},
 		soundError: {"sounds/err.wav"},
@@ -103,6 +104,7 @@ func TestSounds(t *testing.T) {
 // peon toggle mutes them; an older pack's manifest.json and bare file
 // names play; without peon-ping, none.
 func TestSoundsOff(t *testing.T) {
+	t.Parallel()
 	dir := peonFixture(t, `{"enabled":false,"active_pack":"pk"}`, "manifest.json", map[string][]string{soundAck: {"ack.wav"}})
 	s, ch := testSounder(dir, nil)
 	s.sound(soundAck)
@@ -124,6 +126,7 @@ func TestSoundsOff(t *testing.T) {
 // A category with a chime plays it, at the pack's volume, in place of the
 // pack's sound; one whose chime is missing plays the pack's.
 func TestSoundChime(t *testing.T) {
+	t.Parallel()
 	dir := peonFixture(t, `{"volume":0.3,"default_pack":"pk"}`, "openpeon.json", map[string][]string{
 		soundLimit: {"sounds/limit.wav"}, soundAck: {"sounds/ack.wav"},
 	})
@@ -145,6 +148,7 @@ func TestSoundChime(t *testing.T) {
 // The user's message is taken and Opt's turn ends: the last sound is the
 // end's; a turn the user stops ends without one.
 func TestTurnSounds(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	record(c)
 	dir := peonFixture(t, `{"default_pack":"pk"}`, "openpeon.json", map[string][]string{
@@ -177,6 +181,7 @@ func TestTurnSounds(t *testing.T) {
 // A subagent's start, its report, and its context compacted mid-task are
 // heard.
 func TestAgentSounds(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	record(c)
 	dir := peonFixture(t, `{"default_pack":"pk"}`, "openpeon.json", map[string][]string{

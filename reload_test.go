@@ -64,6 +64,7 @@ func noneLogged(t *testing.T, c *Chat, s string) {
 // from its saved session, told to check its last tool call; the quit
 // sends the chat no "stopped" report for it.
 func TestAutoResumeAfterQuit(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	a, calls := fakeAgent(t, c)
 	a.autoResume = true
@@ -103,6 +104,7 @@ func TestAutoResumeAfterQuit(t *testing.T) {
 
 // One a crash cut off, its record still "working", goes on too.
 func TestAutoResumeAfterCrash(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	a, calls := fakeAgent(t, c)
 	a.autoResume = true
@@ -129,6 +131,7 @@ func TestAutoResumeAfterCrash(t *testing.T) {
 // times without a result since. Those cut off that don't go on are told
 // of once.
 func TestNoAutoResume(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	a, calls := fakeAgent(t, c)
 	a.autoResume = true
@@ -179,6 +182,7 @@ func TestNoAutoResume(t *testing.T) {
 // A loop cut off mid-turn goes on with the turns it had: its cap holds
 // across the restart.
 func TestLoopTurnsSurviveResume(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	a, _ := fakeAgent(t, c)
 	a.autoResume = true
@@ -240,6 +244,7 @@ func content(path string) string {
 // the turn underway to end, cuts the subagents at work (the next start
 // resumes them, so the chat gets no report), and then execs it.
 func TestReloadWaitsForTurn(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	record(c)
 	building(t, c)
@@ -285,6 +290,7 @@ func TestReloadWaitsForTurn(t *testing.T) {
 // A build that fails changes nothing: the binary stays, nothing stops, and
 // the chat goes on.
 func TestReloadBuildFails(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	record(c)
 	h := newHarness(t, c)
@@ -319,6 +325,7 @@ func TestReloadBuildFails(t *testing.T) {
 // An exec that fails keeps this opt-chat: the chat goes on, and the
 // subagents it cut go on from their sessions, as at a start.
 func TestReloadExecFails(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	record(c)
 	h := newHarness(t, c)
@@ -348,6 +355,7 @@ func TestReloadExecFails(t *testing.T) {
 
 // Quitting while a reload waits for the turn ends the reload: no exec.
 func TestReloadThenQuit(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	record(c)
 	h := newHarness(t, c)
@@ -373,6 +381,7 @@ func TestReloadThenQuit(t *testing.T) {
 
 // One reload at a time.
 func TestReloadOnce(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	record(c)
 	h := newHarness(t, c)
@@ -389,6 +398,7 @@ func TestReloadOnce(t *testing.T) {
 // goBuild builds the folder of exe into out and checks that out starts
 // with the run's flags; a failure says why.
 func TestGoBuild(t *testing.T) {
+	t.Parallel()
 	src := t.TempDir()
 	exe, out := filepath.Join(src, "x"), filepath.Join(src, "x.new")
 	write := func(name, body string) {
@@ -434,6 +444,7 @@ func main() {
 
 // opt-chat itself passes the check: it stops after its flags when asked.
 func TestGoBuildSelf(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("builds opt-chat")
 	}
@@ -447,6 +458,7 @@ func TestGoBuildSelf(t *testing.T) {
 // A reload runs again with the run's flags, less an import, and opens no
 // browser.
 func TestReloadArgs(t *testing.T) {
+	t.Parallel()
 	fs := flag.NewFlagSet("opt-chat", flag.ContinueOnError)
 	fs.String("model", "fable", "")
 	fs.String("import", "", "")
@@ -464,6 +476,7 @@ func TestReloadArgs(t *testing.T) {
 
 // /reload asks for one where opt-chat can.
 func TestReloadCommand(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	a, _ := fakeAgent(t, c)
 	if _, ok, err := command(a, "/reload"); !ok || err == nil {
@@ -481,6 +494,7 @@ func TestReloadCommand(t *testing.T) {
 // never share a session. A pid whose process names another session (the
 // pid reused) is left alone.
 func TestAutoResumeStopsOrphan(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	a, _ := fakeAgent(t, c)
 	a.autoResume = true

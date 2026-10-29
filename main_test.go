@@ -12,27 +12,26 @@ import (
 // filePaths reads paths the way terminals drop them: absolute or from ~/,
 // files only, each once.
 func TestFilePaths(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	for _, f := range []string{"a.png", "my shot.JPG", "q'd.gif", "notes.txt"} {
 		os.WriteFile(filepath.Join(dir, f), []byte("x"), 0o600)
 	}
 	os.Mkdir(filepath.Join(dir, "d.png"), 0o700)
 	home := t.TempDir()
-	t.Setenv("HOME", home)
 	os.WriteFile(filepath.Join(home, "h.pdf"), []byte("x"), 0o600)
 	a, spaced, quoted, notes := filepath.Join(dir, "a.png"), filepath.Join(dir, "my shot.JPG"), filepath.Join(dir, "q'd.gif"), filepath.Join(dir, "notes.txt")
-	t.Chdir(dir)
-	msg := "see " + a + ", " + dir + `/my\ shot.JPG and '` + spaced + `' "` + quoted + `" ` + dir + "/d.png " + dir + "/none.png notes.txt " + notes + ". ~/h.pdf"
-	if got := filePaths(msg); !slices.Equal(got, []string{a, spaced, quoted, notes, filepath.Join(home, "h.pdf")}) {
+	msg := "see " + a + ", " + dir + `/my\ shot.JPG and '` + spaced + `' "` + quoted + `" ` + dir + "/d.png " + dir + "/none.png attach.go " + notes + ". ~/h.pdf" // attach.go: a file in the working folder, not a path
+	if got := filePathsFrom(msg, home); !slices.Equal(got, []string{a, spaced, quoted, notes, filepath.Join(home, "h.pdf")}) {
 		t.Fatalf("filePaths = %q", got)
 	}
 	// In code, brackets and links; not in a block of code.
 	msg = "run `cat " + a + "` (" + notes + ") [the pdf](~/h.pdf)\u00a0and\n```\n" + spaced + "\n```\n  ~~~\n" + quoted + "\n  ~~~\n"
-	if got := filePaths(msg); !slices.Equal(got, []string{a, notes, filepath.Join(home, "h.pdf")}) {
+	if got := filePathsFrom(msg, home); !slices.Equal(got, []string{a, notes, filepath.Join(home, "h.pdf")}) {
 		t.Fatalf("filePaths = %q", got)
 	}
 	// Many paths are a listing, not files to send.
-	if got := filePaths(strings.Repeat(a+" "+notes+" "+filepath.Join(home, "h.pdf")+" ", 4)); len(got) != 3 {
+	if got := filePathsFrom(strings.Repeat(a+" "+notes+" "+filepath.Join(home, "h.pdf")+" ", 4), home); len(got) != 3 {
 		t.Fatalf("each named once: %q", got)
 	}
 	var many []string
@@ -41,13 +40,14 @@ func TestFilePaths(t *testing.T) {
 		os.WriteFile(p, []byte("x"), 0o600)
 		many = append(many, p)
 	}
-	if got := filePaths(strings.Join(many, "\n")); got != nil {
+	if got := filePathsFrom(strings.Join(many, "\n"), home); got != nil {
 		t.Fatalf("a listing attached %d files", len(got))
 	}
 }
 
 // Commands change the turns' model and effort; any other /word is held back.
 func TestCommand(t *testing.T) {
+	t.Parallel()
 	a := &Agent{chat: &Chat{dir: "/chat"}, model: "fable", effort: "high", perm: "auto", running: map[string]*proc{}}
 	for _, step := range []struct{ in, out string }{
 		{"/model", "Turns: fable, effort high, mode auto."},
@@ -88,6 +88,7 @@ func TestCommand(t *testing.T) {
 // A /name of one of the user's skills goes to Opt, for Claude Code to run
 // the skill; one turned off for Opt is held back, as a typo is.
 func TestSkillCommand(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	a, _ := fakeAgent(t, c)
 	a.ownConfig = true
@@ -113,6 +114,7 @@ func TestSkillCommand(t *testing.T) {
 
 // In the terminal, as in the page, naming a hidden file does not send it.
 func TestTypedHidden(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	r := record(c)
 	dir := t.TempDir()
@@ -130,6 +132,7 @@ func TestTypedHidden(t *testing.T) {
 
 // The system prompt names the chat's AGENTS.md, and lists wake only when on.
 func TestSystemPrompt(t *testing.T) {
+	t.Parallel()
 	path := "/chats/x/AGENTS.md"
 	off := systemPrompt(path, false)
 	if strings.Contains(off, "{{") || !strings.Contains(off, path) || strings.Contains(off, "wake(") ||

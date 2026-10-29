@@ -26,6 +26,7 @@ func armResume(a *Agent) {
 // A turn or a subagent stopped by the plan's usage limit goes on at its
 // reset: one turn starts, and the subagent is resumed from its session.
 func TestResumeAtReset(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	h := newHarness(t, c)
 	a := h.agent
@@ -55,6 +56,7 @@ func workLine(c *Chat, prefix string) bool {
 }
 
 func TestLimitReset(t *testing.T) {
+	t.Parallel()
 	ny, _ := time.LoadLocation("America/New_York")
 	now := time.Date(2026, 10, 23, 7, 36, 0, 0, ny)
 	for _, tc := range []struct {
@@ -94,6 +96,7 @@ func TestLimitReset(t *testing.T) {
 // reset time, so taking one for it would wait for the five-hour reset and
 // resume a call that fails the same way again.
 func TestUsageLimitWording(t *testing.T) {
+	t.Parallel()
 	for _, in := range []string{
 		"You've hit your session limit · resets 4am (Asia/Manila)",
 		"You've hit your weekly limit · resets Oct 26, 11am (UTC)",
@@ -161,6 +164,7 @@ func TestUsageLimitWording(t *testing.T) {
 // nor does one only bought credits lift, and a later event that allows
 // requests clears it.
 func TestRejectedLimitEvent(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	a := newHarness(t, c).agent
 	armResume(a)
@@ -200,6 +204,7 @@ func mustLoad(t *testing.T, name string) *time.Location {
 // A pending resume outlasts a restart; a hit that comes again moves the
 // time, never sooner; a stale time backs off; a string of hits stops.
 func TestResumer(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	var f fired
 	got := func(s resumeState) { f.add(strings.Join(stoppedBy(s), ",")) }
@@ -270,6 +275,7 @@ func TestResumer(t *testing.T) {
 // model's calls only: a subagent on another model that fails for another
 // reason is not waiting on it. Found by a TLA+ model of the resume (property NoWaitOnNonLimit).
 func TestModelLimitEventIsNotEveryones(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	a := newHarness(t, c).agent
 	armResume(a)
@@ -286,6 +292,7 @@ func TestModelLimitEventIsNotEveryones(t *testing.T) {
 // before the reset is not told at the reset to pick up where it stopped.
 // Found by a TLA+ model of the resume (property NoResumeOfFinished).
 func TestResumeSkipsSubagentThatFinished(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	a := newHarness(t, c).agent
 	armResume(a)
@@ -314,6 +321,7 @@ func TestResumeSkipsSubagentThatFinished(t *testing.T) {
 // by the five-hour window is not held until Opt's weekly Opus reset. Found
 // by a TLA+ model of the resume (property NoLateResume).
 func TestResumeEachAtItsOwnReset(t *testing.T) {
+	t.Parallel()
 	var f fired
 	r, err := startResumer(t.TempDir(), func(s resumeState) { f.add(strings.Join(stoppedBy(s), ",")) })
 	if err != nil {
@@ -332,6 +340,7 @@ func TestResumeEachAtItsOwnReset(t *testing.T) {
 // A reset time that has just passed as the message is read is that time,
 // not the same time a day or a week on.
 func TestLimitResetJustPassed(t *testing.T) {
+	t.Parallel()
 	loc := mustLoad(t, "Asia/Manila")
 	now := time.Date(2026, 10, 26, 4, 0, 20, 0, loc) // a Monday
 	for _, text := range []string{

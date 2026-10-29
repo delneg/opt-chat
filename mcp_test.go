@@ -10,6 +10,7 @@ import (
 )
 
 func TestMCP(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	c.Log("user", "hi")
 	png, err := c.saveImage([]byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"))

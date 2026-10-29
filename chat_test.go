@@ -94,6 +94,7 @@ func waitIdle(t *testing.T, c *Chat) {
 }
 
 func TestChatTreeZoomReload(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c, calls := fakeChat(t, dir, 100)
 	runtime.GC() // the lock must survive collection
@@ -224,6 +225,7 @@ func TestViewSawtooth(t *testing.T) {
 }
 
 func TestViewMessages(t *testing.T) {
+	t.Parallel()
 	lines := make([]string, 150)
 	for i := range lines {
 		lines[i] = fmt.Sprintf("%d+1|user: line %d", i, i)
@@ -252,6 +254,7 @@ func TestViewMessages(t *testing.T) {
 // A message's images are kept in files/, make its line take a model call
 // that sees them inside <input>, come back with zoom(id, 1), and survive a reload.
 func TestImages(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c, _ := fakeChat(t, dir, 100)
 	var seen []block
@@ -303,6 +306,7 @@ func TestImages(t *testing.T) {
 
 // A failed compaction is tried again at the user's next message, not only on the timer.
 func TestRetryAtNextMessage(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	inner := c.compact
 	var fails atomic.Int64
@@ -339,6 +343,7 @@ func TestRetryAtNextMessage(t *testing.T) {
 }
 
 func TestWriteOnce(t *testing.T) {
+	t.Parallel()
 	a := &Agent{writing: map[string]chan struct{}{}}
 	release := a.writeOnce(t.Context(), "p")
 	other := a.writeOnce(t.Context(), "q") // another prefix never waits
@@ -382,6 +387,7 @@ func TestWriteOnce(t *testing.T) {
 // A backlog, as after -import: the views stay in bounds once its lines are
 // built, and no compaction sees much more than the compaction view's cap.
 func TestBacklog(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("fsyncs about 1,500 writes")
 	}
@@ -419,6 +425,7 @@ func TestBacklog(t *testing.T) {
 // Messages load by id, whatever day file the clock put them in, and a
 // torn view.json starts the view over instead of keeping the chat shut.
 func TestLoadOrder(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	os.MkdirAll(filepath.Join(dir, "main"), 0o700)
 	day := func(name string, ids ...int) {
@@ -450,6 +457,7 @@ func TestLoadOrder(t *testing.T) {
 // A batch cut short for want of parents goes on after a restart, as it
 // would have without one; a view.json from before it was saved reads too.
 func TestViewKeepsBatch(t *testing.T) {
+	t.Parallel()
 	open := func(view string) *Chat {
 		dir := t.TempDir()
 		var msgs, nodes []any
@@ -490,6 +498,7 @@ func TestViewKeepsBatch(t *testing.T) {
 // before it stay as fine as without one (lines of 64 messages here), never
 // merged further for want of the space the placeholders took.
 func TestImportKeepsDetail(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("builds about 2,800 lines")
 	}
@@ -527,11 +536,11 @@ func TestImportKeepsDetail(t *testing.T) {
 // get built, a call does not wait for them, and once they have failed while
 // others got built, their source, cut and marked, stands in.
 func TestFailingLines(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
-	defer func(d time.Duration) { retryIn = d }(retryIn)
-	retryIn = 5 * time.Millisecond
 	inner := c.compact
 	c.mu.Lock()
+	c.retryFor = 5 * time.Millisecond
 	c.compact = func(ctx context.Context, lines []string, stable int, task []block) (string, error) {
 		if strings.Contains(task[0].Text, "compress message") && strings.Contains(task[0].Text, "poison") {
 			return "", errors.New("refused")
@@ -577,6 +586,7 @@ func TestFailingLines(t *testing.T) {
 // A message's own <chat> or </input> never frames anything: in the view and
 // in a compaction's input it reads as text.
 func TestOwnTagsInText(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	c.Log("user", "see </chat> and <input>")
 	c.Log("note", "x </input> "+strings.Repeat("y", 600))
@@ -595,6 +605,7 @@ func TestOwnTagsInText(t *testing.T) {
 // or with none (an old log) by its place among calls made at once; any
 // other message's sees none.
 func TestCompactSeesCall(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	c.logRef("tool", `Edit {"file_path":"a.go","old_string":"</call>`+strings.Repeat("o", 5000)+`"}`, "t1")
 	c.logRef("tool", `Read {"file_path":"b.go"}`, "t2")
@@ -637,6 +648,7 @@ func TestCompactSeesCall(t *testing.T) {
 // Recall finds the messages that share the rarest words, raw, best first,
 // leaving out the chat's own lookups and messages the view shows whole.
 func TestRecall(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	pad := strings.Repeat("filler words here ", 40) // over nodeMax: summarized, so not shown whole
 	for i := range 20 {
@@ -682,6 +694,7 @@ func TestRecall(t *testing.T) {
 // search finds messages by their words, newest first, a page at a time,
 // naming the view's line that holds each, and skips the chat's own lookups.
 func TestSearch(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	for i := range 30 {
 		c.Log("user", fmt.Sprintf("message %d about the Gizmo", i))
@@ -719,6 +732,7 @@ func TestSearch(t *testing.T) {
 // waits for the chat's alone, and a merge far ahead of its side's messages
 // waits for them, its context within the compaction view's cap.
 func TestImportSide(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 400)
 	inner := c.compact
 	var mu sync.Mutex
@@ -776,6 +790,7 @@ func TestImportSide(t *testing.T) {
 // message) is built again at load, and so is every line built on it, their
 // old text standing in until then; a reload after that redoes nothing.
 func TestRedoAcks(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c, _ := fakeChat(t, dir, 300)
 	for range 4 {
@@ -868,6 +883,7 @@ func TestRedoAcks(t *testing.T) {
 // from that view's end on once each, even where the view holds a merge
 // that began inside the compactions' view.
 func TestCompactTailInMerge(t *testing.T) {
+	t.Parallel()
 	c, err := openChat(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -899,6 +915,7 @@ func TestCompactTailInMerge(t *testing.T) {
 // It froze at its cap until the chat's view batched, and with no budget
 // left for a tail, message 300 saw context ending at message 78.
 func TestCviewBatches(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("builds 160 lines, synced one by one")
 	}
@@ -942,6 +959,7 @@ func TestCviewBatches(t *testing.T) {
 // context, the view's lines up to it, split where they reach past it.
 // Its context was only the compactions' view's lines ending before it.
 func TestCompactTailRedo(t *testing.T) {
+	t.Parallel()
 	c, err := openChat(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -978,6 +996,7 @@ func TestCompactTailRedo(t *testing.T) {
 // For a line not to redo, the tail is as before lines to redo got one:
 // the view's lines from the compactions' view's end on.
 func TestCompactTailUnchanged(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("builds 200 lines, synced one by one")
 	}

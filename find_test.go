@@ -10,6 +10,7 @@ import (
 )
 
 func TestFindTerms(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		in   string
 		want []string
@@ -29,6 +30,7 @@ func TestFindTerms(t *testing.T) {
 }
 
 func TestIndexFold(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		s, sub  string
 		at, end int
@@ -84,6 +86,7 @@ func hitList(r foundReply) []string {
 }
 
 func TestFind(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	logFind(c)
 	c.mu.Lock()
@@ -143,6 +146,7 @@ func TestFind(t *testing.T) {
 // A find answers 30 at a time, the next page from more, the total the
 // whole log's.
 func TestFindPages(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	var ms []Msg
 	for i := range 75 {
@@ -205,6 +209,7 @@ func BenchmarkFind(b *testing.B) {
 // The page's find over its WebSocket: matches a page at a time, then the
 // log around one, at the log's edges too, and the pages after it.
 func TestWebFind(t *testing.T) {
+	t.Parallel()
 	wt := startWeb(t)
 	c := wt.c
 	logFind(c)

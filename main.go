@@ -964,6 +964,6 @@ func warn(f string, a ...any) { fmt.Fprintf(os.Stderr, "\x1b[33m"+f+"\x1b[0m\n",
 
 func fatal(f string, a ...any) {
 	warn(f, a...)
-	stopChildren()
+	stopChildren(nil)
 	os.Exit(1)
 }

@@ -76,6 +76,7 @@ func pngBytes(w, h int) []byte {
 // Only this machine's names for the server, with the key, get in; the key
 // in the address becomes a cookie; nothing from files/ runs a script.
 func TestWebGuard(t *testing.T) {
+	t.Parallel()
 	wt := startWeb(t)
 	ck := map[string]string{"Cookie": wt.cookie}
 	for _, c := range []struct {
@@ -188,6 +189,7 @@ func typ(t string) func(map[string]any) bool {
 // the reply as it is logged, history, path lookups, commands, a failed send
 // back to the input, and a reconnect that gets only what it missed.
 func TestWebChat(t *testing.T) {
+	t.Parallel()
 	wt := startWeb(t)
 	if _, err := wt.dial(-1, http.Header{"Origin": {"http://evil.example"}}); err == nil {
 		t.Fatal("a socket from another site")
@@ -272,6 +274,7 @@ func queueOf(text string) func(map[string]any) bool {
 
 // Stop from a page hands its queued messages back to that page.
 func TestWebStopRestores(t *testing.T) {
+	t.Parallel()
 	wt := startWeb(t)
 	ws, err := wt.dial(-1, nil)
 	if err != nil {
@@ -304,6 +307,7 @@ func TestWebStopRestores(t *testing.T) {
 
 // The page listens on 127.0.0.1 only, whatever -addr says.
 func TestListen(t *testing.T) {
+	t.Parallel()
 	for _, bad := range []string{"0.0.0.0:0", "[::1]:0", "192.168.1.1:0", "example.com:0", "nope"} {
 		if ln, err := listen(bad, 0); err == nil {
 			ln.Close()
@@ -323,6 +327,7 @@ func TestListen(t *testing.T) {
 // A send the page makes again after a reconnect, with the same key, is
 // taken once.
 func TestWebSendOnce(t *testing.T) {
+	t.Parallel()
 	wt := startWeb(t)
 	ws, err := wt.dial(-1, nil)
 	if err != nil {
@@ -346,6 +351,7 @@ func TestWebSendOnce(t *testing.T) {
 
 // An upload that says it is too big is refused before it is read.
 func TestUploadTooBig(t *testing.T) {
+	t.Parallel()
 	wt := startWeb(t)
 	req := httptest.NewRequest("POST", "/upload", strings.NewReader("x"))
 	req.ContentLength = uploadMax + 1
@@ -362,6 +368,7 @@ func TestUploadTooBig(t *testing.T) {
 // A message sent before the page looked for the paths in it: the server
 // looks, and leaves hidden files for the page to ask about.
 func TestWebFindsPaths(t *testing.T) {
+	t.Parallel()
 	wt := startWeb(t)
 	dir := t.TempDir()
 	plain, secret := filepath.Join(dir, "plain.txt"), filepath.Join(dir, ".secret")
@@ -395,6 +402,7 @@ func TestWebFindsPaths(t *testing.T) {
 // An edit to a queued message that has already gone to Opt comes back to
 // the input, with why, instead of being lost.
 func TestWebEditGone(t *testing.T) {
+	t.Parallel()
 	wt := startWeb(t)
 	ws, err := wt.dial(-1, nil)
 	if err != nil {
@@ -410,6 +418,7 @@ func TestWebEditGone(t *testing.T) {
 
 // The model picker: Claude Code's models, and a choice the bar shows.
 func TestWebModel(t *testing.T) {
+	t.Parallel()
 	wt := startWeb(t)
 	ws, err := wt.dial(-1, nil)
 	if err != nil {
@@ -441,6 +450,7 @@ func TestWebModel(t *testing.T) {
 
 // The page asks for the plan's limits; they come in the bar's status.
 func TestWebUsage(t *testing.T) {
+	t.Parallel()
 	wt := startWeb(t)
 	ws, err := wt.dial(-1, nil)
 	if err != nil {
@@ -460,6 +470,7 @@ func TestWebUsage(t *testing.T) {
 // The agents rail opens a subagent: its log comes as steps, then each step
 // as it is written.
 func TestWebSteps(t *testing.T) {
+	t.Parallel()
 	wt := startWeb(t)
 	a := wt.h.agent
 	if err := os.MkdirAll(filepath.Join(wt.c.dir, "agents"), 0o700); err != nil {

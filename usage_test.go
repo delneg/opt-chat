@@ -10,6 +10,7 @@ import (
 // session's counted from where its last run left off; /usage shows the
 // plan from get_usage, then the calls' spend by model and by caller.
 func TestUsage(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	a, _ := fakeAgent(t, c)
 	if err := (&Turn{agent: a}).Run(context.Background(), []message{{kind: "user", text: "hello"}}); err != nil {

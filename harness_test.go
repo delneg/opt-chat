@@ -127,6 +127,7 @@ func (h *harness) queuedIDs() []int {
 // A turn streams its reply and thinking to the pages, tells its phase and
 // tokens, and logs the reply whole once written.
 func TestStreamedTurn(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	c.Log("note", "before")
 	r := record(c)
@@ -173,6 +174,7 @@ func TestStreamedTurn(t *testing.T) {
 // user's queued messages come back unsent, and nothing is reported as
 // failed (the empty "turn:" warning of old).
 func TestStop(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	r := record(c)
 	h := newHarness(t, c)
@@ -211,6 +213,7 @@ func TestStop(t *testing.T) {
 // The queue: a message waits, is edited or taken back, and "send now"
 // stops the turn and sends what waits at once.
 func TestQueueEditPullSendNow(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	r := record(c)
 	h := newHarness(t, c)
@@ -258,6 +261,7 @@ func TestQueueEditPullSendNow(t *testing.T) {
 // A message sent while Opt writes waits in the queue, then joins the turn
 // at its next tool call.
 func TestQueueJoinsAtToolCall(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	record(c)
 	h := newHarness(t, c)
@@ -277,6 +281,7 @@ func TestQueueJoinsAtToolCall(t *testing.T) {
 // Send now while a turn waits for summaries: it goes at once, seeing the
 // message not summarized yet by its head.
 func TestSendNowWhileSettling(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	release := make(chan struct{})
 	inner := c.compact
@@ -311,14 +316,16 @@ func TestSendNowWhileSettling(t *testing.T) {
 // Behind a big backlog a turn does not wait; behind a small one it waits,
 // up to settleWait.
 func TestSettle(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	building(t, c) // nothing builds till the end
 	c.Log("note", strings.Repeat("a", 700))
-	defer func(d time.Duration) { settleWait = d }(settleWait)
-	settleWait = 100 * time.Millisecond
+	c.mu.Lock()
+	c.settleFor = 100 * time.Millisecond
+	c.mu.Unlock()
 	start := time.Now()
 	waits := 0
-	if err := c.settle(context.Background(), func(n, _ int) { waits++ }); err != nil || time.Since(start) < settleWait || waits == 0 {
+	if err := c.settle(context.Background(), func(n, _ int) { waits++ }); err != nil || time.Since(start) < 100*time.Millisecond || waits == 0 {
 		t.Fatalf("a small backlog: %v after %v, %d waits", err, time.Since(start), waits)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -329,7 +336,9 @@ func TestSettle(t *testing.T) {
 	for i := range settleMax {
 		c.Log("note", fmt.Sprint(i, strings.Repeat("b", 700)))
 	}
-	settleWait = time.Hour
+	c.mu.Lock()
+	c.settleFor = time.Hour
+	c.mu.Unlock()
 	start = time.Now()
 	if err := c.settle(context.Background(), func(int, int) {}); err != nil || time.Since(start) > time.Second {
 		t.Fatalf("a big backlog held the turn: %v, %v", err, time.Since(start))
@@ -339,6 +348,7 @@ func TestSettle(t *testing.T) {
 // callView: with every line built, the view itself; behind a backlog, a
 // partial tree that fits and tiles, the newest messages by their heads.
 func TestCallView(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("fsyncs about 1,200 writes")
 	}
@@ -390,10 +400,10 @@ func TestCallView(t *testing.T) {
 // Calls run in their own process group: the terminal's Ctrl-C reaches
 // opt-chat alone, never the compactions (they failed with an empty error).
 func TestProcessGroup(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	a, _ := fakeAgent(t, c)
-	f := t.TempDir() + "/pgid"
-	t.Setenv("OPT_FAKE_PGID", f)
+	f := fakeArgsFile(a) + ".pgid"
 	if _, err := a.Compact(context.Background(), nil, 0, []block{textBlock("Compaction: x")}); err != nil {
 		t.Fatal(err)
 	}
@@ -412,6 +422,7 @@ func TestProcessGroup(t *testing.T) {
 
 // A page joins with the messages after its last, or the last page of them.
 func TestHubJoin(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	for i := range 10 {
 		c.Log("user", fmt.Sprint("m", i))
@@ -456,6 +467,7 @@ func TestHubJoin(t *testing.T) {
 // A page that joins mid-reply gets each piece of it once: in its hello, or
 // as a delta after.
 func TestHubJoinMidReply(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	h := newHub()
 	const n = 2000
@@ -490,6 +502,7 @@ func TestHubJoinMidReply(t *testing.T) {
 // A page joining after a thinking block is done is not shown it as
 // thinking underway.
 func TestHubThoughtDone(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	h := newHub()
 	h.delta("thinking", "hmm")
@@ -504,6 +517,7 @@ func TestHubThoughtDone(t *testing.T) {
 // Send now landing just as the wait for summaries ends: the turn still runs,
 // on a call of its own, not on the wait's canceled one.
 func TestSendNowAsSettleEnds(t *testing.T) {
+	t.Parallel()
 	runs := 30 // it lands in the window about one run in three
 	if testing.Short() {
 		runs = 10
@@ -549,6 +563,7 @@ func TestSendNowAsSettleEnds(t *testing.T) {
 // Esc while the turn sends its view: a report it took then stays in the
 // log, unanswered, and starts no turn.
 func TestStopKeepsReportsLogged(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	c.Log("note", "slow-ack")
 	for i := range 69 {
@@ -567,7 +582,7 @@ func TestStopKeepsReportsLogged(t *testing.T) {
 		defer h.turn.mu.Unlock()
 		return h.turn.open && h.turn.p == nil
 	})
-	waitFor(t, "the call to start", func() bool { b, _ := os.ReadFile(fakeArgsFile[h.agent]); return len(b) > 0 })
+	waitFor(t, "the call to start", func() bool { b, _ := os.ReadFile(fakeArgsFile(h.agent)); return len(b) > 0 })
 	h.input(message{kind: "work", text: "[Scout] found it"})
 	if _, ok := h.stop(); !ok {
 		t.Fatal("stop")
@@ -582,6 +597,7 @@ func TestStopKeepsReportsLogged(t *testing.T) {
 // While a tool runs the spinner says so: the message's end, which Claude
 // Code sends as the tool starts, does not turn it back to thinking.
 func TestToolPhase(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	record(c)
 	h := newHarness(t, c)
@@ -597,6 +613,7 @@ func TestToolPhase(t *testing.T) {
 // A text too long for one message is logged in parts, the later ones
 // marked, and the input's history keeps only its first.
 func TestParts(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	c.Log("user", "head\n"+strings.Repeat("y", clipMax+5))
 	c.mu.Lock()
@@ -611,6 +628,7 @@ func TestParts(t *testing.T) {
 
 // The tool call being written shows as it comes, until it is logged.
 func TestToolInputStreams(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	record(c)
 	h := newHarness(t, c)
@@ -629,6 +647,7 @@ func TestToolInputStreams(t *testing.T) {
 // its result; send now (or a message sent now) cuts the call, and the model
 // answers the message in the same call, with no failure.
 func TestSendNowCutsTool(t *testing.T) {
+	t.Parallel()
 	for _, now := range []bool{false, true} {
 		c, _ := fakeChat(t, t.TempDir(), 100)
 		r := record(c)

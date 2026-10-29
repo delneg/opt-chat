@@ -1,6 +1,7 @@
 package main
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -9,6 +10,7 @@ import (
 // the view, the last turn and the plan's usage, Claude Code asked for the
 // usage; with Claude Code down the rest still comes.
 func TestStatusCommand(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	c.hub = newHub()
 	a, _ := fakeAgent(t, c)
@@ -38,7 +40,9 @@ func TestStatusCommand(t *testing.T) {
 	}
 	a.agentWindow, a.resting = 250_000, map[string]*rest{"Ann": nil}
 	a.running["Scout"] = nil
-	t.Setenv("PATH", t.TempDir()) // no claude
+	a.mu.Lock()
+	a.claude = filepath.Join(t.TempDir(), "claude") // none there
+	a.mu.Unlock()
 	a.quit()
 	out, _, _ = command(a, "/status")
 	if !strings.HasPrefix(out, "Claude Code: ") || !strings.Contains(out, "autocompact past 250k tokens; at work: [Scout]; reported: [Ann]\n") {

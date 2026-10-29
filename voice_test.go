@@ -15,6 +15,7 @@ import (
 // A recording posted to /voice is saved, transcribed once, and its words go
 // in its message's mark; it plays from /files/.
 func TestVoice(t *testing.T) {
+	t.Parallel()
 	wt := startWeb(t)
 	ck := map[string]string{"Cookie": wt.cookie}
 	var off struct {

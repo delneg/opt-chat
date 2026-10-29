@@ -10,6 +10,7 @@ import (
 // The page's view mode gets the view line by line, a line not summarized
 // yet marked, and opens a line into its halves, down to the message whole.
 func TestMemViewZoom(t *testing.T) {
+	t.Parallel()
 	c, err := openChat(t.TempDir()) // no compactions: a long message stays unsummarized
 	if err != nil {
 		t.Fatal(err)
@@ -56,6 +57,7 @@ func TestMemViewZoom(t *testing.T) {
 // /tree shows the view, the messages and each level, a page at a time,
 // only with the key; the page's socket asks for the view and its zooms.
 func TestWebTree(t *testing.T) {
+	t.Parallel()
 	wt := startWeb(t)
 	for i := range 5 {
 		wt.c.Log("user", "line <b>"+strings.Repeat("y", i)+"</b>")

@@ -62,6 +62,7 @@ func mcpAgentsChat(t *testing.T) (*Agent, func() [][]string, *recorder) {
 // spawned with beta has beta. Nothing is switched in Claude Code, which
 // would keep the switch in the user's own config for the folder.
 func TestMCPForSubagents(t *testing.T) {
+	t.Parallel()
 	a, calls, _ := mcpAgentsChat(t)
 	if got := denied(calls()[0]); !slices.Equal(got, []string{"delta", "beta", "gamma"}) {
 		t.Fatalf("Opt's turn denies %q", got)
@@ -100,6 +101,7 @@ func TestMCPForSubagents(t *testing.T) {
 // Servers that can't be granted: one turned off, one the user doesn't have,
 // any without the user's setup. The answer names those that can be.
 func TestMCPGrantErrors(t *testing.T) {
+	t.Parallel()
 	a, _, _ := mcpAgentsChat(t)
 	for _, tc := range []struct{ server, want string }{
 		{"delta", "delta is off"},
@@ -125,6 +127,7 @@ func TestMCPGrantErrors(t *testing.T) {
 // A server granted that has failed: the subagent starts, and the user is
 // warned, with what to do.
 func TestMCPGrantFailed(t *testing.T) {
+	t.Parallel()
 	a, _, r := mcpAgentsChat(t)
 	a.Spawn("Broken", "stream-reply", "", "", 0, nil, "gamma")
 	waitFor(t, "Broken's report", reported(a, "Broken"))
@@ -140,6 +143,7 @@ func TestMCPGrantFailed(t *testing.T) {
 // one at work at its next step, one at rest at once. Another tell meanwhile
 // comes with it.
 func TestMCPGrantRestarts(t *testing.T) {
+	t.Parallel()
 	a, calls, _ := mcpAgentsChat(t)
 	got := make(chan string, 4)
 	a.report = func(text string) { got <- text }
@@ -185,6 +189,7 @@ func TestMCPGrantRestarts(t *testing.T) {
 // A tell that grants a server the call has already restarts nothing, at
 // work or at rest.
 func TestMCPGrantHadNoRestart(t *testing.T) {
+	t.Parallel()
 	a, calls, _ := mcpAgentsChat(t)
 	got := make(chan string, 4)
 	a.report = func(text string) { got <- text }
@@ -215,6 +220,7 @@ func TestMCPGrantHadNoRestart(t *testing.T) {
 // A tell refused, as to a subagent starting, grants nothing: Opt tells it
 // again, servers and all.
 func TestMCPGrantStarting(t *testing.T) {
+	t.Parallel()
 	a, calls, _ := mcpAgentsChat(t)
 	a.Spawn("Early", "stream-reply", "", "", 0, nil)
 	out := a.Tell("Early", "use beta", "beta")
@@ -229,6 +235,7 @@ func TestMCPGrantStarting(t *testing.T) {
 // A server granted as the subagent compacts mid-task reaches it once
 // compacted: its call restarts.
 func TestMCPGrantCompacting(t *testing.T) {
+	t.Parallel()
 	a, calls, _ := mcpAgentsChat(t)
 	a.Spawn("Busy", "step-task", "", "", 0, nil)
 	waitFor(t, "its steps", func() bool { steps, _, _ := a.steps("Busy"); return len(steps) > 3 })
@@ -253,9 +260,9 @@ func TestMCPGrantCompacting(t *testing.T) {
 // A subagent resumed from its saved session keeps the servers it was
 // given, and a tell that resumes one can give it more.
 func TestMCPGrantResume(t *testing.T) {
-	defer func(d time.Duration) { agentRest = d }(agentRest)
-	agentRest = 300 * time.Millisecond
+	t.Parallel()
 	a, calls, _ := mcpAgentsChat(t)
+	a.rest = 300 * time.Millisecond
 	ended := func(name string) func() bool {
 		return func() bool {
 			a.mu.Lock()
@@ -282,13 +289,13 @@ func TestMCPGrantResume(t *testing.T) {
 			t.Fatalf("%s resumed denies %q, record %q", tc.name, got, rec.MCP)
 		}
 	}
-	a.quit() // before agentRest is set back
 }
 
 // Reconnect reaches the page's call and each call underway that has the
 // server; the status says who has what; turning a server on and back
 // keeps it with those given it.
 func TestMCPReconnectAndStatus(t *testing.T) {
+	t.Parallel()
 	a, _, _ := mcpAgentsChat(t)
 	a.Spawn("Worker", "slow-task", "", "", 0, nil, "beta")
 	waitFor(t, "Worker at work", func() bool { a.mu.Lock(); defer a.mu.Unlock(); return a.running["Worker"] != nil })
@@ -322,6 +329,7 @@ func TestMCPReconnectAndStatus(t *testing.T) {
 // spawn and tell offer the servers for subagents only, by name; with none,
 // their schemas are as before, so Opt's cached prompt stays the same.
 func TestMCPSpawnSchema(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	a, _ := fakeAgent(t, c)
 	desc := func() map[string]string {

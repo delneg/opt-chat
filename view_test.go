@@ -10,6 +10,7 @@ import (
 // The gist's claim: with the push list's length as the budget, mostDue picks
 // exactly the merges Taelin's rollback push makes, at every step.
 func TestMostDueMatchesPush(t *testing.T) {
+	t.Parallel()
 	type entry struct {
 		keep  bool
 		state int
@@ -53,6 +54,7 @@ func TestMostDueMatchesPush(t *testing.T) {
 
 // Text limits count characters (gist §1), the line limit bytes (§2).
 func TestSplitAndClip(t *testing.T) {
+	t.Parallel()
 	s := "aé" + string(make([]byte, 10)) + "€z"
 	for _, p := range splitText(s, 3) {
 		if utf8.RuneCountInString(p) > 3 || !utf8.ValidString(p) {

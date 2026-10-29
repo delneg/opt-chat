@@ -130,6 +130,7 @@ func (f *fakeCache) compact(a *Agent, lines []string, stable int, task []block, 
 // acking it again (compactView) costs compactions about 17% less here, and
 // about 20% less replaying a real chat's import.
 func TestCacheReplay(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("logs and builds about 4,000 lines")
 	}
@@ -247,6 +248,7 @@ func (c *Chat) logLen() int {
 // response to begin; one cached longer ago than Claude Code keeps it, or
 // further back, is written anew.
 func TestCompactView(t *testing.T) {
+	t.Parallel()
 	a := &Agent{writing: map[string]chan struct{}{}}
 	lines := make([]string, 80)
 	for i := range lines {
@@ -304,6 +306,7 @@ func TestCompactView(t *testing.T) {
 // An ack notes its first message cached as its response begins, and only
 // then: a call that waited on one that failed before it writes it anew.
 func TestAckNotesCached(t *testing.T) {
+	t.Parallel()
 	a := &Agent{writing: map[string]chan struct{}{}}
 	ack := func(out ...string) error {
 		p := &proc{prefix: "m", ctx: t.Context(), out: bufio.NewScanner(strings.NewReader(strings.Join(out, "\n")))}

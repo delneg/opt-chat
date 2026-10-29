@@ -16,6 +16,7 @@ func asksOf(c *Chat) []ask {
 // question, a mode switch reaches the call underway, and yes-and-don't-ask-
 // again allows it for this call and the next ones, written nowhere.
 func TestPermission(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	rec := record(c)
 	a, calls := fakeAgent(t, c)
@@ -84,6 +85,7 @@ func TestPermission(t *testing.T) {
 }
 
 func TestModes(t *testing.T) {
+	t.Parallel()
 	for _, step := range [][2]string{{"manual", "acceptEdits"}, {"acceptEdits", "auto"}, {"auto", "manual"}, {"bypassPermissions", "manual"}, {"default", "acceptEdits"}} {
 		if got := nextMode(step[0]); got != step[1] {
 			t.Fatalf("after %s: %s", step[0], got)

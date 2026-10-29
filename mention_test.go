@@ -11,6 +11,7 @@ import (
 // those that contain it, hidden ones only when asked; a name alone also
 // finds files deeper down, never in node_modules.
 func TestFileSuggestions(t *testing.T) {
+	t.Parallel()
 	cwd := t.TempDir()
 	for _, p := range []string{"src/app.js", "src/lib/apple.txt", "apps/x", "map.txt", ".secret", "node_modules/app/index.js"} {
 		os.MkdirAll(filepath.Dir(filepath.Join(cwd, p)), 0o700)

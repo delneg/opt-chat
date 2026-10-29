@@ -13,7 +13,7 @@ import (
 // fakeFiles reads what the fake Claude Code recorded beside its calls'
 // arguments (ext ".env", ".ctl" or ".skills"), a line each.
 func fakeFiles(a *Agent, ext string) []string {
-	b, _ := os.ReadFile(fakeArgsFile[a] + ext)
+	b, _ := os.ReadFile(fakeArgsFile(a) + ext)
 	return slices.DeleteFunc(strings.Split(string(b), "\n"), func(s string) bool { return s == "" })
 }
 
@@ -24,6 +24,7 @@ func fakeFiles(a *Agent, ext string) []string {
 // config for the folder.
 // Compactions stay bare.
 func TestOwnConfig(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	for range 70 {
 		c.Log("note", "note")
@@ -62,6 +63,7 @@ func TestOwnConfig(t *testing.T) {
 // or the chat's own; one turned off for good; a sign-in page; skills
 // listed and one turned off through Claude Code's own command.
 func TestWebConfig(t *testing.T) {
+	t.Parallel()
 	wt := startWeb(t)
 	a := wt.h.agent
 	a.ownConfig = true
@@ -177,6 +179,7 @@ func TestWebConfig(t *testing.T) {
 // With -claude-md, a turn loads the CLAUDE.md files of the folders it works
 // in, never the user's own ~/.claude/CLAUDE.md; memory stays off.
 func TestClaudeMd(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	record(c)
 	a, calls := fakeAgent(t, c)

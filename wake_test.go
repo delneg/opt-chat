@@ -12,6 +12,7 @@ import (
 )
 
 func TestParseWhen(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 10, 15, 20, 0, 0, 0, time.Local)
 	for in, want := range map[string]time.Time{
 		"90m":                       now.Add(90 * time.Minute),
@@ -48,6 +49,7 @@ func (f *fired) all() []string {
 // Wake-ups are kept in wake.jsonl: one missed while opt-chat was down comes
 // once as it starts, the rest when due, and pending ones survive a restart.
 func TestWaker(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	set := time.Date(2026, 10, 1, 9, 5, 0, 0, time.Local)
 	b, _ := json.Marshal(wakeUp{ID: 3, At: set.Add(time.Hour), Set: set, Message: "check the deploy"})
@@ -96,6 +98,7 @@ func TestWaker(t *testing.T) {
 // The wake tool: set, list and cancel; never from a subagent, and a turn a
 // wake-up started sets none; listed only when on.
 func TestWakeTool(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	a := &Agent{chat: c, running: map[string]*proc{}, writing: map[string]chan struct{}{}}
 	if n := len(a.mcpList()); n != 5 {
@@ -145,6 +148,7 @@ func TestWakeTool(t *testing.T) {
 }
 
 func TestWakeOnly(t *testing.T) {
+	t.Parallel()
 	wake := message{kind: "work", text: wakeFrame + "2026-10-15 20:00: x"}
 	for _, tc := range []struct {
 		msgs []message
@@ -164,6 +168,7 @@ func TestWakeOnly(t *testing.T) {
 
 // The wake tool runs unasked, as the chat's other tools do.
 func TestWakeAllowed(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	record(c)
 	a, calls := fakeAgent(t, c)

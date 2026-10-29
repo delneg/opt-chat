@@ -556,8 +556,13 @@ const pathsMax = 10
 // filePaths finds the files a message names by path: absolute, or from ~/;
 // in its words, `code` or a [link](/path), not in a block of code.
 func filePaths(text string) []string {
-	var out []string
 	home, _ := os.UserHomeDir()
+	return filePathsFrom(text, home)
+}
+
+// filePathsFrom is filePaths, with ~ the folder home.
+func filePathsFrom(text, home string) []string {
+	var out []string
 	for _, tok := range pathToken.FindAllString(fenced.ReplaceAllString(text, ""), -1) {
 		p := tokenPath(tok, home)
 		if !filepath.IsAbs(p) || slices.Contains(out, p) {

@@ -20,8 +20,9 @@ import (
 // final reply comes back to the chat as one work message, "[Name] report".
 
 // agentRest is how long a subagent that has reported waits, its context
-// whole, for a tell that sets it to work again; then its call ends.
-var agentRest = 30 * time.Minute
+// whole, for a tell that sets it to work again; then its call ends. An
+// Agent's rest, when set, is in its place (tests).
+const agentRest = 30 * time.Minute
 
 // restMax is how many rest at once: each is a Claude Code process, a few
 // hundred MB. One more ends the call of the one at rest longest.
@@ -967,7 +968,7 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 			if a.resting == nil {
 				a.resting = map[string]*rest{}
 			}
-			a.resting[name] = &rest{p: p, until: time.Now().Add(agentRest), task: task, compacting: true, goOn: true, pending: h.now}
+			a.resting[name] = &rest{p: p, until: time.Now().Add(cmp.Or(a.rest, agentRest)), task: task, compacting: true, goOn: true, pending: h.now}
 			h.now = nil
 			a.mu.Unlock()
 			p.send(textBlock(compactAsk))
@@ -1030,7 +1031,7 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 			a.resting = map[string]*rest{}
 		}
 		delete(a.running, name)
-		r := &rest{p: p, until: time.Now().Add(agentRest), task: task, compacting: window > 0 && size > window || asked, compacted: midCompacted}
+		r := &rest{p: p, until: time.Now().Add(cmp.Or(a.rest, agentRest)), task: task, compacting: window > 0 && size > window || asked, compacted: midCompacted}
 		mid := midCompacted
 		midCompacted = false
 		a.resting[name] = r
@@ -1076,7 +1077,7 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 		} else if compact {
 			p.send(textBlock(compactAsk))
 		}
-		time.AfterFunc(agentRest, func() {
+		time.AfterFunc(cmp.Or(a.rest, agentRest), func() {
 			a.mu.Lock()
 			defer a.mu.Unlock()
 			if r, ok := a.resting[name]; ok && r.p == p && !time.Now().Before(r.until) {

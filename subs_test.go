@@ -11,6 +11,7 @@ import (
 // A log's entries, a text's own blank lines in it, and a text whose blank
 // line is followed by what looks like an entry: taken for one.
 func TestParseSteps(t *testing.T) {
+	t.Parallel()
 	log := "task: do it\n\nwell\n\non: opus high\n\ntool: Bash {\"command\":\"ls\"}\n\necho: a\n\nb\n\nagent: done:\nyes\n\n"
 	want := []step{{Kind: "task", Text: "do it\n\nwell"}, {Kind: "on", Text: "opus high"}, {Kind: "tool", Text: `Bash {"command":"ls"}`}, {Kind: "echo", Text: "a\n\nb"}, {Kind: "agent", Text: "done:\nyes"}}
 	if got := parseSteps([]byte(log)); !slices.Equal(got, want) {
@@ -28,6 +29,7 @@ func TestParseSteps(t *testing.T) {
 // is half old entries and half new reads whole, and what Opt reads of it
 // is the log as it was before times were kept.
 func TestStepTimes(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	if err := os.MkdirAll(filepath.Join(c.dir, "agents"), 0o700); err != nil {
 		t.Fatal(err)
@@ -77,6 +79,7 @@ func TestStepTimes(t *testing.T) {
 // A head's text that looks like a timed head stays text when it is not
 // after a blank line.
 func TestStepHeads(t *testing.T) {
+	t.Parallel()
 	log := "echo@5#t1: a\ntool@6#t2: inside\n\ntool@7: b\n\n"
 	want := []step{{Kind: "echo", Text: "a\ntool@6#t2: inside", At: 5, Ref: "t1"}, {Kind: "tool", Text: "b", At: 7}}
 	if got := parseSteps([]byte(log)); !slices.Equal(got, want) {
@@ -96,6 +99,7 @@ func TestStepHeads(t *testing.T) {
 // A subagent's thinking is in its log, for the page, and out of what Opt
 // reads of it, wherever it is.
 func TestThinkingSteps(t *testing.T) {
+	t.Parallel()
 	log := "thinking@1: first\n\nmore\n\ntool@2#t1: Bash x\n\nthinking@3: then\n\necho@4#t1: out\n\nthinking@5: last\n\n"
 	if got := parseSteps([]byte(log)); len(got) != 5 || got[0] != (step{Kind: "thinking", Text: "first\n\nmore", At: 1}) {
 		t.Fatalf("%+v", got)

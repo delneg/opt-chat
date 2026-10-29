@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json/v2"
 	"errors"
@@ -23,11 +24,13 @@ type loopHook struct {
 	Command string `json:"command"`      // run by sh in Dir, Claude Code's Stop hook input on stdin
 	Dir     string `json:"dir"`          // the input's cwd
 	Max     int    `json:"max,omitzero"` // turns it starts before a report; 0 is loopMax
+
+	timeout time.Duration // loopTimeout, when set (tests)
 }
 
 const loopMax = 60
 
-var loopTimeout = 60 * time.Second // as Claude Code's default for a hook
+const loopTimeout = 60 * time.Second // as Claude Code's default for a hook
 
 const (
 	loopFeedback = "Stop hook feedback:\n" // as Claude Code passes a block's reason
@@ -59,7 +62,8 @@ func (l *loopHook) max() int {
 func (l *loopHook) stop(ctx context.Context, session, last string, again bool) (string, error) {
 	in, _ := json.Marshal(map[string]any{"session_id": session, "transcript_path": sessionPath(session), "cwd": l.Dir,
 		"hook_event_name": "Stop", "stop_hook_active": again, "last_assistant_message": last})
-	ctx, cancel := context.WithTimeout(ctx, loopTimeout)
+	limit := cmp.Or(l.timeout, loopTimeout)
+	ctx, cancel := context.WithTimeout(ctx, limit)
 	defer cancel()
 	var out, errs bytes.Buffer
 	cmd := exec.CommandContext(ctx, "sh", "-c", l.Command)
@@ -71,7 +75,7 @@ func (l *loopHook) stop(ctx context.Context, session, last string, again bool) (
 	var exit *exec.ExitError
 	switch {
 	case errors.Is(ctx.Err(), context.DeadlineExceeded):
-		return "", fmt.Errorf("timed out after %v", loopTimeout)
+		return "", fmt.Errorf("timed out after %v", limit)
 	case errors.As(err, &exit) && exit.ExitCode() == 2: // as Claude Code: blocks, stderr its reason
 		return strings.TrimSpace(errs.String()), nil
 	case err != nil:

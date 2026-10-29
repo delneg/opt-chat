@@ -32,6 +32,7 @@ func workLines(c *Chat, prefix string) []string {
 // name fails. Its reply goes to its log alone. agentContext lists what it
 // was given.
 func TestWebTellAgent(t *testing.T) {
+	t.Parallel()
 	wt := startWeb(t)
 	a, c := wt.h.agent, wt.c
 	a.Spawn("Scout", "look around", "", "", 0, nil)
@@ -106,6 +107,7 @@ func TestWebTellAgent(t *testing.T) {
 // The page's compactAgent: a subagent at rest compacts now, and the page
 // hears so; one with no call underway can't, and the page hears why.
 func TestWebCompactAgent(t *testing.T) {
+	t.Parallel()
 	wt := startWeb(t)
 	a, c := wt.h.agent, wt.c
 	a.Spawn("Scout", "look around", "", "", 0, nil)
@@ -135,6 +137,7 @@ func TestWebCompactAgent(t *testing.T) {
 // message in it or not; and Opt's tell in the user's turn makes it report.
 // A user's turn the user stops logs nothing in the chat.
 func TestUserTurnReports(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	a, _ := fakeAgent(t, c)
 	reported := make(chan string, 8)
@@ -240,6 +243,7 @@ func TestUserTurnReports(t *testing.T) {
 // underway, and it goes on with the message at once, its task still Opt's;
 // one at rest takes it as any message.
 func TestTellUserNow(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	a, _ := fakeAgent(t, c)
 	reported := make(chan string, 2)
@@ -286,6 +290,7 @@ func TestTellUserNow(t *testing.T) {
 // A subagent cut off by a quit as it answered the user goes on when
 // opt-chat starts again, the user's turn still: it reports nothing to Opt.
 func TestUserTurnSurvivesRestart(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	a, _ := fakeAgent(t, c)
 	a.autoResume = true
@@ -324,6 +329,7 @@ func TestUserTurnSurvivesRestart(t *testing.T) {
 // agentContext gives what the session file keeps: the first message, and
 // after a compaction its summary and the message after it.
 func TestAgentContext(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	a, _ := fakeAgent(t, c)
 	reported := make(chan string, 1)
@@ -388,6 +394,7 @@ func TestAgentContext(t *testing.T) {
 // Each tell in one message says whose it is: Opt's after the user's gets
 // its head again.
 func TestTellBlocks(t *testing.T) {
+	t.Parallel()
 	ts := []tell{{text: "a"}, {user: true, text: "b", msg: []block{textBlock("b")}}, {text: "c"}, {text: "d"}}
 	got := tellBlocks(ts, "")
 	want := "a\n\n" + userHead + "b\n\n" + optHead + "c\n\nd"

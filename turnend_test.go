@@ -11,6 +11,7 @@ import (
 // A failed turn and a stopped one each leave a note Opt reads at its next
 // turn, and neither leaves a turn to resume.
 func TestTurnEndNotes(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	r := record(c)
 	h := newHarness(t, c)
@@ -44,6 +45,7 @@ func TestTurnEndNotes(t *testing.T) {
 // it; so does a crash. One resumed too often, or too long ago, or with
 // -auto-resume off, gets the note alone. A quit when idle leaves nothing.
 func TestTurnCut(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	record(c)
 	h := newHarness(t, c)
@@ -114,6 +116,7 @@ func TestTurnCut(t *testing.T) {
 // A failed result and then a good one in the same call (a message sent
 // mid-run) end the turn well: no note that it failed.
 func TestTurnRecovers(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	h := newHarness(t, c)
 	h.input(message{kind: "user", text: "fail-then-ok"})
@@ -127,6 +130,7 @@ func TestTurnRecovers(t *testing.T) {
 // Esc, send now or a quit while the call exits after its answer cut
 // nothing: no note, and no turn to resume.
 func TestStopAfterAnswer(t *testing.T) {
+	t.Parallel()
 	for _, how := range []string{"stop", "send now", "quit"} {
 		c, _ := fakeChat(t, t.TempDir(), 100)
 		r := record(c)
@@ -170,6 +174,7 @@ func TestStopAfterAnswer(t *testing.T) {
 // Esc then a quick Ctrl-C: the turn was stopped, as its note says, and the
 // next start has none to resume.
 func TestStopThenQuit(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	record(c)
 	h := newHarness(t, c)
@@ -188,6 +193,7 @@ func TestStopThenQuit(t *testing.T) {
 // A quit before a resumed turn began, as it waits for its summaries, leaves
 // it for the next start, its resumes counted; a stop ends it.
 func TestResumedTurnUnbegun(t *testing.T) {
+	t.Parallel()
 	for _, quit := range []bool{true, false} {
 		c, _ := fakeChat(t, t.TempDir(), 100)
 		building(t, c) // nothing builds till the end: the turn waits

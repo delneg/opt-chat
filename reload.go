@@ -167,6 +167,6 @@ func (a *Agent) cut() {
 		}
 	}
 	a.mu.Unlock()
-	stopChildren() // compactions, side questions, Claude Code's lists
+	stopChildren(a) // compactions, side questions, Claude Code's lists
 	a.calls.Wait()
 }

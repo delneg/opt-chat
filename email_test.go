@@ -13,6 +13,7 @@ import (
 // The plugin is written once, and loaded into the calls that run without
 // the user's setup; with it, disableAllHooks would turn it off.
 func TestEmailPlugin(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	root, err := writeEmailPlugin(dir)
 	if err != nil {

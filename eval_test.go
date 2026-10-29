@@ -14,6 +14,7 @@ import (
 // writes it back with its answer, what recall gave it and what the call
 // did; nothing joins the log or btw/.
 func TestEval(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c, _ := fakeChat(t, dir, 100)
 	a, _ := fakeAgent(t, c)

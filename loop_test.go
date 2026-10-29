@@ -71,6 +71,7 @@ func loopReports(t *testing.T, a *Agent) (report func() string, quiet func()) {
 // with nothing in the chat until its loop ends: then one report, the
 // answer to the message that asks for it.
 func TestAgentLoop(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	a, calls := fakeAgent(t, c)
 	report, quiet := loopReports(t, a)
@@ -119,7 +120,7 @@ func TestAgentLoop(t *testing.T) {
 // The loop ends, with a report saying why, at its cap, when its hook fails,
 // and when its hook takes too long; never hangs.
 func TestAgentLoopEnds(t *testing.T) {
-	defer func(d time.Duration) { loopTimeout = d }(loopTimeout)
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	a, _ := fakeAgent(t, c)
 	report, _ := loopReports(t, a)
@@ -141,7 +142,7 @@ func TestAgentLoopEnds(t *testing.T) {
 	}
 
 	l = loopHookFor(t, `sleep 5`)
-	loopTimeout = 300 * time.Millisecond
+	l.timeout = 300 * time.Millisecond
 	start := time.Now()
 	a.Spawn("Slow", "loop-task", "", "", 0, l)
 	if got := report(); !strings.Contains(got, "loop stopped: its Stop hook failed: timed out") {
@@ -150,7 +151,6 @@ func TestAgentLoopEnds(t *testing.T) {
 	if d := time.Since(start); d > 4*time.Second {
 		t.Fatalf("slow hook took %v", d)
 	}
-	loopTimeout = 10 * time.Second
 
 	// As Claude Code: exit 2 blocks, with stderr as the reason.
 	l = loopHookFor(t, `[ $n -eq 1 ] && { echo 'from stderr' >&2; exit 2; }; exit 0`)
@@ -170,6 +170,7 @@ func TestAgentLoopEnds(t *testing.T) {
 // A tell to a subagent in a loop waits for its turn's end, and goes ahead
 // of the loop's next step; Stop on the page ends the loop.
 func TestAgentLoopTellAndStop(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	a, _ := fakeAgent(t, c)
 	report, _ := loopReports(t, a)
@@ -218,6 +219,7 @@ func TestAgentLoopTellAndStop(t *testing.T) {
 // Past its window, a subagent in a loop is compacted between turns, and
 // its next step comes with the view and its task again.
 func TestAgentLoopCompacts(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	a, _ := fakeAgent(t, c)
 	report, _ := loopReports(t, a)
@@ -235,6 +237,7 @@ func TestAgentLoopCompacts(t *testing.T) {
 // goes first, with a tell held for the turn's end, ahead of the hook, which
 // then sees a turn of the user's. Both are in its log at once.
 func TestAgentLoopTellNow(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	a, _ := fakeAgent(t, c)
 	report, _ := loopReports(t, a)

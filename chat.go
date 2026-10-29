@@ -93,25 +93,26 @@ type failure struct {
 
 // Chat is the log, the tree and both views. All fields are guarded by mu.
 type Chat struct {
-	dir     string
-	lock    *os.File // held for the life of the process: if collected, its finalizer would unlock
-	mu      sync.Mutex
-	msgs    []Msg
-	asides  []Aside // side questions: never in msgs, see btw.go
-	tree    map[key]string
-	redo    map[key]bool     // built lines to build again: see Node.Redo
-	view    view             // what turns see
-	cview   view             // what compactions see
-	queued  map[key]bool     // waiting in ready0/readyM or running
-	busy    map[key]bool     // running
-	failing map[key]*failure // lines whose compaction failed, until built
-	ready0  []int            // messages whose line needs a model call, in order
-	readyM  []key            // merges whose line needs a model call
-	written int              // lines a model has built in this run
-	jobs    int              // compactions running at once
-	unsaved []any            // nodes built and not written yet: see flushNodes
-	changed chan struct{}
-	hub     *hub // where what happens is shown; nil: nowhere
+	dir                 string
+	lock                *os.File // held for the life of the process: if collected, its finalizer would unlock
+	mu                  sync.Mutex
+	msgs                []Msg
+	settleFor, retryFor time.Duration // settleWait and retryIn, when set; under mu
+	asides              []Aside       // side questions: never in msgs, see btw.go
+	tree                map[key]string
+	redo                map[key]bool     // built lines to build again: see Node.Redo
+	view                view             // what turns see
+	cview               view             // what compactions see
+	queued              map[key]bool     // waiting in ready0/readyM or running
+	busy                map[key]bool     // running
+	failing             map[key]*failure // lines whose compaction failed, until built
+	ready0              []int            // messages whose line needs a model call, in order
+	readyM              []key            // merges whose line needs a model call
+	written             int              // lines a model has built in this run
+	jobs                int              // compactions running at once
+	unsaved             []any            // nodes built and not written yet: see flushNodes
+	changed             chan struct{}
+	hub                 *hub // where what happens is shown; nil: nowhere
 	// compact builds one line with a model; set before the first pump, nil
 	// again at quit.
 	compact compactor
@@ -721,7 +722,7 @@ func (c *Chat) build(k key, compact compactor, ctxLines []string, stable int, ta
 		}
 		f.n, f.at = f.n+1, c.written
 		if f.strikes < giveUp {
-			wait := min(retryIn<<min(f.n-1, 10), waitMax)
+			wait := min(cmp.Or(c.retryFor, retryIn)<<min(f.n-1, 10), waitMax)
 			f.until = time.Now().Add(wait)
 			time.AfterFunc(wait, func() {
 				c.mu.Lock()
@@ -945,9 +946,9 @@ func (c *Chat) notify() {
 
 const settleMax = 32 // a call waits for the chat's lines when at most this many are to build: four rounds of 8 compactions...
 
-var settleWait = time.Minute // ...and for at most this long
+const settleWait = time.Minute // ...and for at most this long (a Chat's settleFor, when set: tests)
 
-var retryIn = 10 * time.Second // a failed compaction's first wait, doubled at each failure
+const retryIn = 10 * time.Second // a failed compaction's first wait, doubled at each failure (a Chat's retryFor, when set)
 
 // settle waits until the chat's messages are summarized, so that no call
 // sees a placeholder, as the recipe says, when that is a short wait. An
@@ -959,9 +960,9 @@ var retryIn = 10 * time.Second // a failed compaction's first wait, doubled at e
 // how many lines a model has written since it began, at each change.
 func (c *Chat) settle(ctx context.Context, waiting func(n, written int)) error {
 	c.mu.Lock()
-	from := c.written
+	from, wait := c.written, cmp.Or(c.settleFor, settleWait)
 	c.mu.Unlock()
-	timeout := time.NewTimer(settleWait)
+	timeout := time.NewTimer(wait)
 	defer timeout.Stop()
 	own := func(k key) bool { return c.side(k) == 0 && !c.redo[k] }
 	for {

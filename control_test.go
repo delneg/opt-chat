@@ -12,6 +12,7 @@ import (
 // Claude Code's lists come from one call that takes control requests only:
 // started once, answering each request by its id, its errors as errors.
 func TestControl(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	a, calls := fakeAgent(t, c)
 	ctx := context.Background()
@@ -42,6 +43,7 @@ func TestControl(t *testing.T) {
 
 // The picker's choice holds for the run, and with save for later runs too.
 func TestChoose(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	a, _ := fakeAgent(t, c)
 	if err := a.choose("opus", "max", false); err != nil || a.model != "opus" || a.effort != "max" {

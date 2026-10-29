@@ -58,9 +58,7 @@ func fakeClaude() {
 	}
 	b, _ = json.Marshal(env)
 	appendRaw(base+".env", append(b, '\n'))
-	if f := os.Getenv("OPT_FAKE_PGID"); f != "" {
-		appendRaw(f, []byte(fmt.Sprintln(syscall.Getpgrp())))
-	}
+	appendRaw(base+".pgid", []byte(fmt.Sprintln(syscall.Getpgrp())))
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGTERM)
 	emit := func(v any) {
@@ -456,8 +454,8 @@ func fakeClaude() {
 	}
 }
 
-// fakeArgsFile is where each fake agent's calls record their arguments.
-var fakeArgsFile = map[*Agent]string{}
+// fakeArgsFile is where the fake agent a's calls record their arguments.
+func fakeArgsFile(a *Agent) string { return filepath.Join(filepath.Dir(a.claude), "args") }
 
 // fakeAgent runs its calls on fakeClaude, recording each call's arguments.
 func fakeAgent(t *testing.T, c *Chat) (*Agent, func() [][]string) {
@@ -471,13 +469,11 @@ func fakeAgent(t *testing.T, c *Chat) (*Agent, func() [][]string) {
 	if err := os.WriteFile(filepath.Join(bin, "claude"), []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	a := &Agent{chat: c, system: "system", mcpConfig: "turn-mcp", agentMCP: "agent-mcp", model: "big", amodel: "mid", cmodel: "small",
+	a := &Agent{claude: filepath.Join(bin, "claude"), chat: c, system: "system", mcpConfig: "turn-mcp", agentMCP: "agent-mcp", model: "big", amodel: "mid", cmodel: "small",
 		perm: "auto", cwd: t.TempDir(), tools: "Read", running: map[string]*proc{}, writing: map[string]chan struct{}{},
 		report: func(text string) { c.Log("work", text) }}
 	a.life, a.stop = context.WithCancel(context.Background())
 	t.Cleanup(a.quit)
-	fakeArgsFile[a] = argsFile
 	return a, func() [][]string {
 		b, _ := os.ReadFile(argsFile)
 		var calls [][]string
@@ -500,6 +496,7 @@ func flagOf(args []string, name string) string {
 // A turn: the view's first part answered "ok" and dropped, the message with
 // its image after the rest, and every step logged, a tool result's image too.
 func TestTurn(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	for i := range 70 {
 		c.Log("note", fmt.Sprint("note ", i))
@@ -528,6 +525,7 @@ func TestTurn(t *testing.T) {
 // A compaction: same system prompt and tools, every call blocked, and a
 // line too long tried again with the cut.
 func TestCompact(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	a, calls := fakeAgent(t, c)
 	lines := make([]string, 70)
@@ -585,6 +583,7 @@ func TestCompact(t *testing.T) {
 
 // A message sent while a turn runs reaches it, and is logged once.
 func TestMidRun(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	a, _ := fakeAgent(t, c)
 	turn := &Turn{agent: a}
@@ -624,6 +623,7 @@ func TestMidRun(t *testing.T) {
 // A subagent: same tools from its own MCP address, its steps in its own log,
 // its report back as one work message; quitting stops it and says so.
 func TestSubagentsAndQuit(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	a, calls := fakeAgent(t, c)
 	reported := make(chan string, 2)
@@ -701,6 +701,7 @@ func TestSubagentsAndQuit(t *testing.T) {
 // The rail's stop: one at work stops mid-step, with a note in the chat and
 // no report; one at rest just ends. Each then clears from the rail.
 func TestStopAgent(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	a, _ := fakeAgent(t, c)
 	reported := make(chan string, 4)
@@ -765,11 +766,8 @@ func TestStopAgent(t *testing.T) {
 // Calls drop the launching Claude Code session's variables and run without
 // background shells.
 func TestChildEnv(t *testing.T) {
-	t.Setenv("CLAUDECODE", "1")
-	t.Setenv("CLAUDE_CODE_SESSION_ID", "s")
-	t.Setenv("CLAUDE_CODE_DISABLE_BACKGROUND_TASKS", "0")
-	t.Setenv("OPT_KEEP", "yes")
-	env := childEnv()
+	t.Parallel()
+	env := childEnvOf([]string{"CLAUDECODE=1", "CLAUDE_CODE_SESSION_ID=s", "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=0", "OPT_KEEP=yes"})
 	has := func(kv string) bool { return slices.Contains(env, kv) }
 	if slices.ContainsFunc(env, func(kv string) bool {
 		return strings.HasPrefix(kv, "CLAUDECODE=") || strings.HasPrefix(kv, "CLAUDE_CODE_SESSION_ID=")
@@ -781,6 +779,7 @@ func TestChildEnv(t *testing.T) {
 // A message that comes while the view's first part is being answered is
 // taken by the turn, and sent right after its input.
 func TestSendDuringAck(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	c.Log("note", "slow-ack")
 	for i := range 69 {
@@ -819,6 +818,7 @@ func TestSendDuringAck(t *testing.T) {
 }
 
 func TestAgentName(t *testing.T) {
+	t.Parallel()
 	for in, want := range map[string]string{"[Scout]": "Scout", "My agent": "My-agent", " [a/b] ": "a-b", "[]": "", "x_y-2": "x_y-2"} {
 		if got := agentName(in); got != want {
 			t.Errorf("agentName(%q) = %q, want %q", in, got, want)
@@ -829,6 +829,7 @@ func TestAgentName(t *testing.T) {
 // The harness: a message starts a turn, one sent meanwhile joins it, and
 // quit logs what still waits.
 func TestHarness(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	a, _ := fakeAgent(t, c)
 	h := &harness{agent: a}
@@ -876,6 +877,7 @@ func TestHarness(t *testing.T) {
 // reported past it. Its next message brings the view and its task again; a
 // tell that comes while it compacts waits for it.
 func TestAgentAutocompact(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	a, calls := fakeAgent(t, c)
 	reported := make(chan string, 4)
@@ -966,6 +968,7 @@ func TestAgentAutocompact(t *testing.T) {
 // can ask only for less. The chat's turns, compactions and control calls
 // never compact.
 func TestAgentCompactCap(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	a, calls := fakeAgent(t, c)
 	a.agentCap = 400_000
@@ -1051,6 +1054,7 @@ func TestAgentCompactCap(t *testing.T) {
 // step, two after a message queued in its turn, compacted, and set to go
 // on with its task, a tell meanwhile with it.
 func TestCompactAgent(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	a, _ := fakeAgent(t, c)
 	reported := make(chan string, 4)
@@ -1130,6 +1134,7 @@ func TestCompactAgent(t *testing.T) {
 // voice message's here), ahead of the user's message, and the log holds
 // only that message.
 func TestTurnRecalls(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	a, _ := fakeAgent(t, c)
 	c.Log("opt", "The vault key is in Zanzibar. "+strings.Repeat("pad ", 200))
@@ -1154,6 +1159,7 @@ func TestTurnRecalls(t *testing.T) {
 // A message a call took and logged before it died is never recalled to
 // the turn that takes it on.
 func TestTurnRecallsNotItself(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	a, _ := fakeAgent(t, c)
 	for i := range 6 {
@@ -1173,6 +1179,7 @@ func TestTurnRecallsNotItself(t *testing.T) {
 
 // A turn's input names the subagents at work, so Opt never starts one again.
 func TestTurnNamesRunning(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	a, _ := fakeAgent(t, c)
 	a.running["Scout"], a.running["Ann"] = nil, nil
@@ -1192,10 +1199,10 @@ func TestTurnNamesRunning(t *testing.T) {
 // work again, with all it knew, and it reports again; after its rest, its
 // call ends.
 func TestTellResumes(t *testing.T) {
-	defer func(d time.Duration) { agentRest = d }(agentRest)
-	agentRest = 300 * time.Millisecond
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	a, calls := fakeAgent(t, c)
+	a.rest = 300 * time.Millisecond
 	reported := make(chan string, 2)
 	a.report = func(text string) { reported <- text }
 	report := func() string {
@@ -1253,13 +1260,13 @@ func TestTellResumes(t *testing.T) {
 	if all := calls(); len(all) != 2 || flagOf(all[1], "--resume") != flagOf(all[0], "--session-id") {
 		t.Fatalf("calls: %q", all)
 	}
-	a.quit() // before agentRest is set back
 }
 
 // A subagent stopped by a quit, or by a crash, goes on where it stopped
 // when told, its Claude Code session resumed; one whose session is gone
 // can't be.
 func TestResumeAgent(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	a, calls := fakeAgent(t, c)
 	a.Spawn("Long", "wait-for-stop", "", "", 0, nil)
@@ -1319,7 +1326,8 @@ func TestResumeAgent(t *testing.T) {
 		defer b.mu.Unlock()
 		return b.resting["Long"] == nil
 	})
-	os.RemoveAll(filepath.Join(os.Getenv("CLAUDE_CONFIG_DIR"), "projects"))
+	rec, _ = b.loadRecord("Long")
+	os.Remove(filepath.Join(os.Getenv("CLAUDE_CONFIG_DIR"), "projects", "-fake", rec.Session+".jsonl"))
 	if got := b.Tell("Long", "again"); !strings.Contains(got, "saved session is gone") {
 		t.Fatal(got)
 	}
@@ -1331,6 +1339,7 @@ func TestResumeAgent(t *testing.T) {
 // The user's instructions in AGENTS.md reach each call as the file is then:
 // read again when it changes, and gone when it is.
 func TestAgentsReload(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	record(c)
 	a, calls := fakeAgent(t, c)
@@ -1365,6 +1374,7 @@ func TestAgentsReload(t *testing.T) {
 // response begins: not at its own events, nor at the answer to a mode
 // switch sent meanwhile.
 func TestAckReleases(t *testing.T) {
+	t.Parallel()
 	a := &Agent{writing: map[string]chan struct{}{}}
 	out := strings.Join([]string{
 		`{"type":"system","subtype":"init"}`,
@@ -1389,6 +1399,7 @@ func TestAckReleases(t *testing.T) {
 // its block gives it or, without, as it streamed, and is left out of what
 // Opt reads of it.
 func TestSubagentThinking(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	a, _ := fakeAgent(t, c)
 	a.report = func(string) {}

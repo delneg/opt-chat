@@ -13,6 +13,7 @@ import (
 // A side question is answered on the view, by a call that may only look
 // things up, and kept in btw/, never in the log; the next one sees it.
 func TestBtw(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c, _ := fakeChat(t, dir, 100)
 	a, calls := fakeAgent(t, c)
@@ -103,6 +104,7 @@ func TestBtw(t *testing.T) {
 
 // /btw goes aside, past the queue; alone, it is an error.
 func TestBtwCommand(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	h := newHarness(t, c)
 	if _, ok, err := command(h.agent, "/btw"); !ok || err == nil {
@@ -134,6 +136,7 @@ func TestBtwCommand(t *testing.T) {
 // /btw with no words but an attachment, as a voice message sends it, is a
 // side question all the same: the attachment holds the question.
 func TestWebBtwAttached(t *testing.T) {
+	t.Parallel()
 	wt := startWeb(t)
 	c := wt.c
 	ws, err := wt.dial(-1, nil)

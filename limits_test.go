@@ -13,6 +13,7 @@ import (
 // minute; the bar shows those two always, any other only while in use, and
 // one past its reset at 0.
 func TestLimits(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	a, _ := fakeAgent(t, c)
 	now := time.Unix(1_800_000_000, 0)

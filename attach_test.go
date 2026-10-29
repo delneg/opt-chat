@@ -29,6 +29,7 @@ func decodeSize(t *testing.T, b []byte) (int, int, string) {
 // Images go to the model at most imageEdge a side and imageBytes; one that
 // fits is left alone, byte for byte.
 func TestFitImage(t *testing.T) {
+	t.Parallel()
 	small := pngBytes(100, 50)
 	if b, ext, err := fitImage(small); err != nil || ext != "png" || !bytes.Equal(b, small) {
 		t.Fatalf("a small image changed: %s, %v", ext, err)
@@ -67,6 +68,7 @@ func TestFitImage(t *testing.T) {
 // A photo's EXIF orientation is applied: the model sees it upright, as the
 // phone showed it, whatever reader it has.
 func TestOrientation(t *testing.T) {
+	t.Parallel()
 	img := image.NewRGBA(image.Rect(0, 0, 30, 20))
 	for i := range img.Pix {
 		img.Pix[i] = 0xff // white
@@ -133,6 +135,7 @@ func pngHeader(w, h uint32) []byte {
 
 // What a file is, from its content: the name only gives the extension.
 func TestSaveClassify(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	for _, f := range []struct {
 		name string
@@ -189,6 +192,7 @@ func TestSaveClassify(t *testing.T) {
 
 // HEIC, as iPhones and macOS take photos, becomes a JPEG (with macOS's sips).
 func TestHEIC(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("sips"); err != nil {
 		t.Skip("no sips")
 	}
@@ -218,6 +222,7 @@ func TestHEIC(t *testing.T) {
 // within its budget, the rest as paths; the marks come off for the input's
 // history.
 func TestCompose(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	save := func(name string, body []byte) attachment {
 		at, err := c.save(bytes.NewReader(body), name)
@@ -267,6 +272,7 @@ func TestCompose(t *testing.T) {
 // Marks go where their attachments were put, and the images after their
 // marks: "do this <img> not this <img>" reaches the model as written.
 func TestPlaced(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	one, _ := c.saveImage([]byte(pngHead))
 	two, _ := c.saveImage([]byte(pngHead + "x"))
@@ -306,6 +312,7 @@ func TestPlaced(t *testing.T) {
 // A path's mark goes after the whole word naming it: never into a longer
 // path, a link, quotes or a block of code.
 func TestPlacePaths(t *testing.T) {
+	t.Parallel()
 	home, _ := os.UserHomeDir()
 	for _, c := range []struct {
 		text  string

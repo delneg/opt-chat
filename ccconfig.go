@@ -401,7 +401,7 @@ type plugin struct {
 // plugins lists the user's plugins, on or off as set here, else as
 // Claude Code in -cwd has them.
 func (a *Agent) plugins(ctx context.Context) ([]plugin, error) {
-	cmd := exec.CommandContext(ctx, "claude", "plugin", "list", "--json")
+	cmd := exec.CommandContext(ctx, a.claudeCmd(), "plugin", "list", "--json")
 	cmd.Dir, cmd.Env = a.cwd, childEnv()
 	out, err := cmd.Output()
 	if err != nil {

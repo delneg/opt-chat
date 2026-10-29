@@ -38,10 +38,12 @@ type Agent struct {
 	cbare           bool   // memory summary calls on a different model from the turns get no tools
 	perm, cwd       string
 	tools           string
+	claude          string            // the claude command: "" for the one on PATH
 	ownConfig       bool              // turns and subagents get the user's Claude Code skills, plugins and MCP servers
 	claudeMd        bool              // and the CLAUDE.md files of the folders they work in, never the user's own
 	mcpOff          []string          // of those servers, the ones the user turned off here
 	mcpAgents       []string          // and those for subagents only: see mcpOffLocked
+	rest            time.Duration     // agentRest, when set
 	skillsSet       map[string]string // the user's skills' states set here: on, off, ...
 	pluginsSet      map[string]bool   // and plugins turned on or off here, by name@marketplace
 	skillsListed    []skill           // the skills Claude Code listed last, in its own states
@@ -430,6 +432,13 @@ func (a *Agent) startAgent(ctx context.Context, name, model, effort string, wind
 	return a.startCall(ctx, model, effort, roleAgent, window, name, extra...)
 }
 
+// claudeCmd is the claude command calls run.
+func (a *Agent) claudeCmd() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return cmp.Or(a.claude, "claude")
+}
+
 // startCall starts a call; who is the subagent's name, "" for the chat's.
 func (a *Agent) startCall(ctx context.Context, model, effort string, r role, window int, who string, extra ...string) (p *proc, err error) {
 	if r != roleAgent {
@@ -519,7 +528,7 @@ func (a *Agent) startCall(ctx context.Context, model, effort string, r role, win
 	case roleTurn, roleAgent: // the reply streams to the pages as it is written
 		args = append(args, "--include-partial-messages")
 	}
-	cmd := exec.CommandContext(ctx, "claude", args...)
+	cmd := exec.CommandContext(ctx, a.claudeCmd(), args...)
 	// Stopped gently, so Claude Code can stop what its tools started, and so
 	// are they: its group (below).
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM) }
@@ -559,7 +568,7 @@ func (a *Agent) startCall(ctx context.Context, model, effort string, r role, win
 		return nil, err
 	}
 	pid := cmd.Process.Pid
-	children.Store(pid, true)
+	children.Store(pid, a)
 	if r == roleTurn || r == roleAgent {
 		p.onRequest = func(e event) { a.request(p, e) }
 		a.modeMu.Lock()
@@ -603,13 +612,17 @@ func (a *Agent) startCall(ctx context.Context, model, effort string, r role, win
 	return p, nil
 }
 
-// children are the calls running, by pid. In process groups of their own,
-// they would outlive opt-chat dying on an error: fatal stops them first.
+// children are the calls running, by pid, each with the Agent that
+// started it. In process groups of their own, they would outlive opt-chat
+// dying on an error: fatal stops them first.
 var children sync.Map
 
-func stopChildren() {
-	children.Range(func(pid, _ any) bool {
-		syscall.Kill(-pid.(int), syscall.SIGTERM) // its group: its tools too
+// stopChildren stops the calls of owner, or all of them for nil.
+func stopChildren(owner *Agent) {
+	children.Range(func(pid, a any) bool {
+		if owner == nil || a == owner {
+			syscall.Kill(-pid.(int), syscall.SIGTERM) // its group: its tools too
+		}
 		return true
 	})
 }
@@ -637,14 +650,17 @@ func (a *Agent) quit() {
 // call to a Claude Code session that launched opt-chat. With them, calls
 // got that session's token-budget reminder in some requests and not in
 // others, so no two prompts matched, and inherited its effort.
-func childEnv() []string {
+func childEnv() []string { return childEnvOf(os.Environ()) }
+
+// childEnvOf is childEnv, from the environment environ.
+func childEnvOf(environ []string) []string {
 	// Those of a Claude Code that started opt-chat, and the user's own
 	// compaction window, which would beat a subagent's settings.
 	inherited := []string{"CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_CHILD_SESSION",
 		"CLAUDE_CODE_SESSION_ATTENDED", "CLAUDE_CODE_MESSAGING_SOCKET", "CLAUDE_CODE_MESSAGING_TOKEN",
 		"CLAUDE_CODE_EXECPATH", "CLAUDE_PID", "CLAUDE_EFFORT", "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS",
 		"CLAUDE_CODE_AUTO_COMPACT_WINDOW", "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"}
-	env := slices.DeleteFunc(os.Environ(), func(kv string) bool {
+	env := slices.DeleteFunc(slices.Clone(environ), func(kv string) bool {
 		k, _, _ := strings.Cut(kv, "=")
 		return slices.Contains(inherited, k)
 	})

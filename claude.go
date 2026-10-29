@@ -487,7 +487,11 @@ func (a *Agent) startCall(ctx context.Context, model, effort string, r role, win
 		tools = ""
 	}
 	if own {
-		tools = withTools(tools, "Skill", "ToolSearch") // ToolSearch: MCP servers' tools load as needed, not in every prompt
+		// ToolSearch: MCP servers' tools load as needed, not in every prompt.
+		// Artifact publishes a page to the user's claude.ai account, as in
+		// their own Claude Code; in a call like this one only with
+		// CLAUDE_CODE_ARTIFACT (below).
+		tools = withTools(tools, "Skill", "ToolSearch", "Artifact")
 	}
 	args := []string{"-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
 		"--model", model, "--system-prompt", system, "--tools", tools, "--mcp-config", mcp,
@@ -543,7 +547,7 @@ func (a *Agent) startCall(ctx context.Context, model, effort string, r role, win
 		// Tool search always: left to decide, Claude Code defers MCP tools or
 		// not by which servers have connected by each request, so the ack and
 		// the turn after it disagreed, and the view was written again.
-		cmd.Env = append(cmd.Env, "CLAUDE_CODE_DISABLE_AUTO_MEMORY=1", "ENABLE_TOOL_SEARCH=true")
+		cmd.Env = append(cmd.Env, "CLAUDE_CODE_DISABLE_AUTO_MEMORY=1", "ENABLE_TOOL_SEARCH=true", "CLAUDE_CODE_ARTIFACT=1")
 		if claudeMd { // not even from a Claude Code that started opt-chat
 			cmd.Env = slices.DeleteFunc(cmd.Env, func(kv string) bool { return strings.HasPrefix(kv, "CLAUDE_CODE_DISABLE_CLAUDE_MDS=") })
 		} else {

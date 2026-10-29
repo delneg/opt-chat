@@ -37,11 +37,11 @@ func TestOwnConfig(t *testing.T) {
 	}
 	args := calls()[0]
 	if flagOf(args, "--setting-sources") != "user,project,local" || flagOf(args, "--settings") != `{"disableAllHooks":true,"autoCompactEnabled":false,"deniedMcpServers":[{"serverName":"beta"},{"serverName":"ghost"}]}` ||
-		flagOf(args, "--tools") != "Read,Skill,ToolSearch" || slices.Contains(args, "--strict-mcp-config") || slices.Contains(args, "--disable-slash-commands") {
+		flagOf(args, "--tools") != "Read,Skill,ToolSearch,Artifact" || slices.Contains(args, "--strict-mcp-config") || slices.Contains(args, "--disable-slash-commands") {
 		t.Fatalf("turn args: %q", args)
 	}
 	env := fakeFiles(a, ".env")[0]
-	for _, kv := range []string{"CLAUDE_CODE_DISABLE_CLAUDE_MDS=1", "CLAUDE_CODE_DISABLE_AUTO_MEMORY=1", "ENABLE_TOOL_SEARCH=true", "CLAUDE_CODE_TETHER_LIVE=0"} {
+	for _, kv := range []string{"CLAUDE_CODE_DISABLE_CLAUDE_MDS=1", "CLAUDE_CODE_DISABLE_AUTO_MEMORY=1", "ENABLE_TOOL_SEARCH=true", "CLAUDE_CODE_TETHER_LIVE=0", "CLAUDE_CODE_ARTIFACT=1"} {
 		if !strings.Contains(env, kv) {
 			t.Fatalf("turn env lacks %s: %s", kv, env)
 		}
@@ -54,8 +54,11 @@ func TestOwnConfig(t *testing.T) {
 
 	a.ownConfig = false // a compaction: bare, as ever
 	a.Compact(context.Background(), []string{"x"}, 0, []block{textBlock("Compaction: x")})
-	if args := calls()[1]; flagOf(args, "--setting-sources") != "" || !slices.Contains(args, "--strict-mcp-config") {
+	if args := calls()[1]; flagOf(args, "--setting-sources") != "" || !slices.Contains(args, "--strict-mcp-config") || strings.Contains(flagOf(args, "--tools"), "Artifact") {
 		t.Fatalf("compaction args: %q", args)
+	}
+	if env := fakeFiles(a, ".env")[1]; strings.Contains(env, "CLAUDE_CODE_ARTIFACT") {
+		t.Fatalf("compaction env: %s", env)
 	}
 }
 

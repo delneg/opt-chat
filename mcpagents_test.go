@@ -89,6 +89,9 @@ func TestMCPForSubagents(t *testing.T) {
 	} {
 		waitFor(t, tc.name+"'s report", reported(a, tc.name))
 		rec, _ := a.loadRecord(tc.name)
+		if call := callOf(calls, rec.Session); !strings.Contains(flagOf(call, "--tools"), "Artifact") {
+			t.Fatalf("%s's tools: %s", tc.name, flagOf(call, "--tools"))
+		}
 		if got := denied(callOf(calls, rec.Session)); !slices.Equal(got, tc.deny) || !slices.Equal(rec.MCP, tc.mcp) {
 			t.Fatalf("%s denies %q, record %q", tc.name, got, rec.MCP)
 		}

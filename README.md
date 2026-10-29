@@ -21,7 +21,7 @@ You need Go 1.27 and a logged-in `claude` CLI.
 
 ```sh
 go build -o opt-chat .
-./opt-chat                        # chat in ~/.opt-chat, tools run in ~
+./opt-chat                        # chat in ~/.opt-chat, tools run in a temp folder
 ./opt-chat -dir ~/chats/work -cwd ~/dev
 ./opt-chat -import ~/.claude      # import your past chats, then chat
 ```
@@ -44,9 +44,10 @@ cache over.
   to the model as they are, text files inline, anything else as a path.
 - Alt+K records a voice message, transcribed by Whisper on Groq when
   `GROQ_API_KEY` is set. It plays in the chat; Opt reads its words.
-- Your Claude Code skills, plugins and MCP servers come along, but never
-  your hooks, CLAUDE.md or memory. `/skills`, `/mcp` and `/plugins` switch
-  them for Opt alone, or keep an MCP server for the subagents Opt gives it.
+- Your skills, plugins and claude.ai connectors come from Claude Code, never
+  your hooks, CLAUDE.md or memory; MCP servers from Opt's own
+  `<dir>/mcp.json`, at first a copy of yours. `/skills`, `/mcp` and
+  `/plugins` switch them for Opt, or keep a server for its subagents.
 - Subagents run in the background, in a rail beside the chat that stops
   and clears each. One that a quit, a crash or a reload cut off mid-task
   goes on by itself at the next start; one you stopped, when Opt tells it.
@@ -63,7 +64,7 @@ cache over.
 | flag | default | |
 |---|---|---|
 | `-dir` | `~/.opt-chat` | where the chat lives |
-| `-cwd` | `~` | where Opt's tools run |
+| `-cwd` | `$TMPDIR/opt-chat` | where Opt's tools run |
 | `-model`, `-effort` | `fable`, `high` | model and effort for turns |
 | `-agent-model`, `-agent-effort` | `opus`, `high` | for subagents |
 | `-agent-compact-max` | `400000` | compact a subagent's context past this, between two steps; `0`: never |

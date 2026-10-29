@@ -650,7 +650,7 @@ func (w *webServer) serveSlow(ctx context.Context, req request) any {
 		}
 		return modelsReply{T: "models", Models: ms}
 	case "files":
-		items := fileSuggestions(a.cwd, req.Text)
+		items := fileSuggestions(a.files, req.Text)
 		if items == nil {
 			items = []fileSuggestion{}
 		}

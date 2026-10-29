@@ -6,6 +6,7 @@ import (
 	"encoding/json/v2"
 	"fmt"
 	"maps"
+	"os"
 	"os/exec"
 	"slices"
 	"strings"
@@ -402,6 +403,7 @@ type plugin struct {
 // Claude Code in -cwd has them.
 func (a *Agent) plugins(ctx context.Context) ([]plugin, error) {
 	cmd := exec.CommandContext(ctx, a.claudeCmd(), "plugin", "list", "--json")
+	os.MkdirAll(a.cwd, 0o700) // failing, the command says so
 	cmd.Dir, cmd.Env = a.cwd, childEnv()
 	out, err := cmd.Output()
 	if err != nil {

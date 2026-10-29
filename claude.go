@@ -39,6 +39,9 @@ type Agent struct {
 	perm, cwd       string
 	tools           string
 	claude          string            // the claude command: "" for the one on PATH
+	optMCP          string            // Opt's own MCP servers' file, which calls with the user's setup load: see optmcp.go; "": none
+	claudeJSON      string            // Claude Code's config, whose servers they keep out
+	files           string            // where @ completes paths from
 	ownConfig       bool              // turns and subagents get the user's Claude Code skills, plugins and MCP servers
 	claudeMd        bool              // and the CLAUDE.md files of the folders they work in, never the user's own
 	mcpOff          []string          // of those servers, the ones the user turned off here
@@ -455,12 +458,28 @@ func (a *Agent) startCall(ctx context.Context, model, effort string, r role, win
 			done()
 		}
 	}()
+	if err := os.MkdirAll(a.cwd, 0o700); err != nil { // the system cleans its temp folder, where it is by default
+		return nil, err
+	}
+	var ccDeny []string
+	optMCP := ""
+	if a.optMCP != "" && r != roleCompact {
+		var ok bool
+		if ccDeny, ok = ccDenied(a.claudeJSON, a.cwd, a.optMCP); ok {
+			optMCP = a.optMCP
+		}
+	}
 	a.mu.Lock()
 	mcp, perm, allowed := a.mcpConfig, a.perm, append([]string{"mcp__opt__zoom", "mcp__opt__date", "mcp__opt__search", "mcp__opt__spawn", "mcp__opt__tell", "mcp__opt__wake"}, a.allowed...)
 	dirs, own := slices.Clone(a.dirs), a.ownConfig && r != roleCompact
 	var deny []string
 	if r != roleControl { // the page's lists every server as it is
 		deny = a.mcpOffLocked(who)
+	}
+	for _, name := range ccDeny {
+		if !slices.Contains(deny, name) {
+			deny = append(deny, name)
+		}
 	}
 	settings, claudeMd := a.ownSettings(window, deny), a.claudeMd
 	system := a.systemNow()
@@ -494,8 +513,11 @@ func (a *Agent) startCall(ctx context.Context, model, effort string, r role, win
 		tools = withTools(tools, "Skill", "ToolSearch", "Artifact")
 	}
 	args := []string{"-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
-		"--model", model, "--system-prompt", system, "--tools", tools, "--mcp-config", mcp,
-		"--permission-mode", perm, "--allowedTools", strings.Join(allowed, ",")}
+		"--model", model, "--system-prompt", system, "--tools", tools, "--mcp-config", mcp}
+	if optMCP != "" { // its servers replace the chat's own by the same name
+		args = append(args, optMCP)
+	}
+	args = append(args, "--permission-mode", perm, "--allowedTools", strings.Join(allowed, ","))
 	if r == roleAgent { // saved, so it can be resumed: see resume.go
 		args = append(args, extra...)
 	} else {

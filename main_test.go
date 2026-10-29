@@ -130,16 +130,21 @@ func TestTypedHidden(t *testing.T) {
 	}
 }
 
-// The system prompt names the chat's AGENTS.md, and lists wake only when on.
+// The system prompt names the chat's AGENTS.md, Opt's MCP servers' file
+// when it has one, and lists wake only when on.
 func TestSystemPrompt(t *testing.T) {
 	t.Parallel()
 	path := "/chats/x/AGENTS.md"
-	off := systemPrompt(path, false)
+	off := systemPrompt(path, "", false)
 	if strings.Contains(off, "{{") || !strings.Contains(off, path) || strings.Contains(off, "wake(") ||
-		!strings.Contains(off, "unchecked") || !strings.Contains(off, "CLAUDE.md") {
+		!strings.Contains(off, "unchecked") || !strings.Contains(off, "CLAUDE.md") || strings.Contains(off, "mcp.json") {
 		t.Fatalf("prompt without wake:\n%s", off)
 	}
-	on := systemPrompt(path, true)
+	mcp := systemPrompt(path, "/chats/x/mcp.json", false)
+	if i := strings.Index(mcp, "/chats/x/mcp.json"); strings.Count(mcp, "/chats/x/mcp.json") != 1 || i < strings.Index(mcp, "Change or drop a line") || strings.Contains(mcp, "{{") {
+		t.Fatalf("prompt with its MCP file:\n%s", mcp)
+	}
+	on := systemPrompt(path, "", true)
 	if strings.Count(on, "- wake(") != 1 || strings.Index(on, "- wake(") > strings.Index(on, "# Turns") || strings.Index(on, "- wake(") < strings.Index(on, "- tell(") {
 		t.Fatalf("prompt with wake:\n%s", on)
 	}

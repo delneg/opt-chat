@@ -56,6 +56,7 @@ type Agent struct {
 	resting         map[string]*rest  // subagents that have reported, still able to go on: see Tell
 	mcpUp           []string          // the servers connected when the last call sent its view: see mcpSettle
 	mcpSeen         []string          // and those listed then
+	mcpCounted      mcpCounts         // what each server takes of the context, as last counted: see countMCP
 
 	report     func(text string) // hands an agent's report to the chat
 	autoResume bool              // a start resumes the subagents a quit, crash or reload cut off: see resume.go

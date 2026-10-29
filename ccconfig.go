@@ -37,6 +37,89 @@ type mcpServer struct {
 	Agents bool   `json:"agents,omitzero"` // for subagents only
 	// Granted is the subagents at work or at rest that Opt granted it to.
 	Granted []string `json:"granted,omitzero"`
+	// Its tools, and what they and its instructions take of the context,
+	// as Claude Code's /context counts them: the tools only once used, with
+	// tool search.
+	ToolCount int `json:"toolCount,omitzero"` // not "tools": Claude Code's status has its own
+	Tokens    int `json:"tokens,omitzero"`
+}
+
+// mcpCounts is the servers' tools and tokens, by mcpToolName, for the
+// servers connected then (key), in a context window of window tokens.
+type mcpCounts struct {
+	key    string
+	window int
+	tools  map[string]int
+	tokens map[string]int
+}
+
+// mcpToolName is the name Claude Code makes of a server's for its tools:
+// what isn't a letter, digit, _ or - made _.
+func mcpToolName(name string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '_' || r == '-' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' {
+			return r
+		}
+		return '_'
+	}, name)
+}
+
+// countMCP asks the control call for what each server takes of the
+// context, unless the servers connected are those counted last.
+func (a *Agent) countMCP(ctx context.Context, servers []mcpServer) {
+	var up []string
+	for _, s := range servers {
+		if s.Status == "connected" {
+			up = append(up, s.Name)
+		}
+	}
+	key := strings.Join(up, "\x00")
+	a.mu.Lock()
+	same := a.mcpCounted.key == key && a.mcpCounted.tokens != nil
+	a.mu.Unlock()
+	if same {
+		return
+	}
+	c := mcpCounts{key: key, tools: map[string]int{}, tokens: map[string]int{}}
+	defer func() { // a failure too, so a page's every ask doesn't ask again
+		a.mu.Lock()
+		a.mcpCounted = c
+		a.mu.Unlock()
+	}()
+	v, err := a.control(ctx, map[string]any{"subtype": "get_context_usage"})
+	if err != nil {
+		return // the list, without them
+	}
+	var r struct {
+		Window int `json:"maxTokens"`
+		Tools  []struct {
+			Server string `json:"serverName"`
+			Tokens int    `json:"tokens"`
+		} `json:"mcpTools"`
+		Instructions []struct {
+			Server string `json:"serverName"`
+			Tokens int    `json:"tokens"`
+		} `json:"mcpInstructions"`
+	}
+	if json.Unmarshal(v, &r) != nil {
+		return
+	}
+	c.window = r.Window
+	for _, t := range r.Tools {
+		c.tools[mcpToolName(t.Server)]++
+		c.tokens[mcpToolName(t.Server)] += t.Tokens
+	}
+	for _, in := range r.Instructions {
+		c.tokens[mcpToolName(in.Server)] += in.Tokens
+	}
+}
+
+// mcpWindowNow is the context window the servers' tokens were counted in;
+// 0: not counted.
+func (a *Agent) mcpWindowNow() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.mcpCounted.window
 }
 
 // mcpServers lists the user's MCP servers, as the control call sees them:
@@ -52,6 +135,7 @@ func (a *Agent) mcpServers(ctx context.Context) ([]mcpServer, error) {
 	if err := json.Unmarshal(v, &r); err != nil {
 		return nil, err
 	}
+	a.countMCP(ctx, r.Servers)
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	out := []mcpServer{}
@@ -60,6 +144,7 @@ func (a *Agent) mcpServers(ctx context.Context) ([]mcpServer, error) {
 			continue
 		}
 		s.Off, s.Agents = slices.Contains(a.mcpOff, s.Name), slices.Contains(a.mcpAgents, s.Name)
+		s.ToolCount, s.Tokens = a.mcpCounted.tools[mcpToolName(s.Name)], a.mcpCounted.tokens[mcpToolName(s.Name)]
 		if s.Agents {
 			s.Granted = a.grantedLocked(s.Name)
 		}
@@ -536,6 +621,7 @@ func configCommand(a *Agent, word, arg string) string {
 		if err != nil {
 			return err.Error()
 		}
+		w := a.mcpWindowNow()
 		for _, s := range ss {
 			st := s.Status
 			switch {
@@ -546,6 +632,9 @@ func configCommand(a *Agent, word, arg string) string {
 				if len(s.Granted) > 0 {
 					st += ", granted to [" + strings.Join(s.Granted, "], [") + "]"
 				}
+			}
+			if s.Tokens > 0 && w > 0 {
+				st += fmt.Sprintf("   %s, %d tokens (%.1f%%)", count(s.ToolCount, "tool"), s.Tokens, 100*float64(s.Tokens)/float64(w))
 			}
 			lines = append(lines, fmt.Sprintf("%-40s %s", s.Name, st))
 		}

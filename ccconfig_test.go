@@ -200,3 +200,59 @@ func TestClaudeMd(t *testing.T) {
 		t.Fatalf("turn env: %s", env)
 	}
 }
+
+// Each server comes with its tools and what they and its instructions
+// take of the context, as Claude Code's /context counts them: asked again
+// only once the servers connected change.
+func TestMCPTokens(t *testing.T) {
+	t.Parallel()
+	c, _ := fakeChat(t, t.TempDir(), 100)
+	a, _ := fakeAgent(t, c)
+	a.ownConfig = true
+	byName := func() map[string]mcpServer {
+		ss, err := a.mcpServers(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := map[string]mcpServer{}
+		for _, s := range ss {
+			out[s.Name] = s
+		}
+		return out
+	}
+	asks := func() int {
+		n := 0
+		for _, l := range fakeFiles(a, ".ctl") {
+			if strings.Contains(l, `"get_context_usage"`) {
+				n++
+			}
+		}
+		return n
+	}
+	byName()
+	ss := byName() // alpha still pending: the same servers connected
+	if asks() != 1 {
+		t.Fatalf("asked %d times", asks())
+	}
+	if b := ss["beta"]; b.ToolCount != 1 || b.Tokens != 50 || ss["gamma"].Tokens != 0 || a.mcpWindowNow() != 200000 {
+		t.Fatalf("counts: %+v, window %d", ss, a.mcpWindowNow())
+	}
+	ss = byName() // alpha connects
+	if al := ss["alpha"]; asks() != 2 || al.ToolCount != 2 || al.Tokens != 525 {
+		t.Fatalf("after alpha connects: %d asks, %+v", asks(), al)
+	}
+	if got := configCommand(a, "mcp", ""); !strings.Contains(got, "2 tools, 525 tokens (0.3%)") {
+		t.Fatalf("/mcp:\n%s", got)
+	}
+}
+
+// Claude Code names a server's tools by its name with what isn't a letter,
+// digit, _ or - made _.
+func TestMCPToolName(t *testing.T) {
+	t.Parallel()
+	for in, want := range map[string]string{"claude.ai Google Drive": "claude_ai_Google_Drive", "plugin:playwright:playwright": "plugin_playwright_playwright", "web-search_2": "web-search_2"} {
+		if got := mcpToolName(in); got != want {
+			t.Errorf("%q: %q", in, got)
+		}
+	}
+}

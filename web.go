@@ -332,6 +332,7 @@ type (
 		Name    string      `json:"name,omitzero"`
 		Action  string      `json:"action,omitzero"` // the action answered; empty: a list asked for
 		Error   string      `json:"error,omitzero"`
+		Window  int         `json:"window,omitzero"` // the context window the servers' tokens are a share of; 0: not counted
 	}
 	filesReply struct {
 		T     string           `json:"t"` // files: the @ menu's
@@ -680,6 +681,7 @@ func (w *webServer) serveSlow(ctx context.Context, req request) any {
 		if r.Servers, err = a.mcpServers(ctx); err != nil {
 			r.Servers, r.Error = []mcpServer{}, cmp.Or(r.Error, err.Error())
 		}
+		r.Window = a.mcpWindowNow()
 		return r
 	case "plugins":
 		if !a.ownConfig {

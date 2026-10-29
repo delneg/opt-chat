@@ -140,7 +140,7 @@ func fakeClaude() {
 				{"name": "opt", "status": "connected"},
 				{"name": "alpha", "status": alpha, "scope": "user", "source": "user", "config": map[string]any{"headers": map[string]any{"Authorization": "Bearer SECRET"}}},
 				{"name": "beta", "status": beta, "scope": "claudeai", "source": "claudeai"},
-				{"name": "gamma", "status": "failed", "scope": "user", "source": "user", "error": "connection refused"},
+				{"name": "gamma", "status": "failed", "tools": []map[string]any{{"name": "g"}}, "scope": "user", "source": "user", "error": "connection refused"},
 			}})
 		case "mcp_toggle":
 			if name != "alpha" && name != "beta" && name != "gamma" {
@@ -151,6 +151,12 @@ func fakeClaude() {
 			ok(nil)
 		case "mcp_authenticate":
 			ok(map[string]any{"authUrl": "https://auth.example/" + name, "requiresUserAction": true})
+		case "get_context_usage":
+			ok(map[string]any{"maxTokens": 200000, "mcpTools": []map[string]any{
+				{"name": "mcp__alpha__a", "serverName": "alpha", "tokens": 300},
+				{"name": "mcp__alpha__b", "serverName": "alpha", "tokens": 200},
+				{"name": "mcp__beta__c", "serverName": "beta", "tokens": 50},
+			}, "mcpInstructions": []map[string]any{{"serverName": "alpha", "tokens": 25}}})
 		case "get_skills_dialog":
 			ok(map[string]any{"skills": []map[string]any{
 				{"name": "one", "display_name": "one", "description": "the first", "source": "user", "tokens": 10, "state": "on"},

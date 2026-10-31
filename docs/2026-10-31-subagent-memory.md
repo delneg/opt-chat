@@ -116,6 +116,36 @@ happened. In the code:
 - Spawn skips a name that has a `.log` or a `.mem`, so a new subagent
   never takes an old chat for its own (TestAgentMemNameReuse).
 
+## Model-checked
+
+`formal/agentmem/AgentMem.tla` models the log writer, its feed, Opt's
+zoom, the pump, compactions saving their lines, closing idle chats, a
+write cut short, a failed write to a chat, and a crash or restart that
+may turn `-agent-memory` either way, each action one step of the code
+between two lock operations. TLC checks seven rules over every order of
+those steps, in three scopes (two subagents at once; one subagent with a
+crash and a failure; one with two crashes and the off switch): no step
+lost, doubled or out of order; a step or zoom never waits on another
+subagent's disk; no deadlock; a chat fed to the log's end is the whole
+log after any crash; a memory failure shows on the page and never stops
+opt-chat. `formal/agentmem/check.sh` runs it (about 6 minutes on 2
+cores), and the `agent-memory` skill says when.
+
+While this was written, the model and reviews of it found nine bugs in
+drafts. Each is now a mutant in `formal/agentmem/mutants.sh`, which puts
+it back and expects its rule to break, and all but the last have a Go
+test that failed before the fix: the pump and closing idle chats each
+held the map's lock while waiting on one chat's disk; a write cut short
+swallowed the next step, memory on or, separately, off; a chat that
+couldn't open was told only to the terminal and zoom said the subagent
+didn't exist; a crash between a long step's parts lost the rest; a
+failed write to a subagent's chat stopped opt-chat; a new subagent took
+an old `.mem`; and a compaction's write failing between `fed`'s check
+and its feed left a step in memory only. Reviews and tests found two
+more: a zoom during a long write cut the step at a blank line, and an
+open that failed on a full disk kept the chat's lock, so it never opened
+again in that run.
+
 ## Prior art
 
 [opencode-optchat](https://github.com/ahlner/opencode-optchat) keeps a

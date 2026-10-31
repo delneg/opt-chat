@@ -52,6 +52,7 @@ land there. The web tests go through real HTTP and WebSocket connections.
 | `import.go` | importing past chats |
 | `ccconfig.go`, `control.go`, `perms.go`, `limits.go` | the user's Claude Code setup, Claude Code's own lists, permission modes, usage limits |
 | `limitresume.go` | a usage limit's reset time, read from its message; the resume at the reset, kept in `<dir>/resume.json` |
+| `formal/agentmem/` | a TLA+ model of subagents' memory: feeds, zooms, the pump, closing, crashes; the `agent-memory` skill says when and how to run it |
 | `prompt.md` | the system prompt |
 | `web/` | the page: Preact and htm, no build step; `web/vendor/` is vendored as is |
 

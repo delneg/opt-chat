@@ -40,6 +40,8 @@ func main() {
 	ceffort := flag.String("compact-effort", "medium", "effort for compactions")
 	cbare := flag.Bool("compact-bare", true, "memory summary calls (compactions) on a different model from the turns get no tools: they share no cache with turns, and Claude Code adds tool reminders, such as a commit attribution naming the summary call's model, that summaries took for the chat's")
 	jobs := flag.Int("jobs", defaultJobs, "compactions running at once, the chat's before an import's")
+	agentMem := flag.Bool("agent-memory", true, "summarize each subagent's chat into a tree of its own in <dir>/agents/<Name>.mem, as the chat's: zoom(\"Name\") gives its view, not its whole log")
+	agentJobs := flag.Int("agent-jobs", defaultAgentJobs, "compactions running at once in all subagents' chats together, while the chat has none waiting")
 	perm := flag.String("permission-mode", "auto", "Claude Code permission mode to start in: manual, acceptEdits or auto (Shift+Tab cycles them)")
 	tools := flag.String("tools", "Bash,Read,Edit,Write,WebSearch,WebFetch", "Claude Code tools")
 	ownConfig := flag.Bool("claude-config", true, "give turns and subagents your Claude Code skills, plugins, MCP servers and settings (never its hooks, CLAUDE.md or memory)")
@@ -90,8 +92,8 @@ func main() {
 	if !given["effort"] && validEffort(saved.Effort) {
 		*effort = saved.Effort
 	}
-	if *jobs < 1 {
-		fatal("-jobs must be 1 or more")
+	if *jobs < 1 || *agentJobs < 1 {
+		fatal("-jobs and -agent-jobs must be 1 or more")
 	}
 	if *agentCap != 0 && (*agentCap < windowMin || *agentCap > windowMax) {
 		fatal("-agent-compact-max must be 0, or from %d to %d", windowMin, windowMax)
@@ -138,10 +140,13 @@ func main() {
 		hb.print = webPrinter()
 	}
 	h := &harness{}
-	a := &Agent{chat: c, system: systemPrompt(agentsMD, optMCP, *wake), agentsMD: agentsMD, claudeMd: *claudeMd, model: *model, effort: *effort,
+	a := &Agent{chat: c, system: systemPrompt(agentsMD, optMCP, *wake, *agentMem), agentsMD: agentsMD, claudeMd: *claudeMd, model: *model, effort: *effort,
 		amodel: *amodel, aeffort: *aeffort, cmodel: *cmodel, ceffort: *ceffort, cbare: *cbare, perm: *perm, cwd: *cwd, files: was, optMCP: optMCP, claudeJSON: claudeJSON, tools: *tools, ownConfig: *ownConfig, mcpOff: saved.MCPOff, mcpAgents: saved.MCPAgents, skillsSet: saved.Skills, pluginsSet: saved.Plugins, agentWindow: saved.AgentAutocompact, agentCap: *agentCap, recall: *recall,
 		running: map[string]*proc{}, writing: map[string]chan struct{}{}, report: func(text string) { h.input(message{kind: "work", text: text}) }, autoResume: *autoResume}
 	a.life, a.stop = context.WithCancel(context.Background())
+	if *agentMem {
+		a.mems = newAgentMems(c, *agentJobs)
+	}
 	h.agent = a
 	if *hideEmail {
 		if a.noEmail, err = writeEmailPlugin(*dir); err != nil {
@@ -180,6 +185,7 @@ func main() {
 	dim(fmt.Sprintf("[%d messages; the view is %d lines, %d bytes; %s%s]", len(c.msgs), len(c.view.keys), c.view.size(), *dir, backlog))
 	c.pump()
 	c.mu.Unlock()
+	a.mems.setCompact(a.Compact)
 	a.resumeCut(cut)
 	if note, resume := a.recoverTurn(); resume { // a turn starts on it
 		h.input(message{kind: "work", text: note})
@@ -230,6 +236,7 @@ func main() {
 		c.mu.Lock()
 		c.compact = nil // none starts from here on; the next run builds what is left
 		c.mu.Unlock()
+		a.mems.setCompact(nil)
 		h.quit()
 		close(stopStatus)
 	}
@@ -303,9 +310,13 @@ func main() {
 }
 
 // systemPrompt is the prompt for a chat whose instructions are in
-// agentsMD, with the wake tool listed when on.
-func systemPrompt(agentsMD, optMCP string, wake bool) string {
+// agentsMD, with Opt's MCP servers' file when it has one, the wake tool
+// listed when on, and zoom on subagents as -agent-memory says.
+func systemPrompt(agentsMD, optMCP string, wake, agentMem bool) string {
 	s := strings.ReplaceAll(prompt, "{{AGENTS.md}}", agentsMD)
+	if !agentMem {
+		s = strings.Replace(s, zoomAgentLines, zoomAgentWhole, 1)
+	}
 	if optMCP != "" {
 		const after = "Change or drop a line only when the user asks.\n"
 		s = strings.Replace(s, after, after+"\n"+strings.ReplaceAll(mcpPrompt, "{{mcp.json}}", optMCP), 1)

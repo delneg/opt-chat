@@ -71,7 +71,7 @@ func TestStepTimes(t *testing.T) {
 
 	want := old + "agent: two calls at once\n\ntool: Bash {\"command\":\"sleep 2\"}\n\ntool: Read {\"file_path\":\"/Users/me/x\"}\n\n" +
 		"echo: x\n\ny\n\necho: \n\necho: no id\n\necho: a spaced id\n\n"
-	if z := c.ZoomAgent("Timed"); z != want {
+	if z := agentPlain(c.dir, "Timed"); z != want {
 		t.Fatalf("zoom: %q", z)
 	}
 }

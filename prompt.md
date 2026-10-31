@@ -33,7 +33,8 @@ to the first part.
 Tools:
 - zoom(id, n) opens line id+n into the two lines it was made from;
 - zoom(id, 1) gives message id whole, with its images
-- zoom("Name") gives an agent's whole chat
+- zoom("Name") gives an agent's chat as lines, and zoom("Name:id", n) opens
+  them as zoom(id, n) does
 - date(id) gives the date and time of message id
 - search(text, before) finds the messages that hold text, newest first, each
   with the view's line that holds it; when none does, those that best share

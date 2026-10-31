@@ -69,8 +69,7 @@ var (
 		return map[string]any{"name": name, "description": desc, "inputSchema": input}
 	}
 	mcpTools = []map[string]any{
-		tool("zoom", "Open the line id+n of the view into the two lines of n/2 under it; n = 1 gives the message whole, with its images. "+
-			`zoom("Name") gives a subagent's whole chat.`,
+		tool("zoom", zoomDesc+zoomAgentTool,
 			schema([]string{"id"}, map[string]any{"id": map[string]any{"type": []string{"integer", "string"}}, "n": num})),
 		tool("date", "The date and time of message id.", schema([]string{"id"}, map[string]any{"id": num})),
 		tool("search", "Find the messages of the whole chat that hold text (a word, a name, a number, an error; any case), newest first, 20 at a time: "+
@@ -99,9 +98,20 @@ var (
 		schema(nil, map[string]any{"at": str, "message": str, "cancel": num}))
 )
 
+// zoom's text on subagents, in the tool and the prompt: their chats as
+// lines, or with -agent-memory=false their whole logs.
+const (
+	zoomAgentLines     = "- zoom(\"Name\") gives an agent's chat as lines, and zoom(\"Name:id\", n) opens\n  them as zoom(id, n) does\n"
+	zoomAgentWhole     = "- zoom(\"Name\") gives an agent's whole chat\n"
+	zoomDesc           = "Open the line id+n of the view into the two lines of n/2 under it; n = 1 gives the message whole, with its images. "
+	zoomAgentTool      = `zoom("Name") gives a subagent's chat as lines, and zoom("Name:id", n) opens its line id+n, as for the chat's.`
+	zoomAgentWholeTool = `zoom("Name") gives a subagent's whole chat.`
+)
+
 // mcpList is the tools the chat serves: wake only with -wake. spawn's
 // autocompact goes up to the cap; spawn and tell take mcp when the user
-// has servers for subagents only, which it names.
+// has servers for subagents only, which it names. zoom says what it gives
+// of a subagent.
 func (a *Agent) mcpList() []map[string]any {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -117,6 +127,10 @@ func (a *Agent) mcpList() []map[string]any {
 			}
 			t = withProp(t, "mcp", map[string]any{"type": "array", "items": str,
 				"description": what + strings.Join(a.mcpAgents, ", ") + ". It has the servers on for all anyway. Leave it out unless its task needs one."})
+		}
+		if t["name"] == "zoom" && a.mems == nil {
+			t = maps.Clone(t)
+			t["description"] = zoomDesc + zoomAgentWholeTool
 		}
 		tools[i] = t
 	}
@@ -206,9 +220,14 @@ func callTool(a *Agent, fromAgent bool, tool string, x toolArgs) (string, []stri
 	} else if err == nil {
 		isName = false
 	}
+	if agent, line, ok := strings.Cut(s, ":"); tool == "zoom" && isName && ok { // "Name:id": a line of a subagent's chat
+		if j, err := strconv.Atoi(line); err == nil {
+			return a.ZoomAgentLine(agent, j, n)
+		}
+	}
 	switch {
 	case tool == "zoom" && isName:
-		return a.chat.ZoomAgent(s), nil
+		return a.ZoomAgent(s), nil
 	case tool == "zoom" && err != nil:
 		return "id must be a message id or a subagent's name.", nil
 	case tool == "zoom" && n == 0: // n left out: the message

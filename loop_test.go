@@ -104,7 +104,7 @@ func TestAgentLoop(t *testing.T) {
 	if rec.Loop == nil || rec.Loop.Command != l.Command || rec.Loop.Dir != l.Dir {
 		t.Fatalf("record: %+v", rec.Loop)
 	}
-	log := c.ZoomAgent("Loop")
+	log := agentPlain(c.dir, "Loop")
 	for _, s := range []string{"loop: go on 1", "loop: go on 2", "loop: go on 3"} {
 		if !strings.Contains(log, s) {
 			t.Fatalf("no %q in its log: %q", s, log)
@@ -155,7 +155,7 @@ func TestAgentLoopEnds(t *testing.T) {
 	// As Claude Code: exit 2 blocks, with stderr as the reason.
 	l = loopHookFor(t, `[ $n -eq 1 ] && { echo 'from stderr' >&2; exit 2; }; exit 0`)
 	a.Spawn("Two", "loop-task", "", "", 0, l)
-	if got := report(); !strings.Contains(got, "loop stopped: its Stop hook let it stop") || !strings.Contains(c.ZoomAgent("Two"), "loop: from stderr") {
+	if got := report(); !strings.Contains(got, "loop stopped: its Stop hook let it stop") || !strings.Contains(agentPlain(c.dir, "Two"), "loop: from stderr") {
 		t.Fatalf("exit 2: %q", got)
 	}
 
@@ -184,7 +184,7 @@ func TestAgentLoopTellAndStop(t *testing.T) {
 	if got := report(); !strings.HasPrefix(got, `[Told] answer to "held-tell"`) {
 		t.Fatalf("told: %q", got)
 	}
-	if strings.Contains(c.ZoomAgent("Told"), "loop: go on") {
+	if strings.Contains(agentPlain(c.dir, "Told"), "loop: go on") {
 		t.Fatal("the hook's step went ahead of the tell")
 	}
 
@@ -202,7 +202,7 @@ func TestAgentLoopTellAndStop(t *testing.T) {
 
 	l = loopHookFor(t, `[ $n -eq 1 ] && echo '{"decision":"block","reason":"wait-for-stop"}'; exit 0`)
 	a.Spawn("Stopped", "loop-task", "", "", 0, l)
-	waitFor(t, "its loop", func() bool { return strings.Contains(c.ZoomAgent("Stopped"), "loop: wait-for-stop") })
+	waitFor(t, "its loop", func() bool { return strings.Contains(agentPlain(c.dir, "Stopped"), "loop: wait-for-stop") })
 	time.Sleep(200 * time.Millisecond)
 	if !a.StopAgent("Stopped") {
 		t.Fatal("no stop")
@@ -226,7 +226,7 @@ func TestAgentLoopCompacts(t *testing.T) {
 	l := loopHookFor(t, `[ $n -eq 1 ] && echo '{"decision":"block","reason":"next step"}'; exit 0`)
 	a.Spawn("Big", "big-task", "", "", 250_000, l)
 	got := report()
-	log := c.ZoomAgent("Big")
+	log := agentPlain(c.dir, "Big")
 	if !strings.Contains(got, "loop stopped") || !strings.Contains(log, "compacted: 300000 tokens to 20000") ||
 		!strings.Contains(log, "anchored: view true, task true, message true") {
 		t.Fatalf("report %q, log %q", got, log)
@@ -243,9 +243,9 @@ func TestAgentLoopTellNow(t *testing.T) {
 	report, _ := loopReports(t, a)
 	l := loopHookFor(t, `[ $n -le 1 ] && echo '{"decision":"block","reason":"go on '$n'"}'; exit 0`)
 	a.Spawn("Loop", "slow-task", "", "", 0, l)
-	waitFor(t, "its long call", func() bool { return strings.Contains(c.ZoomAgent("Loop"), "sleep 600") })
-	if _, ok := a.TellUser("Loop", "first", nil, false); !ok || !strings.Contains(c.ZoomAgent("Loop"), "user: first") {
-		t.Fatalf("a tell held for its turn's end is not in its log: %q", c.ZoomAgent("Loop"))
+	waitFor(t, "its long call", func() bool { return strings.Contains(agentPlain(c.dir, "Loop"), "sleep 600") })
+	if _, ok := a.TellUser("Loop", "first", nil, false); !ok || !strings.Contains(agentPlain(c.dir, "Loop"), "user: first") {
+		t.Fatalf("a tell held for its turn's end is not in its log: %q", agentPlain(c.dir, "Loop"))
 	}
 	if out, ok := a.TellUser("Loop", "hurry", nil, true); !ok || out != "Sent: [Loop] was interrupted to read it now." {
 		t.Fatal(out, ok)
@@ -253,7 +253,7 @@ func TestAgentLoopTellNow(t *testing.T) {
 	if got := report(); !strings.Contains(got, fmt.Sprintf("answer to %q", loopFeedback+"go on 1")) {
 		t.Fatalf("report: %q", got)
 	}
-	log := c.ZoomAgent("Loop")
+	log := agentPlain(c.dir, "Loop")
 	if told, hurried := strings.Index(log, "user: hurry"), strings.Index(log, "agent: hurried: "); told < 0 || hurried < told || strings.Count(log, "user: hurry") != 1 {
 		t.Fatalf("its log: %q", log)
 	}

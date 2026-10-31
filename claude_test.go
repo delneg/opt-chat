@@ -477,7 +477,7 @@ func fakeAgent(t *testing.T, c *Chat) (*Agent, func() [][]string) {
 	}
 	a := &Agent{claude: filepath.Join(bin, "claude"), chat: c, system: "system", mcpConfig: "turn-mcp", agentMCP: "agent-mcp", model: "big", amodel: "mid", cmodel: "small",
 		perm: "auto", cwd: t.TempDir(), tools: "Read", running: map[string]*proc{}, writing: map[string]chan struct{}{},
-		report: func(text string) { c.Log("work", text) }}
+		report: func(text string) { c.Log("work", text) }, mems: newAgentMems(c, defaultAgentJobs)}
 	a.life, a.stop = context.WithCancel(context.Background())
 	t.Cleanup(a.quit)
 	return a, func() [][]string {
@@ -646,11 +646,11 @@ func TestSubagentsAndQuit(t *testing.T) {
 			return ""
 		}
 	}
-	if got, want := report(), fmt.Sprintf("[Scout] answer to %q with 0 images\n\nRan on mid. Full chat: zoom(\"Scout\")", "<chat>\n</chat>You are subagent [Scout]. Your task:\nlook around"); got != want {
+	if got, want := report(), fmt.Sprintf("[Scout] answer to %q with 0 images\n\nRan on mid. Its chat: zoom(\"Scout\")", "<chat>\n</chat>You are subagent [Scout]. Your task:\nlook around"); got != want {
 		t.Fatalf("report %q, want %q", got, want)
 	}
-	if !strings.Contains(c.ZoomAgent("[Scout]"), `tool: Read {"file_path":"x.png"}`+"\n\ntool: date {\"id\":0}") {
-		t.Fatalf("Scout's log: %q", c.ZoomAgent("Scout"))
+	if !strings.Contains(agentPlain(c.dir, "[Scout]"), `tool: Read {"file_path":"x.png"}`+"\n\ntool: date {\"id\":0}") {
+		t.Fatalf("Scout's log: %q", agentPlain(c.dir, "Scout"))
 	}
 	if got := a.Spawn("Scout", "again", "max", "fable", 0, nil); !strings.HasPrefix(got, "Started [Scout-2]") || !strings.HasPrefix(report(), "[Scout-2] ") {
 		t.Fatalf("a second Scout: %q", got)
@@ -693,11 +693,11 @@ func TestSubagentsAndQuit(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("quit hung")
 	}
-	if last := c.msgs[len(c.msgs)-1]; last.Text != "[Sleeper] stopped: opt-chat quit before this subagent finished. "+resumeHint("Sleeper")+"\n\nRan on mid. Full chat: zoom(\"Sleeper\")" {
+	if last := c.msgs[len(c.msgs)-1]; last.Text != "[Sleeper] stopped: opt-chat quit before this subagent finished. "+resumeHint("Sleeper")+"\n\nRan on mid. Its chat: zoom(\"Sleeper\")" {
 		t.Fatalf("last message: %q", last.Text)
 	}
-	if !strings.Contains(c.ZoomAgent("Sleeper"), "opt: hurry") {
-		t.Fatalf("Sleeper's log: %q", c.ZoomAgent("Sleeper"))
+	if !strings.Contains(agentPlain(c.dir, "Sleeper"), "opt: hurry") {
+		t.Fatalf("Sleeper's log: %q", agentPlain(c.dir, "Sleeper"))
 	}
 	if got := a.Spawn("Late", "x", "", "", 0, nil); got != "opt-chat is quitting." {
 		t.Fatal(got)
@@ -918,13 +918,13 @@ func TestAgentAutocompact(t *testing.T) {
 	if got := report(); !strings.Contains(got, "anchored: view true, task true, message true") || !strings.Contains(got, "its context at 20k tokens") {
 		t.Fatalf("after the compaction: %q", got)
 	}
-	if !strings.Contains(c.ZoomAgent("Long"), "compacted: 300000 tokens to 20000") {
-		t.Fatalf("Long's log: %q", c.ZoomAgent("Long"))
+	if !strings.Contains(agentPlain(c.dir, "Long"), "compacted: 300000 tokens to 20000") {
+		t.Fatalf("Long's log: %q", agentPlain(c.dir, "Long"))
 	}
 
 	a.Spawn("Later", "big-task", "", "", 0, nil) // told once its compaction is over
 	report()
-	waitFor(t, "the compaction at rest", func() bool { return strings.Contains(c.ZoomAgent("Later"), "compacted:") })
+	waitFor(t, "the compaction at rest", func() bool { return strings.Contains(agentPlain(c.dir, "Later"), "compacted:") })
 	waitFor(t, "its end", func() bool {
 		a.mu.Lock()
 		defer a.mu.Unlock()
@@ -947,7 +947,7 @@ func TestAgentAutocompact(t *testing.T) {
 	}
 	time.Sleep(500 * time.Millisecond)
 	for _, name := range []string{"Small", "Asked"} {
-		if strings.Contains(c.ZoomAgent(name), "compacted:") {
+		if strings.Contains(agentPlain(c.dir, name), "compacted:") {
 			t.Fatalf("[%s] compacted under its window", name)
 		}
 	}
@@ -1003,7 +1003,7 @@ func TestAgentCompactCap(t *testing.T) {
 	if got := report(); !strings.Contains(got, "did the grown one") || !strings.Contains(got, "its context at 31k tokens") {
 		t.Fatalf("report: %q", got)
 	}
-	if log := c.ZoomAgent("Grow"); !strings.Contains(log, "compacted: mid-task: 410000 tokens to 30000") {
+	if log := agentPlain(c.dir, "Grow"); !strings.Contains(log, "compacted: mid-task: 410000 tokens to 30000") {
 		t.Fatalf("Grow's log: %q", log)
 	}
 	a.mu.Lock()
@@ -1091,8 +1091,8 @@ func TestCompactAgent(t *testing.T) {
 		r := a.resting["Idle"]
 		return r != nil && r.compacted && !r.compacting && a.subs["Idle"].State == "resting"
 	})
-	if !strings.Contains(c.ZoomAgent("Idle"), "compacted: 300000 tokens to 20000") {
-		t.Fatalf("Idle's log: %q", c.ZoomAgent("Idle"))
+	if !strings.Contains(agentPlain(c.dir, "Idle"), "compacted: 300000 tokens to 20000") {
+		t.Fatalf("Idle's log: %q", agentPlain(c.dir, "Idle"))
 	}
 	a.Tell("Idle", "next step")
 	if got := report(); !strings.Contains(got, "anchored: view true") {
@@ -1100,7 +1100,7 @@ func TestCompactAgent(t *testing.T) {
 	}
 
 	a.Spawn("Busy", "step-task", "", "", 0, nil)
-	waitFor(t, "its steps", func() bool { return strings.Contains(c.ZoomAgent("Busy"), "step 2") })
+	waitFor(t, "its steps", func() bool { return strings.Contains(agentPlain(c.dir, "Busy"), "step 2") })
 	a.Tell("Busy", "a note")
 	if out, ok := a.CompactAgent("Busy"); !ok || out != "[Busy] compacts its context at its next step, then goes on." {
 		t.Fatal(out, ok)
@@ -1122,7 +1122,7 @@ func TestCompactAgent(t *testing.T) {
 	if got := report(); !strings.Contains(got, "went on: view true, task true, message true") || !strings.Contains(got, "its context at") {
 		t.Fatalf("after the compaction: %q", got)
 	}
-	log := c.ZoomAgent("Busy")
+	log := agentPlain(c.dir, "Busy")
 	note := strings.Index(log, "agent: noted: a note")
 	steps := strings.Count(log[note:strings.Index(log, "compacted: ")], "tool: Bash")
 	if note < 0 || steps < 2 || !strings.Contains(log, "compacted: mid-task: 300000 tokens to 20000") {
@@ -1276,7 +1276,7 @@ func TestResumeAgent(t *testing.T) {
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	a, calls := fakeAgent(t, c)
 	a.Spawn("Long", "wait-for-stop", "", "", 0, nil)
-	waitFor(t, "Long at work", func() bool { return strings.Contains(c.ZoomAgent("Long"), "agent: working") })
+	waitFor(t, "Long at work", func() bool { return strings.Contains(agentPlain(c.dir, "Long"), "agent: working") })
 	a.quit()
 	rec, err := a.loadRecord("Long")
 	session := flagOf(calls()[0], "--session-id")
@@ -1424,7 +1424,7 @@ func TestSubagentThinking(t *testing.T) {
 		if i < 0 || steps[i].Text != want || steps[i+1].Kind != "agent" {
 			t.Fatalf("%s steps: %+v", name, steps)
 		}
-		if z := c.ZoomAgent(name); strings.Contains(z, want) || !strings.Contains(z, "Hello world") {
+		if z := agentPlain(c.dir, name); strings.Contains(z, want) || !strings.Contains(z, "Hello world") {
 			t.Fatalf("%s zoom: %q", name, z)
 		}
 	}

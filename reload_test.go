@@ -48,7 +48,7 @@ func reports(t *testing.T, a *Agent) func() string {
 
 func atWork(t *testing.T, c *Chat, name string) {
 	t.Helper()
-	waitFor(t, name+" at work", func() bool { return strings.Contains(c.ZoomAgent(name), "agent: working") })
+	waitFor(t, name+" at work", func() bool { return strings.Contains(agentPlain(c.dir, name), "agent: working") })
 }
 
 func noneLogged(t *testing.T, c *Chat, s string) {
@@ -189,7 +189,7 @@ func TestLoopTurnsSurviveResume(t *testing.T) {
 	l := loopHookFor(t, `r="go on $n"; [ $n -eq 2 ] && r=wait-for-stop; echo '{"decision":"block","reason":"'"$r"'"}'`)
 	l.Max = 3
 	a.Spawn("Loop", "loop-task", "", "", 0, l)
-	waitFor(t, "its second turn", func() bool { return strings.Contains(c.ZoomAgent("Loop"), "loop: wait-for-stop") })
+	waitFor(t, "its second turn", func() bool { return strings.Contains(agentPlain(c.dir, "Loop"), "loop: wait-for-stop") })
 	atWork(t, c, "Loop")
 	time.Sleep(100 * time.Millisecond)
 	a.quit()

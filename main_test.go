@@ -135,16 +135,16 @@ func TestTypedHidden(t *testing.T) {
 func TestSystemPrompt(t *testing.T) {
 	t.Parallel()
 	path := "/chats/x/AGENTS.md"
-	off := systemPrompt(path, "", false)
+	off := systemPrompt(path, "", false, true)
 	if strings.Contains(off, "{{") || !strings.Contains(off, path) || strings.Contains(off, "wake(") ||
 		!strings.Contains(off, "unchecked") || !strings.Contains(off, "CLAUDE.md") || strings.Contains(off, "mcp.json") {
 		t.Fatalf("prompt without wake:\n%s", off)
 	}
-	mcp := systemPrompt(path, "/chats/x/mcp.json", false)
+	mcp := systemPrompt(path, "/chats/x/mcp.json", false, true)
 	if i := strings.Index(mcp, "/chats/x/mcp.json"); strings.Count(mcp, "/chats/x/mcp.json") != 1 || i < strings.Index(mcp, "Change or drop a line") || strings.Contains(mcp, "{{") {
 		t.Fatalf("prompt with its MCP file:\n%s", mcp)
 	}
-	on := systemPrompt(path, "", true)
+	on := systemPrompt(path, "", true, true)
 	if strings.Count(on, "- wake(") != 1 || strings.Index(on, "- wake(") > strings.Index(on, "# Turns") || strings.Index(on, "- wake(") < strings.Index(on, "- tell(") {
 		t.Fatalf("prompt with wake:\n%s", on)
 	}

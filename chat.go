@@ -116,9 +116,15 @@ type Chat struct {
 	// compact builds one line with a model; set before the first pump, nil
 	// again at quit.
 	compact compactor
+	role    chatRole // whose chat: the main one's, or a subagent's; see agentmem.go
+	broken  error    // a subagent's chat's write failed: it writes no more (failWrite)
 }
 
-func openChat(dir string) (*Chat, error) {
+func openChat(dir string) (*Chat, error) { return openChatAs(dir, chatRole{}) }
+
+// openChatAs opens the chat in dir as role's: a subagent's chat's failed
+// writes stop it, not opt-chat (failWrite).
+func openChatAs(dir string, role chatRole) (*Chat, error) {
 	for _, d := range []string{"main", "tree", "files", "btw", "usage"} {
 		if err := os.MkdirAll(filepath.Join(dir, d), 0o700); err != nil {
 			return nil, err
@@ -133,10 +139,17 @@ func openChat(dir string) (*Chat, error) {
 		lock.Close()
 		return nil, fmt.Errorf("another opt-chat owns %s", dir)
 	}
+	opened := false
+	defer func() {
+		if !opened { // a subagent's chat is opened again later in this run
+			lock.Close()
+		}
+	}()
 	c := &Chat{
 		dir: dir, lock: lock, tree: map[key]string{}, redo: map[key]bool{}, queued: map[key]bool{}, busy: map[key]bool{},
 		failing: map[key]*failure{}, changed: make(chan struct{}), jobs: defaultJobs,
 		view: view{lo: viewLo, hi: viewHi}, cview: view{lo: cviewLo, hi: cviewHi},
+		role: role,
 	}
 	// By id, not by file: a day file is named by the clock, which can go back.
 	var msgs []Msg
@@ -199,6 +212,7 @@ func openChat(dir string) (*Chat, error) {
 	c.enqueueMissing()
 	c.resetCview()
 	c.saveView()
+	opened = true
 	return c, nil
 }
 
@@ -263,6 +277,9 @@ func appendRaw(path string, b []byte) error {
 // appendDay appends each v as one line to sub/<today>.jsonl, in one write,
 // and fsyncs it.
 func (c *Chat) appendDay(sub string, vs ...any) {
+	if c.broken != nil {
+		return
+	}
 	var b []byte
 	var err error
 	for _, v := range vs {
@@ -273,8 +290,34 @@ func (c *Chat) appendDay(sub string, vs ...any) {
 		err = appendRaw(filepath.Join(c.dir, sub, time.Now().Format(time.DateOnly)+".jsonl"), b)
 	}
 	if err != nil {
-		// ponytail: a failed write is fatal; the log is history and must not have holes.
-		fatal("write %s: %v", sub, err)
+		c.failWrite(fmt.Errorf("write %s: %w", sub, err))
+	}
+}
+
+// failWrite ends a write to disk that failed. The main chat's log is
+// history and must have no holes, so opt-chat stops. A subagent's chat
+// stops writing, so its files stay a first part of what it held, and
+// agentMems.fed opens it again from them. c.mu held, or c not yet shared.
+func (c *Chat) failWrite(err error) {
+	if c.role.sub == "" {
+		fatal("%v", err)
+	}
+	if !c.role.warned.Swap(true) {
+		c.warn(true, fmt.Sprintf("%v; zoom(\"%s\") gives its whole log until the chat opens again", err, c.role.sub))
+	}
+	c.broken = err
+}
+
+// warn says a compaction's or a write's failure on the page: a subagent's
+// chat's on the main chat's, named.
+func (c *Chat) warn(sound bool, s string) {
+	h := c.hub
+	if c.role.sub != "" {
+		h, s = c.role.notices, fmt.Sprintf("[%s] memory: %s", c.role.sub, s)
+	}
+	h.notice("warn", "%s", s)
+	if sound {
+		h.sound(soundError)
 	}
 }
 
@@ -290,7 +333,7 @@ func (c *Chat) logRef(kind, text, ref string, images ...string) {
 }
 
 // logMsgs appends messages (their kind, text, date and images) in one
-// write, each split as Log splits it.
+// write, each split as Log splits it, its parts numbered from its Part.
 func (c *Chat) logMsgs(ms []Msg) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -298,8 +341,8 @@ func (c *Chat) logMsgs(ms []Msg) {
 	var parts []any
 	for _, m := range ms {
 		for j, part := range splitText(m.Text, clipMax) {
-			p := Msg{I: len(c.msgs), Kind: m.Kind, Text: part, Size: len(m.Kind) + 2 + len(part), Date: m.Date, Ref: m.Ref, Part: j, Imported: m.Imported}
-			if j == 0 {
+			p := Msg{I: len(c.msgs), Kind: m.Kind, Text: part, Size: len(m.Kind) + 2 + len(part), Date: m.Date, Ref: m.Ref, Part: m.Part + j, Imported: m.Imported}
+			if p.Part == 0 {
 				p.Images = m.Images
 			}
 			c.msgs = append(c.msgs, p)
@@ -411,6 +454,9 @@ func readView(b []byte) (savedView, error) {
 
 func (c *Chat) saveView() {
 	c.flushNodes() // first: the view may hold them
+	if c.broken != nil {
+		return
+	}
 	v := savedView{Keys: lo.Map(c.view.keys, func(k key, _ int) [2]int { return [2]int{k.L, k.I} }), Shrinking: c.view.shrinking}
 	var b []byte
 	if v.Shrinking {
@@ -421,10 +467,9 @@ func (c *Chat) saveView() {
 	tmp := filepath.Join(c.dir, "view.json.tmp")
 	os.Remove(tmp)
 	if err := appendRaw(tmp, b); err != nil { // written and synced before it replaces the old one
-		fatal("view.json: %v", err)
-	}
-	if err := os.Rename(tmp, filepath.Join(c.dir, "view.json")); err != nil {
-		fatal("view.json: %v", err)
+		c.failWrite(fmt.Errorf("view.json: %w", err))
+	} else if err := os.Rename(tmp, filepath.Join(c.dir, "view.json")); err != nil {
+		c.failWrite(fmt.Errorf("view.json: %w", err))
 	}
 }
 
@@ -687,14 +732,27 @@ func (c *Chat) pick(side int, redo bool) (key, bool) {
 func (c *Chat) pump() {
 	for c.compact != nil && len(c.busy) < c.jobs { // nil: before the chat starts, or quitting
 		k, ok := c.next()
-		if !ok {
-			return
+		if !ok || !c.role.take() {
+			break
 		}
 		c.busy[k] = true
 		ctxLines, stable, task := c.compactInput(k)
 		go c.build(k, c.compact, ctxLines, stable, task)
 	}
+	c.role.pumped(c.compact != nil && c.waiting())
 }
+
+// waiting is whether a line is ready to build, not being built and not
+// waiting out a failure: the subagents' chats wait for it. One that keeps
+// failing holds up none of theirs.
+func (c *Chat) waiting() bool {
+	free := func(k key) bool { return !c.busy[k] && !c.cooling(k) }
+	return slices.ContainsFunc(c.ready0, func(i int) bool { return free(key{0, i}) }) || slices.ContainsFunc(c.readyM, free)
+}
+
+// idle is whether no line is being built or waiting to be: closed now,
+// the chat loses no work.
+func (c *Chat) idle() bool { return len(c.busy) == 0 && len(c.ready0) == 0 && len(c.readyM) == 0 }
 
 // compactor builds one line with a model from its context (the first stable
 // lines of it the same for compactions running at once) and its task.
@@ -707,6 +765,7 @@ func (c *Chat) build(k key, compact compactor, ctxLines []string, stable int, ta
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	delete(c.busy, k)
+	c.role.done()
 	if err != nil && c.compact == nil {
 		return // quitting: the next run builds it
 	}
@@ -715,7 +774,7 @@ func (c *Chat) build(k key, compact compactor, ctxLines []string, stable int, ta
 		if f == nil {
 			f = &failure{}
 			c.failing[k] = f
-			c.hub.notice("warn", "compaction %s failed, trying again later: %v", k.name(), err)
+			c.warn(false, fmt.Sprintf("compaction %s failed, trying again later: %v", k.name(), err))
 		}
 		if f.n > 0 && c.written > f.at {
 			f.strikes++
@@ -735,8 +794,7 @@ func (c *Chat) build(k key, compact compactor, ctxLines []string, stable int, ta
 			return
 		}
 		// It fails while other lines get built: its source, cut, stands in.
-		c.hub.notice("warn", "compaction %s failed %d times while other lines were built: its line is its source, cut and marked: %v", k.name(), f.n, err)
-		c.hub.sound(soundError)
+		c.warn(true, fmt.Sprintf("compaction %s failed %d times while other lines were built: its line is its source, cut and marked: %v", k.name(), f.n, err))
 		text = c.fallback(k)
 	} else {
 		c.written++
@@ -803,7 +861,7 @@ func (c *Chat) compactInput(k key) ([]string, int, []block) {
 	if k.L == 0 {
 		m := c.msgs[k.I]
 		in := fmt.Sprintf("Compaction: compress message %d into one line of at most 512 bytes\n"+
-			"(about 70 words), the length of this ruler:\n%s\n%s<input>\n%s: %s\n", k.I, ruler, c.callBlock(k.I), m.Kind, ownTags.Replace(m.Text))
+			"(about 70 words), the length of this ruler:\n%s\n%s%s<input>\n%s: %s\n", k.I, ruler, c.role.whose(), c.callBlock(k.I), m.Kind, ownTags.Replace(m.Text))
 		if f := c.failing[k]; len(m.Images) > 0 && f != nil && f.strikes >= giveUp/2 { // they may be what fails
 			return ctx, stable, []block{textBlock(in + fmt.Sprintf("[%d attached, which could not be read]\n</input>", len(m.Images)))}
 		}
@@ -816,8 +874,8 @@ func (c *Chat) compactInput(k key) ([]string, int, []block) {
 	return ctx, stable, []block{textBlock(fmt.Sprintf("Compaction: merge lines %s and %s, adjacent, into one line of at most\n"+
 		"512 bytes (about 70 words), the length of this ruler:\n%s\n"+
 		"<chat> may hold their messages, %d to %d, in more detail: take details\nof them from there too.\n"+
-		"<input>\n%s\n%s\n</input>",
-		a.name(), b.name(), ruler, k.start(), k.end()-1, c.line(a), c.line(b)))}
+		"%s<input>\n%s\n%s\n</input>",
+		a.name(), b.name(), ruler, k.start(), k.end()-1, c.role.whose(), c.line(a), c.line(b)))}
 }
 
 // compactContext is the compactions' view's lines up to node k.
@@ -1004,16 +1062,16 @@ func (c *Chat) callView() []string {
 // callKeys are callView's lines' nodes. Caller holds c.mu.
 func (c *Chat) callKeys() []key {
 	keys := c.view.keys
-	if !slices.ContainsFunc(keys, func(k key) bool { return !c.built(k) }) && c.view.bytes <= viewHi {
+	if !slices.ContainsFunc(keys, func(k key) bool { return !c.built(k) }) && c.view.bytes <= c.view.hi {
 		return keys
 	}
 	weigh := func(k key) int { return len(c.callLine(k)) + 1 }
 	size := lo.SumBy(keys, weigh)
-	if size > viewHi {
-		keys, size = merged(keys, len(c.msgs), func(a, b key) bool { return !c.built(a) && !c.built(b) }, weigh, size, viewLo)
+	if size > c.view.hi {
+		keys, size = merged(keys, len(c.msgs), func(a, b key) bool { return !c.built(a) && !c.built(b) }, weigh, size, c.view.lo)
 	}
-	if size > viewHi {
-		keys, _ = merged(keys, len(c.msgs), func(a, b key) bool { return true }, weigh, size, viewLo)
+	if size > c.view.hi {
+		keys, _ = merged(keys, len(c.msgs), func(a, b key) bool { return true }, weigh, size, c.view.lo)
 	}
 	return keys
 }
@@ -1021,18 +1079,31 @@ func (c *Chat) callKeys() []key {
 // callLine is line k as a call sees it: a message not summarized yet shows
 // its head, up to nodeMax bytes.
 func (c *Chat) callLine(k key) string {
-	if k.L > 0 || c.built(k) {
+	if c.built(k) || k.L > 0 && !c.role.mergedHeads() {
 		return c.line(k)
 	}
-	m := c.msgs[k.I]
+	if k.L > 0 { // its first and last messages' heads
+		last := min(k.end(), len(c.msgs)) - 1
+		return fmt.Sprintf("%s|%s … %s %s", k.name(), c.msgHead(k.start(), mergedHead), c.msgHead(last, mergedHead), unbuilt)
+	}
+	return fmt.Sprintf("%s|%s %s", k.name(), c.msgHead(k.I, nodeMax), unbuilt)
+}
+
+// mergedHead is how much of each of its two messages a merged line not
+// summarized yet shows.
+const mergedHead = 120
+
+// msgHead is message i as "kind: text", cut to n bytes.
+func (c *Chat) msgHead(i, n int) string {
+	m := c.msgs[i]
 	text := flat(m.Text)
-	if cut := head(text, nodeMax); cut != text {
+	if cut := head(text, n); cut != text {
 		text = cut + "…"
 	}
 	if n := len(m.Images); n > 0 {
 		text += fmt.Sprintf(" [%d attached]", n)
 	}
-	return fmt.Sprintf("%s|%s: %s %s", k.name(), m.Kind, text, unbuilt)
+	return m.Kind + ": " + text
 }
 
 // Zoom opens line id+n into its two halves; n = 1 gives the message whole,

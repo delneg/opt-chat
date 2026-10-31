@@ -43,6 +43,7 @@ land there. The web tests go through real HTTP and WebSocket connections.
 | `chat.go`, `view.go` | the log, the summary tree, the view and its merges |
 | `claude.go` | `claude -p` calls: turns, compactions, subagents |
 | `agents.go`, `subs.go`, `resume.go` | subagents, the page's agents rail, resuming saved sessions |
+| `agentmem.go` | subagents' memory: each one's chat summarized into a tree of its own, `zoom("Name")` and `zoom("Name:id", n)` |
 | `mcp.go`, `wake.go` | the `zoom`, `date`, `search`, `spawn`, `tell` and `wake` tools over MCP; wake-ups |
 | `hub.go`, `web.go` | updates to pages and the terminal; the page's server and its guards |
 | `find.go` | the page's find (Ctrl/Cmd+F): matches in the whole log, and the log around one |
@@ -51,6 +52,7 @@ land there. The web tests go through real HTTP and WebSocket connections.
 | `import.go` | importing past chats |
 | `ccconfig.go`, `control.go`, `perms.go`, `limits.go` | the user's Claude Code setup, Claude Code's own lists, permission modes, usage limits |
 | `limitresume.go` | a usage limit's reset time, read from its message; the resume at the reset, kept in `<dir>/resume.json` |
+| `formal/agentmem/` | a TLA+ model of subagents' memory: feeds, zooms, the pump, closing, crashes; the `agent-memory` skill says when and how to run it |
 | `prompt.md` | the system prompt |
 | `web/` | the page: Preact and htm, no build step; `web/vendor/` is vendored as is |
 

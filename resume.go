@@ -178,8 +178,8 @@ func (a *Agent) recoverAgents() (out []message, cut []string) {
 				cut = append(cut, name)
 			case r.User: // the user's turn: Opt never hears of it
 			default:
-				out = append(out, message{kind: "work", text: fmt.Sprintf("[%s] stopped: opt-chat %s before this subagent finished.%s %s\n\nRan on %s. Full chat: zoom(%q)",
-					name, how, why, resumeHint(name), strings.TrimSpace(r.Model+" "+r.Effort), name)})
+				out = append(out, message{kind: "work", text: fmt.Sprintf("[%s] stopped: opt-chat %s before this subagent finished.%s %s\n\nRan on %s. %s",
+					name, how, why, resumeHint(name), strings.TrimSpace(r.Model+" "+r.Effort), a.chatRef(name))})
 			}
 		}
 		if (r.State == "stopped" || r.State == "halted" || r.Blank && !r.Cleared && (r.State == "new" || saved(r.Session))) && // the user's own, to talk to again

@@ -818,6 +818,9 @@ func (c *Chat) build(k key, compact compactor, ctxLines []string, stable int, ta
 		c.written++
 	}
 	delete(c.failing, k)
+	if k.L == 0 && c.role.sub == "" {
+		text = withChatRef(c.msgs[k.I], text)
+	}
 	c.setNode(k, text)
 	c.flushNodes()
 	c.refit()

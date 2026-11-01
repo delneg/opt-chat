@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -438,6 +439,20 @@ func (a *Agent) chatRef(name string) string {
 		return fmt.Sprintf("Full chat: zoom(%q)", name)
 	}
 	return fmt.Sprintf("Its chat: zoom(%q)", name)
+}
+
+// reportRef is how chatRef ends a report with subagents' memory on.
+var reportRef = regexp.MustCompile(`Its chat: (zoom\("[^"]+"\))\s*$`)
+
+// withChatRef is line, the line of message m, ending with the zoom that
+// opens the subagent's chat when m is a report that ends with one: the
+// summarizer often drops it, and the view keeps only the line.
+func withChatRef(m Msg, line string) string {
+	ref := reportRef.FindStringSubmatch(m.Text)
+	if m.Kind != "work" || ref == nil || strings.Contains(line, ref[1]) {
+		return line
+	}
+	return line + " " + ref[1]
 }
 
 // ZoomAgent gives a subagent's chat as its view: lines that zoom opens as

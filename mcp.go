@@ -73,7 +73,8 @@ var (
 			schema([]string{"id"}, map[string]any{"id": map[string]any{"type": []string{"integer", "string"}}, "n": num, "count": num})),
 		tool("date", "The date and time of message id.", schema([]string{"id"}, map[string]any{"id": num})),
 		tool("search", "Find the messages of the whole chat that hold text (a word, a name, a number, an error; any case), newest first, 20 at a time: "+
-			"each with a snippet, its date, and the view's line that holds it, to zoom into; when none does, the 10 that best share its words. before: go on from this message id.",
+			"each with a snippet, its date, and the view's line that holds it, to zoom into; when none does, the 10 that best share its words. "+searchAgentTool+
+			"before: go on from this message id.",
 			schema([]string{"text"}, map[string]any{"text": str, "before": num})),
 		tool("spawn", `Start a subagent on a task, in the background, and return at once. Its report comes back as a message starting "[Name]". Never wait for it. `+
 			"A subagent sees the view and the user's instructions, but knows what you want only from its task. "+
@@ -109,6 +110,9 @@ const (
 		"With n = 1, count gives the count messages from id on, whole, up to 64 KB. "
 	zoomAgentTool      = `zoom("Name") gives a subagent's chat as lines, and zoom("Name:id", n) opens its line id+n, as for the chat's.`
 	zoomAgentWholeTool = `zoom("Name") gives a subagent's whole chat.`
+	// search's text on subagents' chats, which it leaves out with -agent-memory=false.
+	searchAgentLines = "\n  its words; then a line per subagent whose chat holds it, with the zooms\n  that open its hits\n"
+	searchAgentTool  = `On its first page, then, a line per subagent whose chat holds text, with zoom("Name:id", 1) for its newest hits. `
 )
 
 // mcpList is the tools the chat serves: wake only with -wake. spawn's
@@ -134,6 +138,10 @@ func (a *Agent) mcpList() []map[string]any {
 		if t["name"] == "zoom" && a.mems == nil {
 			t = maps.Clone(t)
 			t["description"] = zoomDesc + zoomAgentWholeTool
+		}
+		if t["name"] == "search" && a.mems == nil {
+			t = maps.Clone(t)
+			t["description"] = strings.Replace(t["description"].(string), searchAgentTool, "", 1)
 		}
 		tools[i] = t
 	}
@@ -248,7 +256,11 @@ func callTool(a *Agent, fromAgent bool, tool string, x toolArgs) (string, []stri
 	case tool == "date":
 		return a.chat.Date(i), nil
 	case tool == "search":
-		return a.chat.Search(x.Text, x.Before), nil
+		s := a.chat.Search(x.Text, x.Before)
+		if x.Before <= 0 { // the first page: the subagents' chats too
+			s += a.searchAgents(x.Text)
+		}
+		return s, nil
 	case (tool == "spawn" || tool == "tell") && fromAgent:
 		return "Only Opt starts and tells subagents.", nil
 	case tool == "spawn":

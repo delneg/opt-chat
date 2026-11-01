@@ -137,7 +137,8 @@ func TestSystemPrompt(t *testing.T) {
 	path := "/chats/x/AGENTS.md"
 	off := systemPrompt(path, "", false)
 	if strings.Contains(off, "{{") || !strings.Contains(off, path) || strings.Contains(off, "wake(") ||
-		!strings.Contains(off, "unchecked") || !strings.Contains(off, "CLAUDE.md") || strings.Contains(off, "mcp.json") {
+		!strings.Contains(off, "unchecked") || !strings.Contains(off, "CLAUDE.md") || strings.Contains(off, "mcp.json") ||
+		!strings.Contains(off, "it goes stale") {
 		t.Fatalf("prompt without wake:\n%s", off)
 	}
 	mcp := systemPrompt(path, "/chats/x/mcp.json", false)

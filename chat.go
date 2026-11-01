@@ -1296,10 +1296,10 @@ var (
 	recallTag = strings.NewReplacer("<recall>", "‹recall›", "</recall>", "‹/recall›")
 )
 
-// Recall finds the limit messages before message before that best share
-// the words of text, rare words weighing most, with no model call, as a
-// block for a turn's input; "" when none does. A summary line keeps only
-// so much of a message, so a turn gets these raw: names, numbers, paths.
+// shared finds the limit messages before message before that best share
+// the words of text, rare words weighing most, with no model call, a line
+// each for Recall; "" when none does. A summary line keeps only so much of
+// a message, so a turn gets these raw: names, numbers, paths.
 // Each word of three characters or more weighs its BM25 inverse document
 // frequency squared, so that the rare words lead, and nothing when half
 // the messages or more hold it. A message scores the sum of the weights of
@@ -1310,24 +1310,8 @@ var (
 // out, and so are messages the view shows whole.
 // (After https://github.com/ericjuta/omp-optchat/releases/tag/v0.9.0,
 // whose recall tool takes such messages as candidates.)
-func (c *Chat) Recall(text string, before, limit int) string {
-	lines := c.shared(text, before, limit)
-	if lines == "" {
-		return ""
-	}
-	return fmt.Sprintf("[opt-chat] Recall: messages from the log that share this message's rarest words,\n"+
-		"found by words alone, so some may be beside the point; each cut to %d bytes\n"+
-		"around its rarest word: zoom(id, 1) opens one whole.\n<recall>\n", recallCut) + lines + "</recall>\n\n"
-}
-
-// shared is Recall's messages, a line each; "" when none.
 func (c *Chat) shared(text string, before, limit int) string {
-	var terms []string
-	for _, w := range nonWord.Split(strings.ToLower(text), -1) {
-		if utf8.RuneCountInString(w) >= 3 && !slices.Contains(terms, w) && len(terms) < 64 {
-			terms = append(terms, w)
-		}
-	}
+	terms := recallTerms(text)
 	if len(terms) == 0 || limit <= 0 {
 		return ""
 	}
@@ -1336,17 +1320,59 @@ func (c *Chat) shared(text string, before, limit int) string {
 	c.mu.Unlock()
 	before = min(before, len(msgs))
 	lookups := lookupRefs(msgs[:before])
-	df := make([]int, len(terms))
-	type hit struct {
-		i     int
-		terms []int
-		score float64
+	hits, weight := rankShared(msgs[:before], terms, func(m Msg) bool { return lookups[m.Ref] }, func(hits []recallHit) []recallHit {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		// Shown whole: a message's own line, written with no model call. Behind
+		// a backlog, the call may see its parent instead (callView): kept then.
+		if slices.ContainsFunc(c.view.keys, func(k key) bool { return !c.built(k) }) {
+			return hits
+		}
+		return slices.DeleteFunc(hits, func(h recallHit) bool {
+			return c.viewLine(h.i).L == 0 && msgs[h.i].Size <= nodeMax && len(msgs[h.i].Images) == 0
+		})
+	})
+	var b strings.Builder
+	for _, h := range hits[:min(limit, len(hits))] {
+		m := msgs[h.i]
+		fmt.Fprintf(&b, "%d+1|%s, %s: %s\n", h.i, m.Kind, m.Date.Local().Format("2006-01-02"), recallTag.Replace(flat(excerpt(m.Text, terms[h.rarest(weight)], recallCut))))
 	}
-	var hits []hit
+	return b.String()
+}
+
+// recallTerms are text's words of three characters or more, in lower case,
+// each once, at most 64.
+func recallTerms(text string) []string {
+	var terms []string
+	for _, w := range nonWord.Split(strings.ToLower(text), -1) {
+		if utf8.RuneCountInString(w) >= 3 && !slices.Contains(terms, w) && len(terms) < 64 {
+			terms = append(terms, w)
+		}
+	}
+	return terms
+}
+
+// recallHit is a message of msgs that holds some of terms, by their index.
+type recallHit struct {
+	i     int
+	terms []int
+	score float64
+}
+
+// rarest is the term of h that weighs most.
+func (h recallHit) rarest(weight []float64) int {
+	return slices.MaxFunc(h.terms, func(a, b int) int { return cmp.Compare(weight[a], weight[b]) })
+}
+
+// rankShared is the messages of msgs that share terms, best first, and the
+// terms' weights, as Recall says; skip leaves a message out of the count
+// too, drop takes hits out after the count.
+func rankShared(msgs []Msg, terms []string, skip func(Msg) bool, drop func([]recallHit) []recallHit) ([]recallHit, []float64) {
+	df := make([]int, len(terms))
+	var hits []recallHit
 	n, total := 0, 0
-	for i := range before {
-		m := msgs[i]
-		if lookups[m.Ref] {
+	for i, m := range msgs {
+		if skip(m) {
 			continue
 		}
 		n, total = n+1, total+len(m.Text)
@@ -1359,19 +1385,11 @@ func (c *Chat) shared(text string, before, limit int) string {
 			}
 		}
 		if found != nil {
-			hits = append(hits, hit{i: i, terms: found})
+			hits = append(hits, recallHit{i: i, terms: found})
 		}
 	}
 	weight := lo.Map(df, func(d, _ int) float64 { w := max(0, math.Log((float64(n-d)+0.5)/(float64(d)+0.5))); return w * w })
-	c.mu.Lock()
-	// Shown whole: a message's own line, written with no model call. Behind
-	// a backlog, the call may see its parent instead (callView): kept then.
-	if !slices.ContainsFunc(c.view.keys, func(k key) bool { return !c.built(k) }) {
-		hits = slices.DeleteFunc(hits, func(h hit) bool {
-			return c.viewLine(h.i).L == 0 && msgs[h.i].Size <= nodeMax && len(msgs[h.i].Images) == 0
-		})
-	}
-	c.mu.Unlock()
+	hits = drop(hits)
 	// k1 is BM25's usual. Its usual b, 0.75, buried long replies and
 	// reports: on questions drawn from a real chat, 0.3 put the message
 	// holding the answer in the first 8 for 40 of 56 against 32, and the
@@ -1383,20 +1401,13 @@ func (c *Chat) shared(text string, before, limit int) string {
 		norm := (k1 + 1) / (1 + k1*(1-lenB+lenB*float64(len(msgs[h.i].Text))/avg))
 		hits[j].score = norm * lo.SumBy(h.terms, func(t int) float64 { return weight[t] })
 	}
-	slices.SortStableFunc(hits, func(a, b hit) int { return cmp.Or(cmp.Compare(b.score, a.score), cmp.Compare(b.i, a.i)) })
+	slices.SortStableFunc(hits, func(a, b recallHit) int { return cmp.Or(cmp.Compare(b.score, a.score), cmp.Compare(b.i, a.i)) })
 	if len(hits) == 0 || hits[0].score <= 0 {
-		return ""
+		return nil, weight
 	}
 	// Far behind the best, a hit shares only middling words: noise.
 	top := hits[0].score
-	hits = slices.DeleteFunc(hits, func(h hit) bool { return h.score < top/4 })
-	var b strings.Builder
-	for _, h := range hits[:min(limit, len(hits))] {
-		m := msgs[h.i]
-		rare := slices.MaxFunc(h.terms, func(a, b int) int { return cmp.Compare(weight[a], weight[b]) })
-		fmt.Fprintf(&b, "%d+1|%s, %s: %s\n", h.i, m.Kind, m.Date.Local().Format("2006-01-02"), recallTag.Replace(flat(excerpt(m.Text, terms[rare], recallCut))))
-	}
-	return b.String()
+	return slices.DeleteFunc(hits, func(h recallHit) bool { return h.score < top/4 }), weight
 }
 
 // excerpt is up to n bytes of s around the first place it holds word, in

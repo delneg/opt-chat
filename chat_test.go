@@ -664,18 +664,18 @@ func TestRecall(t *testing.T) {
 	c.Log("user", "where is the Zanzibar staging key?")                                       // 26: the question, after before
 	waitIdle(t, c)
 	// 24 holds zanzibar and staging too, but only 20 holds "key" as well.
-	got := c.Recall("where is the Zanzibar staging key?", 26, 1)
+	got := (&Agent{chat: c}).Recall("where is the Zanzibar staging key?", 26, 1)
 	if !strings.Contains(got, "\n20+1|opt, ") || strings.Contains(got, "24+1|") || !strings.HasSuffix(got, "</recall>\n\n") {
 		t.Fatalf("the best:\n%s", got)
 	}
-	got = c.Recall("where is the Zanzibar staging key?", 26, 8)
+	got = (&Agent{chat: c}).Recall("where is the Zanzibar staging key?", 26, 8)
 	if !strings.Contains(got, "\n20+1|") || !strings.Contains(got, "\n24+1|") || strings.Contains(got, "21+1|") || strings.Contains(got, "23+1|") || strings.Contains(got, "\n0+1|") {
 		t.Fatalf("all:\n%s", got)
 	}
 	if i20, i24, i25 := strings.Index(got, "20+1|"), strings.Index(got, "24+1|"), strings.Index(got, "25+1|"); i20 > i24 || i24 > i25 {
 		t.Fatalf("order:\n%s", got)
 	}
-	if got := c.Recall("is it so?", 26, 8); got != "" { // no word of three letters or more matches
+	if got := (&Agent{chat: c}).Recall("is it so?", 26, 8); got != "" { // no word of three letters or more matches
 		t.Fatalf("nothing: %q", got)
 	}
 	// Lowering can change byte lengths (K, a Kelvin sign, is 3 bytes; k one).

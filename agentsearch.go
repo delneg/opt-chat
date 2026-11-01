@@ -42,28 +42,12 @@ func (a *Agent) searchAgents(text string) string {
 	var all []found
 	for _, path := range logs {
 		name := strings.TrimSuffix(filepath.Base(path), ".log")
-		am := a.mems.lock(name) // as a zoom's feed: no step half written
-		info, err := os.Stat(path)
-		b, err2 := os.ReadFile(path)
-		am.mu.Unlock()
-		if err != nil || err2 != nil {
+		msgs, at, ok := a.agentLogged(path)
+		if !ok {
 			continue
-		}
-		if j := bytes.LastIndex(b, []byte("\n\n")); j < 0 || !hasFold(string(b[:j]), text) { // most logs hold none: skip parsing them
-			continue
-		} else {
-			b = b[:j+2]
-		}
-		var msgs []Msg
-		for _, s := range parseSteps(b) {
-			if s.Kind != "thinking" {
-				for _, p := range splitText(s.Text, clipMax) {
-					msgs = append(msgs, Msg{Kind: s.Kind, Text: p, Ref: s.Ref})
-				}
-			}
 		}
 		lookups := lookupRefs(msgs)
-		f := found{name: name, at: info.ModTime()}
+		f := found{name: name, at: at}
 		for i, m := range slices.Backward(msgs) {
 			if lookups[m.Ref] || !hasFold(m.Text, text) {
 				continue
@@ -99,4 +83,57 @@ func (a *Agent) searchAgents(text string) string {
 			strings.Join(lo.Map(all[searchAgentsMax:min(len(all), searchAgentsMax+20)], func(f found, _ int) string { return f.name }), ", "))
 	}
 	return b.String()
+}
+
+// agentLogged is the subagent's log at path as the messages a zoom's feed
+// logs: whole steps only, read holding the subagent's lock as a write
+// does, thinking left out, a step split into parts as logMsgs splits it,
+// so that its ids are zoom("Name:id", n)'s. at is when the log last
+// changed; ok is false when it can't be read. A log unchanged since the
+// last call, by size and time, is not parsed again. The caller closes the
+// entries it leaves open.
+func (a *Agent) agentLogged(path string) (msgs []Msg, at time.Time, ok bool) {
+	m := a.mems
+	am := m.lock(strings.TrimSuffix(filepath.Base(path), ".log"))
+	info, err := os.Stat(path)
+	if err != nil {
+		am.mu.Unlock()
+		return nil, time.Time{}, false
+	}
+	m.stepsMu.Lock()
+	was, hit := m.steps[path]
+	m.stepsMu.Unlock()
+	if hit && was.size == info.Size() && was.at.Equal(info.ModTime()) {
+		am.mu.Unlock()
+		return was.msgs, was.at, true
+	}
+	b, err := os.ReadFile(path)
+	am.mu.Unlock()
+	if err != nil {
+		return nil, time.Time{}, false
+	}
+	if j := bytes.LastIndex(b, []byte("\n\n")); j >= 0 {
+		for _, s := range parseSteps(b[:j+2]) {
+			if s.Kind != "thinking" {
+				for _, p := range splitText(s.Text, clipMax) {
+					msgs = append(msgs, Msg{Kind: s.Kind, Text: p, Ref: s.Ref, Date: time.UnixMilli(s.At)})
+				}
+			}
+		}
+	}
+	m.stepsMu.Lock()
+	if m.steps == nil {
+		m.steps = map[string]loggedSteps{}
+	}
+	m.steps[path] = loggedSteps{size: info.Size(), at: info.ModTime(), msgs: msgs}
+	m.stepsMu.Unlock()
+	return msgs, info.ModTime(), true
+}
+
+// loggedSteps is a log's messages, as agentLogged parsed them at its size
+// and time then.
+type loggedSteps struct {
+	size int64
+	at   time.Time
+	msgs []Msg
 }

@@ -69,7 +69,7 @@ func runEval(a *Agent, in, out string, par int) error {
 			defer func() { <-sem }()
 			text := q["q"].(string)
 			var ids []int
-			for _, m := range recallIDs.FindAllStringSubmatch(c.Recall(text, before, a.recall), -1) {
+			for _, m := range recallIDs.FindAllStringSubmatch(a.Recall(text, before, a.recall), -1) {
 				id, _ := strconv.Atoi(m[1])
 				ids = append(ids, id)
 			}

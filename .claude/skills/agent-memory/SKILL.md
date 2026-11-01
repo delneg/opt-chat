@@ -46,7 +46,7 @@ of the code between two lock operations.
 | BuildFail | `flushNodes` or `saveView` failing at a compaction's end: `Chat.broken` set |
 | Reuse | a name whose `.log` is gone and `.mem` stays, given to a new subagent: no code takes it (`Agent.freeName` skips such names); a mutant puts it in |
 | CloseIdle, CloseSc | `agentMems.closeIdle`: TryLock of the entry's mu, then of the chat's |
-| StartZoom, View | `Agent.ZoomAgent`, `memFailed`; `Agent.searchAgents` takes the same locks (`agentMems.lock`, then `closeIdle`) and only reads the log under the entry's mu, writing no chat: a zoom with no feed |
+| StartZoom, View | `Agent.ZoomAgent`, `memFailed`; `Agent.searchAgents` and `Agent.recallAgents` (through `agentLogged`) take the same locks (`agentMems.lock`, then `closeIdle`) and only read the log under the entry's mu, writing no chat: a zoom with no feed. `agentMems.stepsMu`, their cache of parsed logs, is a leaf held over no I/O, so it is left out |
 | StartPump, PumpNext, PumpSc | `agentMems.pump`, kicked by `jobGate.give` and `jobGate.setMain`; `Chat.pump` |
 | BuildEnd, BuildSc, BuildIO | `Chat.build` after the model call: the chat's mu over `flushNodes` and `refit` (fsync); `Chat.warn` |
 | Crash | the process dies, `/reload` execs, or the main chat's write is fatal: entries, `read` and `sealed` go; the log and `.mem` stay, each maybe cut short; the restart may turn `-agent-memory` either way |

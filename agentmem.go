@@ -51,6 +51,12 @@ type agentMems struct {
 	compact compactor // the main chat's; nil while quitting
 	open    map[string]*agentMem
 	gate    jobGate
+	// Each log's steps as agentLogged last parsed them, for search and
+	// recall, which read every log: a finished subagent's never changes.
+	// A leaf: held over a map read or write alone, never over I/O or
+	// another lock.
+	stepsMu sync.Mutex
+	steps   map[string]loggedSteps
 }
 
 // newAgentMems sets subagents' memory up beside the main chat, which then

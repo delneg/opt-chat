@@ -1226,7 +1226,7 @@ func (t *Turn) Run(ctx context.Context, msgs []message) error {
 		}
 	}
 	recalled, recallAt := make(chan string, 1), len(input)
-	go func() { recalled <- c.Recall(strings.Join(asked, "\n"), before, a.recall) }()
+	go func() { recalled <- a.Recall(strings.Join(asked, "\n"), before, a.recall) }()
 	for _, m := range msgs {
 		if !m.logged {
 			c.Log(m.kind, m.full(), m.images...)

@@ -8,12 +8,14 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
 
-// Wake-ups (-wake): messages Opt sets for itself, each at a time. When one
+// Wake-ups (-wake): messages Opt sets for itself, each at a time, once or
+// every so often (after https://github.com/VictorTaelin/UniiChat/pull/34). When one
 // is due, opt-chat hands it to the chat as a report, and it starts a turn.
 // They are kept in <dir>/wake.jsonl, so they outlast a restart; one missed
 // while opt-chat was down comes once, as it starts.
@@ -21,16 +23,31 @@ import (
 const wakeFrame = "[opt-chat] wake-up you set at "
 
 // wakePrompt is the wake tool's line in the prompt's list, there only with -wake.
-const wakePrompt = `- wake(at, message) sets a message to yourself, which starts a turn at its time
-  as "` + wakeFrame + `<time>: <message>"; wake(cancel) cancels one; wake()
-  lists them. A turn a wake-up started sets none.
+const wakePrompt = `- wake(at, message, every) sets a message to yourself, which starts a turn at its
+  time as "` + wakeFrame + `<time>: <message>", and again every so often
+  with every; wake(cancel) cancels one; wake() lists them. A turn a wake-up
+  started sets none.
 `
+
+const everyMin = 10 * time.Minute // the shortest every the tool takes: each one starts a turn
+
+var errEvery = errors.New("every must be a duration of 10m or more (2h, 24h, 7d)")
 
 type wakeUp struct {
 	ID      int       `json:"id"`
 	At      time.Time `json:"at"`
 	Set     time.Time `json:"set"`
 	Message string    `json:"message"`
+	Every   string    `json:"every,omitzero"` // as everyText writes it; "": once
+}
+
+// text is what the chat gets when u is due.
+func (u wakeUp) text() string {
+	s := wakeFrame + u.Set.Local().Format("2006-01-02 15:04")
+	if u.Every != "" {
+		s += fmt.Sprintf(", every %s (id %d)", u.Every, u.ID)
+	}
+	return s + ": " + u.Message
 }
 
 type waker struct {
@@ -82,8 +99,9 @@ func (w *waker) save() error {
 	return writeAtomic(w.path, b)
 }
 
-// due takes the wake-ups whose time has come out of the file, then hands
-// them on: a crash between the two loses one rather than repeats it.
+// due takes the wake-ups whose time has come out of the file, or moves a
+// repeating one to its next time, then hands them on: a crash between the
+// two loses one rather than repeats it.
 func (w *waker) due() {
 	w.mu.Lock()
 	if w.done {
@@ -97,20 +115,30 @@ func (w *waker) due() {
 	}
 	ready := slices.Clone(w.list[:n])
 	w.list = w.list[n:]
+	for _, u := range ready {
+		if d, err := parseEvery(u.Every); err == nil {
+			u.At = nextWake(u.At, d, now)
+			w.list = append(w.list, u)
+		}
+	}
 	if err := w.save(); err != nil {
 		fmt.Fprintf(os.Stderr, "wake.jsonl: %v\n", err)
 	}
 	w.sortAndArm()
 	w.mu.Unlock()
 	for _, u := range ready {
-		w.fire(wakeFrame + u.Set.Local().Format("2006-01-02 15:04") + ": " + u.Message)
+		w.fire(u.text())
 	}
 }
 
-func (w *waker) add(at time.Time, message string) (wakeUp, error) {
+// add sets a wake-up at at, then every so often unless every is 0.
+func (w *waker) add(at time.Time, message string, every time.Duration) (wakeUp, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	u := wakeUp{ID: 1, At: at, Set: time.Now().Truncate(time.Second), Message: message}
+	if every > 0 {
+		u.Every = everyText(every)
+	}
 	for _, p := range w.list {
 		u.ID = max(u.ID, p.ID+1)
 	}
@@ -179,6 +207,51 @@ func parseWhen(s string, now time.Time) (time.Time, error) {
 	return time.Time{}, errors.New("at must be a duration (90m, 2h), a time (21:30) or a date and time (2026-10-20 09:00)")
 }
 
+// parseEvery reads how often a wake-up comes: a duration (90m, 24h), or
+// whole days (7d). The tool takes none under everyMin.
+func parseEvery(s string) (time.Duration, error) {
+	s = strings.TrimSpace(s)
+	d, err := time.ParseDuration(s)
+	if days, ok := strings.CutSuffix(s, "d"); ok {
+		var n int
+		n, err = strconv.Atoi(days)
+		d = time.Duration(n) * 24 * time.Hour
+	}
+	if err != nil || d <= 0 {
+		return 0, errEvery
+	}
+	return d, nil
+}
+
+// everyText writes d as parseEvery reads it: whole days past one as days.
+func everyText(d time.Duration) string {
+	if d%(24*time.Hour) == 0 && d > 24*time.Hour {
+		return fmt.Sprintf("%dd", d/(24*time.Hour))
+	}
+	s := d.String() // 1h30m0s
+	if t, ok := strings.CutSuffix(s, "h0m0s"); ok {
+		return t + "h"
+	}
+	return strings.TrimSuffix(s, "0s")
+}
+
+// nextWake is the first time after now that a wake-up at at comes, every
+// d: by the calendar for whole days, so it keeps its time of day when the
+// clocks change.
+func nextWake(at time.Time, d time.Duration, now time.Time) time.Time {
+	if d%(24*time.Hour) == 0 {
+		days := int(d / (24 * time.Hour))
+		for !at.After(now) {
+			at = at.AddDate(0, 0, days)
+		}
+		return at
+	}
+	if !at.After(now) {
+		at = at.Add((now.Sub(at)/d + 1) * d)
+	}
+	return at
+}
+
 func (a *Agent) setWoken(on bool) {
 	a.mu.Lock()
 	a.woken = on
@@ -214,14 +287,18 @@ func (a *Agent) wakeTool(fromAgent bool, x toolArgs) string {
 			return fmt.Sprintf("No wake-up %d pending.", x.Cancel)
 		}
 		return fmt.Sprintf("Wake-up %d canceled.", x.Cancel)
-	case x.At == "" && strings.TrimSpace(x.Message) == "":
+	case x.At == "" && x.Every == "" && strings.TrimSpace(x.Message) == "":
 		list := w.pending()
 		if len(list) == 0 {
 			return "No wake-ups pending."
 		}
 		var b strings.Builder
 		for _, u := range list {
-			fmt.Fprintf(&b, "%d %s (set %s): %s\n", u.ID, u.At.Local().Format("2006-01-02 15:04"), u.Set.Local().Format("2006-01-02 15:04"), u.Message)
+			every := ""
+			if u.Every != "" {
+				every = ", every " + u.Every
+			}
+			fmt.Fprintf(&b, "%d %s%s (set %s): %s\n", u.ID, u.At.Local().Format("2006-01-02 15:04"), every, u.Set.Local().Format("2006-01-02 15:04"), u.Message)
 		}
 		return strings.TrimSuffix(b.String(), "\n")
 	case woken:
@@ -229,13 +306,26 @@ func (a *Agent) wakeTool(fromAgent bool, x toolArgs) string {
 	case strings.TrimSpace(x.Message) == "":
 		return "No message given."
 	}
-	at, err := parseWhen(x.At, time.Now())
-	if err != nil {
-		return err.Error() + "."
+	var every time.Duration
+	if x.Every != "" {
+		var err error
+		if every, err = parseEvery(x.Every); err != nil || every < everyMin {
+			return errEvery.Error() + "."
+		}
 	}
-	u, err := w.add(at, strings.TrimSpace(x.Message))
+	at := time.Now().Add(every) // without at: every from now
+	if x.At != "" || every == 0 {
+		var err error
+		if at, err = parseWhen(x.At, time.Now()); err != nil {
+			return err.Error() + "."
+		}
+	}
+	u, err := w.add(at, strings.TrimSpace(x.Message), every)
 	if err != nil {
 		return "Not set: " + err.Error() + "."
+	}
+	if u.Every != "" {
+		return fmt.Sprintf("Wake-up %d set for %s, every %s.", u.ID, u.At.Local().Format("2006-01-02 15:04"), u.Every)
 	}
 	return fmt.Sprintf("Wake-up %d set for %s.", u.ID, u.At.Local().Format("2006-01-02 15:04"))
 }

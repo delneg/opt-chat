@@ -95,8 +95,10 @@ var (
 	wakeTool = tool("wake", "Set a message to yourself, at a time: then opt-chat starts a turn with \""+wakeFrame+"<time>: <message>\", as a report does. "+
 		"Kept across restarts; one missed while opt-chat was down comes once as it starts. "+
 		"at: a duration from now (90m, 2h), a time (21:30: today, or tomorrow once passed) or a date and time (2026-10-20 09:00), local. "+
-		"cancel: a pending one's id. With neither, it lists those pending. A turn a wake-up started sets none.",
-		schema(nil, map[string]any{"at": str, "message": str, "cancel": num}))
+		"every: to have it come again every so often after that, a duration of 10m or more (2h, 24h, 7d; days keep its time of day), "+
+		"its first time at, or every from now without at; it comes until canceled. "+
+		"cancel: a pending one's id. With none of these, it lists those pending. A turn a wake-up started sets none.",
+		schema(nil, map[string]any{"at": str, "message": str, "every": str, "cancel": num}))
 )
 
 // mcpList is the tools the chat serves: wake only with -wake. spawn's
@@ -193,6 +195,7 @@ type toolArgs struct {
 	Before  int            `json:"before"`
 	At      string         `json:"at"`
 	Cancel  int            `json:"cancel"`
+	Every   string         `json:"every"`
 }
 
 // callTool runs one tool and returns its text and the images that go with it.

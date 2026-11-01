@@ -63,10 +63,10 @@ func TestWaker(t *testing.T) {
 	if got := f.all()[0]; got != "[opt-chat] wake-up you set at 2026-10-01 09:05: check the deploy" {
 		t.Fatalf("missed: %q", got)
 	}
-	if _, err := w.add(time.Now().Add(150*time.Millisecond), "soon"); err != nil {
+	if _, err := w.add(time.Now().Add(150*time.Millisecond), "soon", 0); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := w.add(time.Now().Add(time.Hour), "later"); err != nil {
+	if _, err := w.add(time.Now().Add(time.Hour), "later", 0); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, "the due wake-up", func() bool { return len(f.all()) == 2 })
@@ -139,6 +139,19 @@ func TestWakeTool(t *testing.T) {
 	if got := call(false, toolArgs{At: "1h", Message: "m"}); got != "A turn a wake-up started sets no new wake-ups." {
 		t.Fatalf("woken: %q", got)
 	}
+	a.woken = false
+	if got := call(false, toolArgs{At: "09:00", Every: "1d", Message: "standup"}); !strings.HasPrefix(got, "Wake-up 2 set for ") || !strings.HasSuffix(got, " 09:00, every 24h.") {
+		t.Fatalf("set every: %q", got)
+	}
+	if got := call(false, toolArgs{Every: "2h", Message: "poll"}); !strings.HasPrefix(got, "Wake-up 3 set for ") || !strings.HasSuffix(got, ", every 2h.") {
+		t.Fatalf("every without at: %q", got)
+	}
+	if got := call(false, toolArgs{At: "1h", Every: "5m", Message: "m"}); got != "every must be a duration of 10m or more (2h, 24h, 7d)." {
+		t.Fatalf("too often: %q", got)
+	}
+	if got := call(false, toolArgs{}); !strings.Contains(got, ", every 24h (set ") || strings.Count(got, "\n") != 2 {
+		t.Fatalf("list with every: %q", got)
+	}
 	if got := call(false, toolArgs{Cancel: 1}); got != "Wake-up 1 canceled." {
 		t.Fatalf("cancel: %q", got)
 	}
@@ -177,5 +190,89 @@ func TestWakeAllowed(t *testing.T) {
 	}
 	if got := flagOf(calls()[0], "--allowedTools"); !strings.Contains(got, "mcp__opt__wake") {
 		t.Fatalf("allowed: %s", got)
+	}
+}
+
+func TestParseEvery(t *testing.T) {
+	t.Parallel()
+	for in, want := range map[string]time.Duration{"24h": 24 * time.Hour, " 7d ": 7 * 24 * time.Hour, "90m": 90 * time.Minute, "10m": 10 * time.Minute} {
+		if got, err := parseEvery(in); err != nil || got != want {
+			t.Fatalf("parseEvery(%q) = %v, %v; want %v", in, got, err, want)
+		}
+	}
+	for _, in := range []string{"soon", "", "-1h", "0d", "1.5d"} {
+		if _, err := parseEvery(in); err == nil {
+			t.Fatalf("parseEvery(%q): no error", in)
+		}
+	}
+	for d, want := range map[time.Duration]string{24 * time.Hour: "24h", 7 * 24 * time.Hour: "7d", 90 * time.Minute: "1h30m", 10 * time.Minute: "10m", 25 * time.Hour: "25h"} {
+		if got := everyText(d); got != want {
+			t.Fatalf("everyText(%v) = %q, want %q", d, got, want)
+		}
+	}
+}
+
+// A repeating wake-up's next time is past now, and one of whole days keeps
+// its time of day across a change of the clocks.
+func TestNextWake(t *testing.T) {
+	t.Parallel()
+	ams, err := time.LoadLocation("Europe/Amsterdam") // clocks went back on 2026-10-25
+	if err != nil {
+		t.Skip(err)
+	}
+	at := time.Date(2026, 10, 24, 9, 0, 0, 0, ams)
+	now := time.Date(2026, 10, 26, 10, 0, 0, 0, ams)
+	if got, want := nextWake(at, 24*time.Hour, now), time.Date(2026, 10, 27, 9, 0, 0, 0, ams); !got.Equal(want) {
+		t.Fatalf("daily: %v, want %v", got, want)
+	}
+	if got, want := nextWake(at, 7*24*time.Hour, now), time.Date(2026, 10, 31, 9, 0, 0, 0, ams); !got.Equal(want) {
+		t.Fatalf("weekly: %v, want %v", got, want)
+	}
+	if got, want := nextWake(at, 25*time.Hour, now), at.Add(75*time.Hour); !got.Equal(want) {
+		t.Fatalf("every 25h: %v, want %v", got, want)
+	}
+}
+
+// A repeating wake-up stays pending at its next time each time it fires,
+// says how often it comes and its id, outlasts a restart, and ends when
+// canceled; one missed while opt-chat was down comes once.
+func TestWakerEvery(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	set := time.Now().Add(-50 * time.Hour).Truncate(time.Second)
+	b, _ := json.Marshal(wakeUp{ID: 4, At: set.Add(time.Hour), Set: set, Message: "standup notes", Every: "24h"})
+	os.WriteFile(filepath.Join(dir, "wake.jsonl"), append(b, '\n'), 0o600)
+	var f fired
+	w, err := startWaker(dir, f.add)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the missed wake-up", func() bool { return len(f.all()) == 1 })
+	if got, want := f.all()[0], "[opt-chat] wake-up you set at "+set.Local().Format("2006-01-02 15:04")+", every 24h (id 4): standup notes"; got != want {
+		t.Fatalf("missed: %q, want %q", got, want)
+	}
+	if p := w.pending(); len(p) != 1 || !p[0].At.Equal(set.Add(73*time.Hour)) || p[0].Every != "24h" {
+		t.Fatalf("pending after: %+v", p)
+	}
+	u, err := w.add(time.Now().Add(100*time.Millisecond), "tick", 150*time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "two ticks", func() bool { return len(f.all()) == 3 })
+	w.stop()
+	time.Sleep(200 * time.Millisecond)
+	if n := len(f.all()); n != 3 {
+		t.Fatalf("fired %d after stop", n)
+	}
+	w2, err := startWaker(dir, func(string) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w2.stop()
+	if p := w2.pending(); len(p) != 2 {
+		t.Fatalf("after a restart: %+v", p)
+	}
+	if !w2.cancel(u.ID) || len(w2.pending()) != 1 {
+		t.Fatal("cancel")
 	}
 }

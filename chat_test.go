@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
 
@@ -1059,5 +1060,61 @@ func TestCompactTailUnchanged(t *testing.T) {
 	waitIdle(t, c)
 	if checked < 1000 || tails < 100 {
 		t.Fatalf("checked %d tails, %d of them not empty", checked, tails)
+	}
+}
+
+// zoom(id, 1, count) gives count messages from id on whole, with their
+// images, up to zoomRunMax bytes in all (an image as zoomRunImage), the
+// first whatever its size, then says where to go on.
+// The chat's own lookups' results are left out, as search leaves them.
+func TestZoomRun(t *testing.T) {
+	t.Parallel()
+	c, _ := fakeChat(t, t.TempDir(), 100)
+	now := time.Now()
+	c.logMsgs([]Msg{
+		{Kind: "user", Text: "hi", Date: now, Images: []string{"a.png"}},
+		{Kind: "tool", Text: `zoom {"id":0}`, Ref: "r1", Date: now},
+		{Kind: "echo", Text: "0+1|user: hi", Ref: "r1", Date: now},
+		{Kind: "opt", Text: "hello\nthere", Date: now, Images: []string{"b.png"}},
+		{Kind: "echo", Text: strings.Repeat("x", 30_000), Date: now},
+		{Kind: "echo", Text: strings.Repeat("y", 30_000), Date: now},
+		{Kind: "echo", Text: strings.Repeat("z", 30_000), Date: now},
+		{Kind: "user", Text: "last", Date: now},
+	})
+	got, imgs := c.ZoomRun(0, 4)
+	want := "0+1|user: hi\n\n1+1|tool: zoom {\"id\":0}\n\n2+1|echo: (the chat's own lookup: left out)\n\n3+1|opt: hello\nthere"
+	if got != want || !slices.Equal(imgs, []string{"a.png", "b.png"}) {
+		t.Fatalf("run: %q %v", got, imgs)
+	}
+	if got, _ := c.ZoomRun(6, 10); got != "6+1|echo: "+strings.Repeat("z", 30_000)+"\n\n7+1|user: last" {
+		t.Fatalf("past the end: %.60q", got)
+	}
+	got, _ = c.ZoomRun(4, 4)
+	if !strings.HasPrefix(got, "4+1|echo: xxx") || !strings.Contains(got, "5+1|echo: yyy") || strings.Contains(got, "6+1|") ||
+		!strings.HasSuffix(got, "\n\nMessages 6 to 7 not shown, past 64 KB: zoom(6, 1, 2) goes on.") {
+		t.Fatalf("cut: %q", got[len(got)-120:])
+	}
+	if got, _ := c.ZoomRun(2, 1); got != "2+1|echo: (the chat's own lookup: left out)" {
+		t.Fatalf("a result whose call is before the run: %q", got)
+	}
+	// An image counts as about its tokens would as text.
+	var shots []Msg
+	for i := range 12 {
+		shots = append(shots, Msg{Kind: "user", Text: fmt.Sprint("shot ", i), Date: now, Images: []string{fmt.Sprint(i, ".png")}})
+	}
+	c.logMsgs(shots)
+	if got, imgs := c.ZoomRun(8, 12); len(imgs) != 10 || !strings.HasSuffix(got, "Messages 18 to 19 not shown, past 64 KB: zoom(18, 1, 2) goes on.") {
+		t.Fatalf("images: %d, %q", len(imgs), got[len(got)-80:])
+	}
+	if got, _ := c.ZoomRun(99, 2); !strings.HasPrefix(got, "No line 99+1") {
+		t.Fatalf("past the chat: %q", got)
+	}
+	// The tool: count goes with n = 1 alone.
+	a := &Agent{chat: c, running: map[string]*proc{}, writing: map[string]chan struct{}{}}
+	if got, _ := callTool(a, false, "zoom", toolArgs{ID: jsontext.Value("0"), Count: 2}); got != "0+1|user: hi\n\n1+1|tool: zoom {\"id\":0}" {
+		t.Fatalf("tool: %q", got)
+	}
+	if got, _ := callTool(a, false, "zoom", toolArgs{ID: jsontext.Value("0"), N: 2, Count: 2}); got != "count goes with n = 1 only." {
+		t.Fatalf("count with n 2: %q", got)
 	}
 }

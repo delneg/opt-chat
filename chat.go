@@ -1052,6 +1052,48 @@ func (c *Chat) Zoom(id, n int) (string, []string) {
 	return c.callLine(a) + "\n" + c.callLine(b), nil // a message not summarized yet: its head
 }
 
+const (
+	zoomRunMax   = 64_000 // bytes a zoom of a run gives at most, but its first message always comes whole...
+	zoomRunImage = 6_000  // ...an image counting as this many: its tokens (1,600 at most) as text would take
+)
+
+// ZoomRun gives count messages from id on whole, with their images, as
+// zoom(id, 1) gives one, up to zoomRunMax bytes in all, then says where to go on:
+// a stretch of the chat word for word in one call (after
+// https://github.com/samoylenkodmitry/optchat, thread). The chat's own
+// zoom, search and date results are left out: they only repeat what they found.
+func (c *Chat) ZoomRun(id, count int) (string, []string) {
+	c.mu.Lock()
+	msgs := c.msgs // logged messages never change: read outside c.mu
+	if id < 0 || id >= len(msgs) {
+		no := c.noLine(id, 1)
+		c.mu.Unlock()
+		return no, nil
+	}
+	c.mu.Unlock()
+	end := min(id+max(count, 1), len(msgs))
+	lookups := lookupRefs(msgs[:end]) // a result's call may come before id
+	var parts, imgs []string
+	size := 0
+	for i := id; i < end; i++ {
+		m := msgs[i]
+		text := m.Text
+		if m.Kind == "echo" && lookups[m.Ref] {
+			text = "(the chat's own lookup: left out)"
+		}
+		part := fmt.Sprintf("%d+1|%s: %s", i, m.Kind, text)
+		cost := len(part) + len(m.Images)*zoomRunImage
+		if i > id && size+cost > zoomRunMax {
+			parts = append(parts, fmt.Sprintf("Messages %d to %d not shown, past %d KB: zoom(%d, 1, %d) goes on.", i, end-1, zoomRunMax/1000, i, end-i))
+			break
+		}
+		size += cost
+		parts = append(parts, part)
+		imgs = append(imgs, m.Images...)
+	}
+	return strings.Join(parts, "\n\n"), imgs
+}
+
 // keyOf is line id+n's node; false when there is no such line.
 func (c *Chat) keyOf(id, n int) (key, bool) {
 	if n < 1 || n&(n-1) != 0 || id < 0 || id%n != 0 || id > len(c.msgs)-n {

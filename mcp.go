@@ -70,8 +70,9 @@ var (
 	}
 	mcpTools = []map[string]any{
 		tool("zoom", "Open the line id+n of the view into the two lines of n/2 under it; n = 1 gives the message whole, with its images. "+
+			"With n = 1, count gives the count messages from id on, whole, up to 64 KB. "+
 			`zoom("Name") gives a subagent's whole chat.`,
-			schema([]string{"id"}, map[string]any{"id": map[string]any{"type": []string{"integer", "string"}}, "n": num})),
+			schema([]string{"id"}, map[string]any{"id": map[string]any{"type": []string{"integer", "string"}}, "n": num, "count": num})),
 		tool("date", "The date and time of message id.", schema([]string{"id"}, map[string]any{"id": num})),
 		tool("search", "Find the messages of the whole chat that hold text (a word, a name, a number, an error; any case), newest first, 20 at a time: "+
 			"each with a snippet, its date, and the view's line that holds it, to zoom into; when none does, the 10 that best share its words. before: go on from this message id.",
@@ -196,6 +197,7 @@ type toolArgs struct {
 	At      string         `json:"at"`
 	Cancel  int            `json:"cancel"`
 	Every   string         `json:"every"`
+	Count   int            `json:"count"`
 }
 
 // callTool runs one tool and returns its text and the images that go with it.
@@ -214,6 +216,10 @@ func callTool(a *Agent, fromAgent bool, tool string, x toolArgs) (string, []stri
 		return a.chat.ZoomAgent(s), nil
 	case tool == "zoom" && err != nil:
 		return "id must be a message id or a subagent's name.", nil
+	case tool == "zoom" && x.Count > 1 && n > 1:
+		return "count goes with n = 1 only.", nil
+	case tool == "zoom" && x.Count > 1:
+		return a.chat.ZoomRun(i, x.Count)
 	case tool == "zoom" && n == 0: // n left out: the message
 		return a.chat.Zoom(i, 1)
 	case tool == "zoom":

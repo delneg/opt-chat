@@ -1437,7 +1437,7 @@ function toolArgs(name, x, raw) {
     case 'Glob': case 'Grep': return oneLine(x.pattern, 100) + (x.path ? ` in ${tilde(x.path)}` : '');
     case 'WebSearch': return oneLine(x.query, 140);
     case 'WebFetch': return oneLine(x.url, 140);
-    case 'zoom': return typeof x.id === 'string' ? `"${x.id}"` : `${x.id}${x.n ? '+' + x.n : ''}`;
+    case 'zoom': return typeof x.id === 'string' ? `"${x.id}"` : `${x.id}${x.n ? '+' + x.n : ''}${x.count > 1 ? `, ${x.count} messages` : ''}`;
     case 'date': return String(x.id);
     case 'search': return `"${oneLine(x.text || '', 100)}"${x.before ? ` before ${x.before}` : ''}`;
     case 'spawn': case 'tell': return `[${x.name}] ${oneLine(x.task || x.message, 100)}`;

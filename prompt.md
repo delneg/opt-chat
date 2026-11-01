@@ -32,7 +32,8 @@ to the first part.
 
 Tools:
 - zoom(id, n) opens line id+n into the two lines it was made from;
-- zoom(id, 1) gives message id whole, with its images
+- zoom(id, 1) gives message id whole, with its images; zoom(id, 1, count) the
+  count messages from id on, to read a stretch of the chat word for word
 - zoom("Name") gives an agent's whole chat
 - date(id) gives the date and time of message id
 - search(text, before) finds the messages that hold text, newest first, each

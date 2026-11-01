@@ -169,8 +169,9 @@ func openChat(dir string) (*Chat, error) {
 	}
 	c.markAcks()
 	// The view is kept, never rebuilt: a rebuilt view differs and kills every cache entry.
+	var saved savedView
 	if b, err := os.ReadFile(filepath.Join(dir, "view.json")); err == nil {
-		saved, err := readView(b)
+		saved, err = readView(b)
 		if err == nil && !tiles(saved.Keys, len(c.msgs)) {
 			err = errors.New("its lines don't tile the chat")
 		}
@@ -182,6 +183,7 @@ func openChat(dir string) (*Chat, error) {
 				bad = rerr.Error()
 			}
 			warn("view.json: %v; the view starts over from the log (the old one: %s)", err, bad)
+			saved = savedView{}
 		} else {
 			c.view.keys = lo.Map(saved.Keys, func(p [2]int, _ int) key { return key{p[0], p[1]} })
 			c.view.shrinking = saved.Shrinking
@@ -192,12 +194,23 @@ func openChat(dir string) (*Chat, error) {
 	if n := len(c.view.keys); n > 0 {
 		end = c.view.keys[n-1].end()
 	}
+	merged := false
 	for i := end; i < len(c.msgs); i++ { // messages logged after the last save
-		c.view.push(key{0, i}, c)
+		merged = c.view.push(key{0, i}, c) || merged
 	}
-	c.view.check(c) // lines built after the last save
+	merged = c.view.check(c) || merged // lines built after the last save
 	c.enqueueMissing()
-	c.resetCview()
+	// The compactions' view as it was, grown by the lines built since,
+	// unless the view merged since: then it starts from it, as it would have.
+	if cv := saved.Cview; !merged && cv != nil && tiles(cv.Keys, len(c.msgs)) &&
+		!slices.ContainsFunc(cv.Keys, func(p [2]int) bool { return !c.built(key{p[0], p[1]}) }) {
+		c.cview.keys = lo.Map(cv.Keys, func(p [2]int, _ int) key { return key{p[0], p[1]} })
+		c.cview.shrinking = cv.Shrinking
+		c.cview.recount(c)
+		c.growCview()
+	} else {
+		c.resetCview()
+	}
 	c.saveView()
 	return c, nil
 }
@@ -393,12 +406,17 @@ func (c *Chat) fileBlocks(names []string) []block {
 	})
 }
 
-// savedView is view.json: the view's keys as (l, i) pairs, written as a bare
-// list unless a batch is cut short, so that a restart goes on with it as an
-// unbroken run would. (After https://github.com/jonaslsaa/pi-optchat/pull/180.)
+// savedView is view.json: the view's keys as (l, i) pairs, and whether a
+// batch is cut short, so that a restart goes on with it as an unbroken run
+// would (after https://github.com/jonaslsaa/pi-optchat/pull/180); and the
+// same of the compactions' view, which a restart would build otherwise and
+// so miss the compactions' cached prefix (after
+// https://github.com/jonaslsaa/pi-optchat/pull/206). An older view.json is
+// a bare list of the view's keys.
 type savedView struct {
-	Keys      [][2]int `json:"keys"`
-	Shrinking bool     `json:"shrinking"`
+	Keys      [][2]int   `json:"keys"`
+	Shrinking bool       `json:"shrinking"`
+	Cview     *savedView `json:"cview,omitzero"`
 }
 
 func readView(b []byte) (savedView, error) {
@@ -411,13 +429,10 @@ func readView(b []byte) (savedView, error) {
 
 func (c *Chat) saveView() {
 	c.flushNodes() // first: the view may hold them
-	v := savedView{Keys: lo.Map(c.view.keys, func(k key, _ int) [2]int { return [2]int{k.L, k.I} }), Shrinking: c.view.shrinking}
-	var b []byte
-	if v.Shrinking {
-		b, _ = json.Marshal(v)
-	} else {
-		b, _ = json.Marshal(v.Keys)
-	}
+	pairs := func(keys []key) [][2]int { return lo.Map(keys, func(k key, _ int) [2]int { return [2]int{k.L, k.I} }) }
+	v := savedView{Keys: pairs(c.view.keys), Shrinking: c.view.shrinking,
+		Cview: &savedView{Keys: pairs(c.cview.keys), Shrinking: c.cview.shrinking}}
+	b, _ := json.Marshal(v)
 	tmp := filepath.Join(c.dir, "view.json.tmp")
 	os.Remove(tmp)
 	if err := appendRaw(tmp, b); err != nil { // written and synced before it replaces the old one
@@ -455,18 +470,21 @@ func (c *Chat) resetCview() {
 // starts a batch first; while the batch waits for parents (an import's
 // short messages, built at once, outrun their merges), the view waits with
 // it, and compactions past its end see the rest as compactTail allows.
-func (c *Chat) growCview() {
-	c.cview.check(c)
+// It reports whether a batch merged or began, for view.json.
+func (c *Chat) growCview() bool {
+	was := c.cview.shrinking
+	merged := c.cview.check(c)
 	for i := c.cview.end(); i < len(c.msgs) && c.built(key{0, i}); i++ {
 		k := key{0, i}
 		if c.cview.bytes+cost(c, k) > cviewHi {
 			c.cview.shrinking = true
-			if c.cview.fit(c); c.cview.bytes+cost(c, k) > cviewHi {
-				return
+			if merged = c.cview.fit(c) || merged; c.cview.bytes+cost(c, k) > cviewHi {
+				break
 			}
 		}
-		c.cview.push(k, c)
+		merged = c.cview.push(k, c) || merged
 	}
+	return merged || c.cview.shrinking != was
 }
 
 func (c *Chat) built(k key) bool { _, ok := c.tree[k]; return ok }
@@ -758,8 +776,7 @@ func (c *Chat) refit() {
 		c.saveView()
 		return
 	}
-	c.growCview()
-	if c.view.shrinking != was {
+	if c.growCview() || c.view.shrinking != was {
 		c.saveView()
 	}
 }

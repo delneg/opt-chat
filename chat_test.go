@@ -1063,6 +1063,60 @@ func TestCompactTailUnchanged(t *testing.T) {
 	}
 }
 
+// The compactions' view comes back from a restart as it was, so the
+// compactions after it read their cached prefix as an unbroken run would:
+// rebuilt from the chat's view, it merges otherwise once it has had batches
+// of its own. (After https://github.com/jonaslsaa/pi-optchat/pull/206.) A
+// view.json from before it was saved, or one whose compactions' view doesn't
+// tile the chat, rebuilds it as before.
+func TestCviewSurvivesRestart(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	c, _ := fakeChat(t, dir, 400)
+	for i := range 160 { // 400-byte lines: past cviewHi twice, under viewHi
+		c.Log("user", fmt.Sprintf("%03d %s", i, strings.Repeat("m", 600)))
+		waitIdle(t, c)
+	}
+	c.mu.Lock()
+	live, merged := slices.Clone(c.cview.keys), slices.ContainsFunc(c.cview.keys, func(k key) bool { return k.L > 0 })
+	c.mu.Unlock()
+	if !merged || slices.ContainsFunc(c.view.keys, func(k key) bool { return k.L > 0 }) {
+		t.Fatalf("setup: the compactions' view had no batch of its own, or the chat's had one")
+	}
+	reopen := func(edit func(m map[string]any)) *Chat {
+		t.Helper()
+		cp := t.TempDir()
+		if err := os.CopyFS(cp, os.DirFS(dir)); err != nil {
+			t.Fatal(err)
+		}
+		if edit != nil {
+			var m map[string]any
+			b, _ := os.ReadFile(filepath.Join(cp, "view.json"))
+			if err := json.Unmarshal(b, &m); err != nil {
+				t.Fatalf("view.json: %v: %s", err, b)
+			}
+			edit(m)
+			b, _ = json.Marshal(m)
+			os.WriteFile(filepath.Join(cp, "view.json"), b, 0o600)
+		}
+		r, err := openChat(cp)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	if r := reopen(nil); !slices.Equal(r.cview.keys, live) {
+		t.Fatalf("after a restart the compactions' view is\n%v\nnot\n%v", r.cview.keys, live)
+	}
+	rebuilt := reopen(func(m map[string]any) { delete(m, "cview") }).cview.keys
+	if slices.Equal(rebuilt, live) {
+		t.Fatal("setup: a rebuilt compactions' view is the live one anyway")
+	}
+	if r := reopen(func(m map[string]any) { m["cview"] = map[string]any{"keys": [][2]int{{0, 1}}} }); !slices.Equal(r.cview.keys, rebuilt) {
+		t.Fatalf("one that doesn't tile: %v", r.cview.keys)
+	}
+}
+
 // zoom(id, 1, count) gives count messages from id on whole, with their
 // images, up to zoomRunMax bytes in all (an image as zoomRunImage), the
 // first whatever its size, then says where to go on.

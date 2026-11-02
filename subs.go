@@ -24,7 +24,7 @@ type sub struct {
 	Name    string   `json:"name"`
 	Model   string   `json:"model"`
 	Effort  string   `json:"effort"`
-	State   string   `json:"state"`            // starting, working, compacting, resting, stopping, ended, failed, stopped (by a quit or crash), halted (by the user)
+	State   string   `json:"state"`            // new (the user's own, before its first message), starting, working, compacting, resting, stopping, ended, failed, stopped (by a quit or crash), halted (by the user)
 	Context int      `json:"context,omitzero"` // tokens its latest request read
 	Window  int      `json:"window,omitzero"`  // compacted past this, between two steps; 0: never
 	Started int64    `json:"started"`          // unix ms: its task, or the tell that set it to work again
@@ -37,6 +37,8 @@ type sub struct {
 	Phase   string   `json:"phase,omitzero"`   // at work: thinking, writing or tool, as a turn's
 	Tool    string   `json:"tool,omitzero"`    // in phase tool: the tool it calls
 	MCP     []string `json:"mcp,omitzero"`     // the servers for subagents only Opt granted it
+	Dir     string   `json:"dir,omitzero"`     // where its tools run, when not Opt's folder
+	Blank   bool     `json:"blank,omitzero"`   // the user's own: no view, no task
 }
 
 // subsKept is how many ended subagents the rail keeps listing.
@@ -336,6 +338,9 @@ func (a *Agent) agentContext(name string) (contextReply, bool) {
 		on += ", effort " + e
 	}
 	m := []string{on, "State: " + cmp.Or(s.State, rec.State)}
+	if rec.Dir != "" {
+		m = append(m, "Folder: "+rec.Dir)
+	}
 	if s.Context > 0 {
 		m = append(m, fmt.Sprintf("Context: %s tokens, as its latest request read", k(s.Context)))
 	}
@@ -344,7 +349,7 @@ func (a *Agent) agentContext(name string) (contextReply, bool) {
 	} else {
 		m = append(m, "Autocompact: off")
 	}
-	if rec.Compacted {
+	if rec.Compacted && !rec.Blank {
 		m = append(m, "Compacted: its next message brings the chat's view and its task again")
 	}
 	if rec.Loop != nil {
@@ -355,7 +360,7 @@ func (a *Agent) agentContext(name string) (contextReply, bool) {
 	}
 	add("Model", strings.Join(m, "\n"))
 	path := ""
-	if rec.Session != "" {
+	if rec.Session != "" && rec.State != "new" {
 		path = sessionPath(rec.Session)
 	}
 	if path != "" {
@@ -366,7 +371,11 @@ func (a *Agent) agentContext(name string) (contextReply, bool) {
 	}
 	f := []string{"Log: " + a.agentLog(name), "Record: " + a.recordPath(name)}
 	if rec.Session != "" {
-		f = append([]string{"Session: " + rec.Session, "Session file: " + cmp.Or(path, "gone from Claude Code's")}, f...)
+		file := cmp.Or(path, "gone from Claude Code's")
+		if rec.State == "new" {
+			file = "none yet: its first message starts it"
+		}
+		f = append([]string{"Session: " + rec.Session, "Session file: " + file}, f...)
 	}
 	add("Files", strings.Join(f, "\n"))
 	return out, true

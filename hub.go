@@ -136,6 +136,10 @@ type status struct {
 	Limits    []window `json:"limits,omitzero"` // the plan's usage
 	Dir       string   `json:"dir"`
 	Cwd       string   `json:"cwd"` // where Opt's tools run
+	// What a subagent runs on unless told otherwise: the page's menu starts there.
+	AgentModel  string `json:"agentModel"`
+	AgentEffort string `json:"agentEffort"`
+	AgentWindow int    `json:"agentWindow"` // 0: never compacts
 }
 
 type turnEnd struct {
@@ -481,7 +485,8 @@ func watchStatus(c *Chat, a *Agent, h *hub, stop <-chan struct{}) {
 
 func currentStatus(c *Chat, a *Agent) status {
 	a.mu.Lock()
-	s := status{Model: a.model, Effort: a.effort, Mode: a.perm, Agents: sortedKeys(a.running), Subs: a.subsLocked(), Cwd: a.cwd}
+	s := status{Model: a.model, Effort: a.effort, Mode: a.perm, Agents: sortedKeys(a.running), Subs: a.subsLocked(), Cwd: a.cwd,
+		AgentModel: a.amodel, AgentEffort: a.aeffort, AgentWindow: a.agentWindowLocked(a.agentWindow)}
 	a.mu.Unlock()
 	s.Limits = a.windows(time.Now())
 	c.mu.Lock()

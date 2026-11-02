@@ -25,7 +25,7 @@ type agentRecord struct {
 	Effort    string    `json:"effort"`
 	Window    int       `json:"window,omitzero"`
 	Task      string    `json:"task"`
-	State     string    `json:"state"`              // working, resting, ended, stopped, failed
+	State     string    `json:"state"`              // new (the user's own, before its first message), working, resting, ended, stopped, failed
 	Compacted bool      `json:"compacted,omitzero"` // since its last message: the next brings the view and its task again
 	Loop      *loopHook `json:"loop,omitzero"`      // its Stop hook, run at the end of each turn: see loop.go
 	Turns     int       `json:"turns,omitzero"`     // its loop's turns since its last report: the cap holds across a restart
@@ -34,6 +34,14 @@ type agentRecord struct {
 	Pid       int       `json:"pid,omitzero"`       // its Claude Code's, while at work: after a crash, stopped before it is resumed
 	User      bool      `json:"user,omitzero"`      // its turn underway is the user's, from the page: its end reports nothing to Opt
 	MCP       []string  `json:"mcp,omitzero"`       // the servers for subagents only granted to it
+	Dir       string    `json:"dir,omitzero"`       // where its tools run; "": Opt's folder (-cwd)
+	Blank     bool      `json:"blank,omitzero"`     // the user's own, made from the page: no view, no task, its window as chosen (see NewAgent)
+	Cleared   bool      `json:"cleared,omitzero"`   // the user's own, cleared from the rail: a restart doesn't list it again
+}
+
+// sub is the rail's entry for the subagent name, as its record has it.
+func (r agentRecord) sub(name string) sub {
+	return sub{Name: name, Model: r.Model, Effort: r.Effort, Window: r.Window, State: r.State, Dir: r.Dir, Blank: r.Blank}
 }
 
 func (a *Agent) recordPath(name string) string {
@@ -127,7 +135,8 @@ const resumeMax = 3
 // resumed fewer than resumeMax times since its last result, while
 // auto-resume is on. For each other one cut off, it gives a report, for
 // the chat. Those stopped in the last day, by a crash, a quit or the user,
-// show in the rail.
+// show in the rail, and so do the user's own used in the last day, unless
+// cleared from it.
 func (a *Agent) recoverAgents() (out []message, cut []string) {
 	files, _ := filepath.Glob(filepath.Join(a.chat.dir, "agents", "*.json"))
 	for _, f := range files {
@@ -139,6 +148,7 @@ func (a *Agent) recoverAgents() (out []message, cut []string) {
 		}
 		if r.State == "resting" { // its call ended with opt-chat: nothing lost
 			a.note(name, func(r *agentRecord) { r.State = "ended" })
+			r.State = "ended"
 		}
 		if r.State == "working" || r.Cut {
 			at := fi.ModTime() // as it was cut off: its record's last change, or its last step
@@ -172,9 +182,11 @@ func (a *Agent) recoverAgents() (out []message, cut []string) {
 					name, how, why, resumeHint(name), strings.TrimSpace(r.Model+" "+r.Effort), name)})
 			}
 		}
-		if (r.State == "stopped" || r.State == "halted") && time.Since(fi.ModTime()) < 24*time.Hour {
+		if (r.State == "stopped" || r.State == "halted" || r.Blank && !r.Cleared && (r.State == "new" || saved(r.Session))) && // the user's own, to talk to again
+			time.Since(fi.ModTime()) < 24*time.Hour {
 			a.setSub(name, func(s *sub) {
-				*s = sub{Name: name, Model: r.Model, Effort: r.Effort, Window: r.Window, State: r.State, Started: fi.ModTime().UnixMilli()}
+				*s = r.sub(name)
+				s.Started = fi.ModTime().UnixMilli()
 			})
 		}
 	}

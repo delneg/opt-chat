@@ -51,6 +51,8 @@ cache over.
 - Subagents run in the background, in a rail beside the chat that stops
   and clears each. One that a quit, a crash or a reload cut off mid-task
   goes on by itself at the next start; one you stopped, when Opt tells it.
+  Alt+N makes one of your own, as `claude` in a folder you pick, with its
+  model, effort and autocompact, and no view of the chat.
 - `/reload` (or `kill -USR1`) rebuilds opt-chat from its source and, once
   the chat is idle, restarts it in place: same terminal, port and page.
 - `-import` brings in past chats from Claude Code, Codex, or a Claude or

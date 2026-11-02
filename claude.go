@@ -427,13 +427,13 @@ const noTools = `{"autoCompactEnabled":false,"hooks":{"PreToolUse":[{"matcher":"
 // settings: the chat never ends, and its view never needs it. extra are a
 // subagent's session flags.
 func (a *Agent) start(ctx context.Context, model, effort string, r role, extra ...string) (*proc, error) {
-	return a.startCall(ctx, model, effort, r, 0, "", extra...)
+	return a.startCall(ctx, model, effort, r, 0, "", "", extra...)
 }
 
 // startAgent starts a subagent's call. Past window, Claude Code compacts
 // its context between two steps, never in one (see runAgent); 0: never.
-func (a *Agent) startAgent(ctx context.Context, name, model, effort string, window int, extra ...string) (*proc, error) {
-	return a.startCall(ctx, model, effort, roleAgent, window, name, extra...)
+func (a *Agent) startAgent(ctx context.Context, name, dir, model, effort string, window int, extra ...string) (*proc, error) {
+	return a.startCall(ctx, model, effort, roleAgent, window, name, dir, extra...)
 }
 
 // claudeCmd is the claude command calls run.
@@ -443,8 +443,9 @@ func (a *Agent) claudeCmd() string {
 	return cmp.Or(a.claude, "claude")
 }
 
-// startCall starts a call; who is the subagent's name, "" for the chat's.
-func (a *Agent) startCall(ctx context.Context, model, effort string, r role, window int, who string, extra ...string) (p *proc, err error) {
+// startCall starts a call; who is the subagent's name, "" for the chat's,
+// and dir the folder it runs in, "" for Opt's (-cwd).
+func (a *Agent) startCall(ctx context.Context, model, effort string, r role, window int, who, dir string, extra ...string) (p *proc, err error) {
 	if r != roleAgent {
 		window = 0 // the chat's calls never compact
 	}
@@ -459,14 +460,18 @@ func (a *Agent) startCall(ctx context.Context, model, effort string, r role, win
 			done()
 		}
 	}()
-	if err := os.MkdirAll(a.cwd, 0o700); err != nil { // the system cleans its temp folder, where it is by default
-		return nil, err
+	cwd := dir
+	if cwd == "" {
+		cwd = a.cwd
+		if err := os.MkdirAll(cwd, 0o700); err != nil { // the system cleans its temp folder, where it is by default
+			return nil, err
+		}
 	}
 	var ccDeny []string
 	optMCP := ""
 	if a.optMCP != "" && r != roleCompact {
 		var ok bool
-		if ccDeny, ok = ccDenied(a.claudeJSON, a.cwd, a.optMCP); ok {
+		if ccDeny, ok = ccDenied(a.claudeJSON, cwd, a.optMCP); ok {
 			optMCP = a.optMCP
 		}
 	}
@@ -564,7 +569,7 @@ func (a *Agent) startCall(ctx context.Context, model, effort string, r role, win
 	// stop only through ctx.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.WaitDelay = 5 * time.Second
-	cmd.Dir = a.cwd
+	cmd.Dir = cwd
 	cmd.Env = childEnv()
 	if own {
 		// Tool search always: left to decide, Claude Code defers MCP tools or

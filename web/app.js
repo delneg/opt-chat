@@ -50,6 +50,7 @@ const S = {
   plugins: null, // and plugins
   mention: null, // the @ menu, open: { start, query, items, sel }
   picker: null, // the model picker, open: { sel, effort }
+  newAgent: null, // the menu for a subagent of the user's own, open: { dir, name, model, effort, window, row, items, sel, busy, error }
   models: null, // Claude Code's, once asked
   modelsError: '',
   wide: false, // room for the agents rail beside the chat
@@ -211,6 +212,7 @@ function onUpdate(u) {
       if (u.status.written !== S.status?.written || u.status.viewLines !== S.status?.viewLines) memAsk(false); // lines built, or merged
       set({ status: u.status });
       checkFull();
+      showMade();
       break;
     case 'memview': memGot(u.lines); break;
     case 'zoom':
@@ -272,7 +274,11 @@ function onUpdate(u) {
       break;
     }
     case 'models': set({ models: u.models, modelsError: u.error || '' }); break;
-    case 'files': if (S.mention && u.seq === mentionSeq) set({ mention: { ...S.mention, items: u.items, sel: 0, stale: false } }); break;
+    case 'files':
+      if (S.newAgent && u.seq === dirSeq) patchNew({ items: u.items.filter(it => it.dir), sel: -1 }); // the folder field's
+      else if (S.mention && u.seq === mentionSeq) set({ mention: { ...S.mention, items: u.items, sel: 0, stale: false } });
+      break;
+    case 'newAgent': madeNew(u); break;
     case 'mcp': case 'skills': case 'plugins': {
       let p = S.panel;
       if (p?.kind === u.t && p.acting && !u.action) break; // a poll's, from before the action: its answer comes
@@ -652,6 +658,7 @@ const commands = [
   ['/skills', 'your Claude Code skills: on or off'],
   ['/plugins', 'your Claude Code plugins, their skills and MCP servers at once: on or off'],
   ['/agents', 'list the subagents at work'],
+  ['/new', 'a subagent of your own: its folder, model, effort and autocompact; no view, no task (Alt+N)'],
   ['/status', 'Claude Code\'s version and account, this run\'s settings, the view and the plan\'s usage'],
   ['/usage', 'the plan\'s limits, what uses them, and what Opt\'s calls spent: day, week or run'],
   ['/btw', 'a side question: answered beside the chat, which never sees it'],
@@ -728,6 +735,7 @@ async function submit(now) {
   if (S.conn !== 'open') { notice('warn', 'Not connected: your message stays in the input until opt-chat is back.'); return; }
   if (/^\/model\s*$/.test(inputEl.value) && !S.atts.length) { setInput(''); openPicker(); return; }
   if (/^\/view\s*$/.test(inputEl.value) && !S.atts.length) { setInput(''); toggleMem(); return; }
+  if (/^\/new\s*$/.test(inputEl.value) && !S.atts.length) { setInput(''); openNew(); return; }
   const find = inputEl.value.match(/^\/find(?:\s([\s\S]*))?$/);
   if (find && !S.atts.length) { setInput(''); openFind(find[1] || ''); return; }
   if (/^\/tree\s*$/.test(inputEl.value) && !S.atts.length) { setInput(''); window.open('/tree', '_blank', 'noopener'); return; }
@@ -1559,6 +1567,7 @@ function levelsOf(m) { return m?.supportedEffortLevels?.length ? m.supportedEffo
 
 function openPicker() {
   if (S.panel) closePanel();
+  if (S.newAgent) closeNew();
   if (!S.models || S.modelsError) send({ t: 'models' });
   set({ picker: { sel: -1, effort: S.status?.effort || 'high' }, help: false });
 }
@@ -1630,6 +1639,170 @@ function Picker() {
           <span class="scale">${levels.map(l => html`<span class=${l === effort ? 'on' : ''}>${l}</span>`)}</span>`
       : html`<span class="dim">This model takes no effort setting.</span>`}</div>
     <div class="dim">Enter to set as default · s to use this run only · Esc to cancel</div>
+  </div>`;
+}
+
+// ---------------------------------------------------------------- a subagent of your own
+
+// Alt+N or /new opens a small menu that makes a blank subagent, the user's
+// own, as `claude` started in a folder: no view of the chat, no task; its
+// folder, model, effort and autocompact chosen here. It opens full screen,
+// and the user's first message starts it. The menu keeps the last choices
+// and the folders used lately, per browser.
+const WINDOWS = [200_000, 400_000, 600_000, 1_000_000, 0]; // 0: autocompact off
+const NEW_ROWS = ['dir', 'model', 'effort', 'window', 'name'];
+let newEl = null, dirSeq = 0, dirTimer = 0;
+
+function stored(key, init) {
+  try { return JSON.parse(localStorage.getItem(key)) ?? init; } catch { return init; }
+}
+
+function newModels() {
+  const ms = (S.models || []).filter(m => /^[a-z]+$/.test(m.value) && m.value !== 'default').map(m => m.value);
+  const all = ms.length ? ms : ['fable', 'opus', 'sonnet', 'haiku'];
+  const own = S.status?.agentModel;
+  return own && !all.includes(own) ? all.concat(own) : all;
+}
+
+function newEfforts(model) { return levelsOf((S.models || []).find(m => m.value === model)); }
+
+function newWindows() {
+  const own = S.status?.agentWindow;
+  return own && !WINDOWS.includes(own) ? WINDOWS.slice(0, -1).concat(own).sort((x, y) => x - y).concat(0) : WINDOWS;
+}
+
+function windowName(w) { return !w ? 'off' : w >= 1_000_000 ? w / 1_000_000 + 'M' : w / 1000 + 'k'; }
+
+function openNew() {
+  if (S.picker) closePicker();
+  if (S.panel) closePanel();
+  if (!S.models || S.modelsError) send({ t: 'models' });
+  const last = stored('newAgent', {}), st = S.status || {};
+  set({ newAgent: { dir: last.dir || '~/', name: '', model: last.model || st.agentModel || 'opus', effort: last.effort || st.agentEffort || 'high',
+    window: last.window ?? st.agentWindow ?? 400_000, row: 0, items: null, sel: -1, busy: false, error: '' }, help: false });
+  setTimeout(() => { newEl?.querySelector('input')?.select(); }, 0);
+}
+
+function closeNew() { clearTimeout(dirTimer); set({ newAgent: null }); inputEl?.focus(); }
+
+function patchNew(p) { set({ newAgent: { ...S.newAgent, ...p } }); }
+
+// lookForDirs lists the folders the folder field completes to, as the @
+// menu does; empty, the folders used lately.
+function lookForDirs(dir) {
+  clearTimeout(dirTimer);
+  if (!dir.trim()) { patchNew({ dir, items: stored('agentDirs', []).map(path => ({ path, dir: true })), sel: -1 }); return; }
+  patchNew({ dir, sel: -1 });
+  const seq = dirSeq = ++mentionSeq; // one count with the @ menu's: the reply says whose
+  dirTimer = setTimeout(() => send({ t: 'files', text: dir, seq }), 60);
+}
+
+// takeDir puts a folder in the field and lists its own, the caret at its end.
+function takeDir(item) {
+  patchNew({ items: null });
+  lookForDirs(item.path);
+  setTimeout(() => {
+    const el = newEl?.querySelector('input');
+    if (!el) return;
+    el.focus();
+    el.setSelectionRange(el.value.length, el.value.length);
+    el.scrollLeft = el.scrollWidth;
+  }, 0);
+}
+
+function makeNew() {
+  const n = S.newAgent;
+  if (n.busy) return;
+  if (!send({ t: 'newAgent', name: n.name.trim(), dir: n.dir.trim(), model: n.model, effort: n.effort, window: n.window })) {
+    patchNew({ error: 'Not connected: try again once opt-chat is back.' });
+    return;
+  }
+  patchNew({ busy: true, error: '' });
+}
+
+// madeNew is opt-chat's answer: the agent made, full screen once the rail
+// lists it, or why none was.
+let wantFull = null;
+function madeNew(u) {
+  const n = S.newAgent;
+  if (u.error) { if (n) patchNew({ busy: false, error: u.error }); return; }
+  if (n) {
+    try {
+      localStorage.setItem('newAgent', JSON.stringify({ dir: n.dir.trim(), model: n.model, effort: n.effort, window: n.window }));
+      const dir = n.dir.trim().replace(/(.)\/$/, '$1');
+      localStorage.setItem('agentDirs', JSON.stringify([dir, ...stored('agentDirs', []).filter(d => d !== dir)].slice(0, 6)));
+    } catch {}
+    closeNew();
+  }
+  wantFull = u.name;
+  showMade();
+}
+
+function showMade() {
+  if (wantFull && (S.status?.subs || []).some(s => s.name === wantFull)) { const name = wantFull; wantFull = null; goFull(name); }
+}
+
+// newKey takes the keys while the menu is open: true when it took e.
+function newKey(e) {
+  const n = S.newAgent;
+  if (!n || S.picker || !newEl?.contains(e.target) || e.metaKey || e.ctrlKey || e.altKey) return false; // the bar, clicked meanwhile, keeps its keys
+  const items = n.row === 0 && n.items?.length ? n.items : null;
+  const choices = { model: newModels(), effort: newEfforts(n.model), window: newWindows() }[NEW_ROWS[n.row]];
+  const move = d => {
+    const row = (n.row + d + NEW_ROWS.length) % NEW_ROWS.length;
+    patchNew({ row, items: row === 0 ? n.items : null });
+    setTimeout(() => { const el = newEl?.querySelector(`[data-row="${row}"] input`); (el || newEl)?.focus(); }, 0);
+  };
+  switch (e.key) {
+    case 'Escape': if (items && n.sel >= 0) patchNew({ sel: -1 }); else closeNew(); break;
+    case 'Enter': if (items && n.sel >= 0) takeDir(items[n.sel]); else makeNew(); break;
+    case 'Tab':
+      if (items && !e.shiftKey) takeDir(items[Math.max(0, n.sel)]);
+      else move(e.shiftKey ? -1 : 1);
+      break;
+    case 'ArrowUp': case 'ArrowDown': {
+      const d = e.key === 'ArrowDown' ? 1 : -1;
+      if (items && (n.sel >= 0 || d > 0) && n.sel + d < items.length) patchNew({ sel: n.sel + d });
+      else move(d);
+      break;
+    }
+    case 'ArrowLeft': case 'ArrowRight': {
+      if (!choices) return false; // the caret, in a field
+      const key = NEW_ROWS[n.row], i = Math.max(0, choices.indexOf(n[key]));
+      const v = choices[Math.min(choices.length - 1, Math.max(0, i + (e.key === 'ArrowRight' ? 1 : -1)))];
+      patchNew(key === 'model' ? { model: v, effort: newEfforts(v).includes(n.effort) ? n.effort : 'high' } : { [key]: v });
+      break;
+    }
+    default: return false;
+  }
+  e.preventDefault();
+  e.stopPropagation();
+  return true;
+}
+
+function NewMenu() {
+  const n = S.newAgent, ref = useRef();
+  useEffect(() => { newEl = ref.current; if (!newEl.contains(document.activeElement)) newEl.querySelector('input')?.focus(); return () => { newEl = null; }; }, []);
+  const pick = (key, opts, show = x => x) => html`<span class="opts" role="radiogroup">${opts.map(v => html`<button type="button" role="radio" aria-checked=${n[key] === v}
+      class=${n[key] === v ? 'on' : ''} tabindex="-1" onClick=${() => patchNew(key === 'model' ? { model: v, effort: newEfforts(v).includes(n.effort) ? n.effort : 'high', row: 1 } : { [key]: v, row: NEW_ROWS.indexOf(key) })}>${show(v)}</button>`)}</span>`;
+  const row = (j, label, body) => html`<div class=${'nrow' + (n.row === j ? ' sel' : '')} data-row=${j} onMouseDown=${() => n.row !== j && patchNew({ row: j, items: j === 0 ? n.items : null })}>
+    <span class="ptr">${n.row === j ? '❯' : ''}</span><span class="lbl">${label}</span>${body}</div>`;
+  return html`<div class="picker newagent" role="dialog" aria-label="New subagent" ref=${ref} tabindex="-1">
+    <div class="title">New subagent of your own</div>
+    <div class="dim">As claude in that folder, with Opt's tools: no view of the chat, no task. Your first message starts it; Opt's chat gets a line for each.</div>
+    <div class="nrows">
+      ${row(0, 'Folder', html`<input class="field" value=${n.dir} spellcheck="false" autocomplete="off" aria-label="folder"
+        onInput=${e => lookForDirs(e.target.value)} onFocus=${() => n.row !== 0 && patchNew({ row: 0 })}/>`)}
+      ${n.row === 0 && n.items?.length > 0 && html`<div class="dirs">${n.items.slice(0, 8).map((it, j) => html`<div class=${'cmd dir' + (j === n.sel ? ' sel' : '')}
+        onMouseDown=${e => { e.preventDefault(); takeDir(it); }}>${it.path}</div>`)}</div>`}
+      ${row(1, 'Model', pick('model', newModels()))}
+      ${row(2, 'Effort', pick('effort', newEfforts(n.model)))}
+      ${row(3, 'Autocompact', pick('window', newWindows(), windowName))}
+      ${row(4, 'Name', html`<input class="field" value=${n.name} placeholder="the folder's name" spellcheck="false" autocomplete="off" aria-label="name"
+        onInput=${e => patchNew({ name: e.target.value })} onFocus=${() => n.row !== 4 && patchNew({ row: 4, items: null })}/>`)}
+    </div>
+    ${n.error && html`<div class="err">${n.error}</div>`}
+    <div class="dim">${n.busy ? 'Making it…' : 'Enter makes it · Tab or ↑/↓ moves · ←/→ chooses · Esc cancels'}</div>
   </div>`;
 }
 
@@ -1987,6 +2160,7 @@ function Help() {
     ['Shift+Tab', 'permission mode: manual, accept edits, auto'],
     ['/mcp · /skills · /plugins', 'your Claude Code MCP servers, skills and plugins: on or off'],
     ['Alt+A · /agents', 'the subagents: what each does now, and its steps'],
+    ['Alt+N · /new', 'a subagent of your own, as claude in a folder: choose its folder, model, effort and autocompact; your first message starts it'],
     ['Alt+O · ⤢', 'a subagent full screen: the bar talks to it, Esc stops it at work; Alt+O, ← Opt or Esc at rest: back to Opt'],
     ['Alt+V · /view', 'the chat as Opt sees it: its view, each line opening into its halves; again: the log'],
     ['Alt+U · ↑ button', 'up to your last message out of sight above, full screen too'],
@@ -2266,9 +2440,10 @@ function subState(s, now) {
   if (S.asks.some(q => q.who === s.name)) return ['ask', 'waits for your answer'];
   switch (s.state) {
     case 'working': return ['work', 'working · ' + elapsed(now - s.started)];
+    case 'new': return ['rest', 'new · your first message starts it'];
     case 'starting': return ['work', 'starting'];
     case 'compacting': return ['rest', 'compacting its context'];
-    case 'resting': return ['rest', s.until > now ? `reported · rests ${Math.ceil((s.until - now) / 60000)}m more` : 'reported'];
+    case 'resting': { const did = s.user ? 'replied to you' : 'reported'; return ['rest', s.until > now ? `${did} · rests ${Math.ceil((s.until - now) / 60000)}m more` : did]; }
     case 'failed': return ['bad', 'failed'];
     case 'stopping': return ['stop', 'stopping'];
     case 'halted': return ['stop', 'stopped by you · a tell resumes it'];
@@ -2283,7 +2458,8 @@ function moving(s) { return ['working', 'starting', 'compacting'].includes(s?.st
 function Dot({ s }) { return html`<span class=${'dot' + (moving(s) ? ' moving' : '')} aria-hidden="true">●</span>`; }
 
 function subMeta(s) {
-  return [s.model, s.effort, s.context && `${k(s.context)} context`, s.compact ? 'compacts at its next step' : s.window && `compacts past ${k(s.window)}`, s.steps && count(s.steps, 'step')].filter(Boolean).join(' · ');
+  return [s.model, s.effort, s.dir && 'in ' + tilde(s.dir), s.context && `${k(s.context)} context`, s.compact ? 'compacts at its next step' : s.window ? `compacts past ${k(s.window)}` : s.blank && 'autocompact off',
+    s.steps && count(s.steps, 'step')].filter(Boolean).join(' · ');
 }
 
 // useClock re-renders each second while on.
@@ -2360,6 +2536,7 @@ function Rail() {
       : html`<div class="rail-head">
           <span class="title">Agents</span>
           <span class="dim">${working ? `${working} at work` : subs.length ? 'none at work' : ''}${S.full ? ' · a click: full screen' : ''}</span>
+          <button class="act" title="a subagent of your own: its folder, model, effort and autocompact (Alt+N)" onClick=${openNew}>new</button>
           <button class="x" title=${S.wide ? 'hide until a new subagent starts (Alt+A or the bar\'s agents show it again)' : 'close (Esc)'} onClick=${() => toggleRail()}>×</button>
         </div>
         <div class="cards">
@@ -2683,7 +2860,7 @@ function AgentFull({ a, s }) {
     }}>
       <div class="column log" role="log" aria-live="polite" aria-busy=${S.alive?.name === a.name && !!S.alive.text}>
         <div ref=${head}>
-          <div class="edge">${a.cut ? `Its earlier steps: zoom("${a.name}") in the chat, or agents/${a.name}.log.` : `[${a.name}]'s steps: its task, what Opt and you told it, its replies and tool calls.`} What you send here only it reads; Opt's chat gets a line saying you wrote.</div>
+          <div class="edge">${a.cut ? `Its earlier steps: zoom("${a.name}") in the chat, or agents/${a.name}.log.` : s?.blank ? `[${a.name}] is your own: it has no view of the chat and no task. Its steps: what you and Opt told it, its replies and tool calls.` : `[${a.name}]'s steps: its task, what Opt and you told it, its replies and tool calls.`} What you send here only it reads; Opt's chat gets a line saying you wrote.</div>
           ${a.loading ? html`<div class="edge">Loading its steps…</div>` : !list.length && html`<div class="edge">No steps yet.</div>`}
         </div>
         <${Virtualizer} ref=${vh} data=${list} startMargin=${margin} scrollRef=${ref} bufferSize=${1200} onResize=${onResize}>${row}</${Virtualizer}>
@@ -3171,6 +3348,7 @@ function App() {
       ${!S.full && html`<${Queue} queue=${S.queue}/>`}
       ${ask && !S.picker && html`<${Ask} q=${ask}/>`}
       ${S.picker && html`<${Picker}/>`}
+      ${S.newAgent && !S.picker && html`<${NewMenu}/>`}
       ${S.panel && !S.picker && html`<${Panel}/>`}
       ${S.voice && html`<${Recorder}/>`}
       <${Input}/>
@@ -3271,6 +3449,12 @@ addEventListener('keydown', e => {
     }
     if (S.drawer) { e.preventDefault(); set({ drawer: false }); return; } // else the full screen's own Esc
   }
+  if (e.altKey && e.code === 'KeyN' && !e.metaKey && !e.ctrlKey) { // a subagent of your own; Option+N is a dead key on a Mac
+    e.preventDefault();
+    e.stopPropagation();
+    if (S.newAgent) closeNew(); else openNew();
+    return;
+  }
   if (e.altKey && e.code === 'KeyP' && !e.metaKey && !e.ctrlKey) { // Option+P types π on a Mac: the code is the key
     e.preventDefault();
     e.stopPropagation();
@@ -3284,7 +3468,7 @@ addEventListener('keydown', e => {
     cycleMode();
     return;
   }
-  pickerKey(e) || panelKey(e) || mentionKey(e) || askKey(e);
+  pickerKey(e) || newKey(e) || panelKey(e) || mentionKey(e) || askKey(e);
 }, true); // before the input: while the picker or a question is up, the keys are theirs
 addEventListener('keydown', e => {
   if ((e.key === 'Enter' || e.key === ' ') && e.target.getAttribute?.('role') === 'button' && e.target.tagName !== 'BUTTON') {

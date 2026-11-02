@@ -274,6 +274,24 @@ a { color: var(--blue); }
 .picker .scale { margin-left: 2ch; color: var(--faint); }
 .picker .scale span { margin-right: 1.5ch; }
 .picker .scale .on { color: var(--fg); text-decoration: underline; text-underline-offset: .25em; }
+/* the menu for a subagent of your own: a row each, as the picker's */
+.newagent:focus { outline: none; }
+.newagent .nrows { display: grid; grid-template-columns: 2ch auto 1fr; column-gap: 2ch; row-gap: .15em; }
+.newagent .nrow { display: contents; cursor: pointer; }
+.newagent .nrow .ptr { color: var(--blue); }
+.newagent .nrow .lbl { color: var(--dim); }
+.newagent .nrow.sel .lbl { color: var(--accent); }
+.newagent .field { font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: .05em .8ch; min-width: 0; width: 100%; max-width: 60ch; }
+.newagent .field:focus { outline: none; border-color: var(--blue); }
+.newagent .field::placeholder { color: var(--faint); }
+.newagent .opts { display: flex; flex-wrap: wrap; gap: .3em 1.2ch; }
+.newagent .opts button { color: var(--faint); padding: 0 .4ch; border-radius: 3px; }
+.newagent .opts button:hover { color: var(--fg); }
+.newagent .opts button.on { color: var(--fg); background: var(--chip); text-decoration: underline; text-underline-offset: .25em; }
+.newagent .nrow.sel .opts button.on { color: var(--accent); }
+.newagent .dirs { grid-column: 3; max-height: 12em; overflow-y: auto; margin-bottom: .2em; }
+.newagent .dirs .cmd { color: var(--blue); padding: 0 .8ch; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
+.newagent .dirs .cmd.sel { background: var(--chip); }
 .panel .rows.list { grid-template-columns: 2ch auto auto 1fr; max-height: 45vh; overflow-y: auto; }
 .panel .row .st { white-space: nowrap; padding-right: 2ch; }
 .panel .row .st.ok { color: var(--green); }

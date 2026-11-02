@@ -282,14 +282,16 @@ type request struct {
 	Before int          `json:"before"`
 	Seq    int          `json:"seq"`
 	Key    string       `json:"key"`    // send: the same on a send again after a reconnect
-	Model  string       `json:"model"`  // model: the turns' model
-	Effort string       `json:"effort"` // model: their effort
+	Model  string       `json:"model"`  // model: the turns' model; newAgent: its
+	Effort string       `json:"effort"` // model: their effort; newAgent: its
 	Save   bool         `json:"save"`   // model: for later runs too
 	Mode   string       `json:"mode"`   // mode: the permission mode
 	Allow  bool         `json:"allow"`  // answer: yes
 	Always bool         `json:"always"` // answer: yes, and don't ask again
 	Action string       `json:"action"` // mcp: on, off, agents (for subagents only), reconnect, signin; skills: set; plugins: on, off; empty: list
-	Name   string       `json:"name"`   // mcp, skills: which; steps, tellAgent, agentContext, compactAgent: the subagent's
+	Name   string       `json:"name"`   // mcp, skills: which; steps, tellAgent, agentContext, compactAgent, newAgent: the subagent's
+	Dir    string       `json:"dir"`    // newAgent: the folder its tools run in
+	Window int          `json:"window"` // newAgent: the context it compacts past; 0: never
 	State  string       `json:"state"`  // skills: on, off, name-only, user-invocable-only
 	Mine   bool         `json:"mine"`   // find: the user's own messages alone
 }
@@ -333,6 +335,11 @@ type (
 		Action  string      `json:"action,omitzero"` // the action answered; empty: a list asked for
 		Error   string      `json:"error,omitzero"`
 		Window  int         `json:"window,omitzero"` // the context window the servers' tokens are a share of; 0: not counted
+	}
+	newAgentReply struct {
+		T     string `json:"t"`              // newAgent: the menu's answer, to the page that asked
+		Name  string `json:"name,omitzero"`  // made
+		Error string `json:"error,omitzero"` // or why not
 	}
 	filesReply struct {
 		T     string           `json:"t"` // files: the @ menu's
@@ -549,6 +556,13 @@ func (w *webServer) serve(req request) any {
 			level = "warn"
 		}
 		return noticeUpdate{T: "notice", Level: level, S: out}
+	case "newAgent": // the page's menu: a subagent of the user's own, which their first message starts
+		name, ok := h.agent.NewAgent(req.Name, req.Dir, req.Model, req.Effort, req.Window)
+		if !ok {
+			return newAgentReply{T: "newAgent", Error: name}
+		}
+		c.hub.setStatus(currentStatus(c, h.agent))
+		return newAgentReply{T: "newAgent", Name: name}
 	case "stopAgent", "clearAgent": // the rail's stop, then clear
 		if req.T == "stopAgent" {
 			h.agent.StopAgent(agentName(req.Name))

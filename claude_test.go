@@ -45,6 +45,9 @@ func fakeClaude() {
 	}
 	b, _ := json.Marshal(os.Args[1:])
 	appendRaw(base, append(b, '\n'))
+	if wd, err := os.Getwd(); err == nil { // where the call runs
+		appendRaw(base+".cwd", []byte(wd+"\n"))
+	}
 	if id := flagOf(os.Args, "--session-id"); id != "" { // saved, as Claude Code saves a session
 		dir := filepath.Join(os.Getenv("CLAUDE_CONFIG_DIR"), "projects", "-fake")
 		os.MkdirAll(dir, 0o700)

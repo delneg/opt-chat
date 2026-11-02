@@ -488,8 +488,8 @@ func (a *Agent) ZoomAgent(name string) string {
 	return head + "\n" + strings.Join(sc.callView(), "\n")
 }
 
-// ZoomAgentLine is zoom(id, n) in a subagent's chat.
-func (a *Agent) ZoomAgentLine(name string, id, n int) (string, []string) {
+// ZoomAgentLine is zoom(id, n), or zoom(id, 1, count), in a subagent's chat.
+func (a *Agent) ZoomAgentLine(name string, id, n, count int) (string, []string) {
 	if a.mems == nil {
 		return "Subagents' chats have no lines: opt-chat runs with -agent-memory=false; zoom(\"Name\") gives the whole log.", nil
 	}
@@ -501,7 +501,14 @@ func (a *Agent) ZoomAgentLine(name string, id, n int) (string, []string) {
 	if err != nil {
 		return memFailed(name, err), nil
 	}
-	text, _ := sc.Zoom(id, max(n, 1)) // a step has no images
+	if count > 1 && n > 1 {
+		return "count goes with n = 1 only.", nil
+	}
+	if count > 1 {
+		text, _ := sc.ZoomRun(id, count) // a step has no images
+		return text, nil
+	}
+	text, _ := sc.Zoom(id, max(n, 1))
 	return text, nil
 }
 

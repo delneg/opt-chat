@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -745,5 +746,69 @@ func TestAgentMemFailWarnsOnce(t *testing.T) {
 	a.agentWrite("W", "agent", "broken again")
 	if got := n.Load(); got != 2 {
 		t.Errorf("notices once it failed again after a write that worked: %d, want 2", got)
+	}
+}
+
+// zoom("Name:id", 1, count) reads a run of a subagent's steps whole, as
+// zoom(id, 1, count) reads the chat's; count goes with n = 1 only.
+func TestAgentZoomRun(t *testing.T) {
+	t.Parallel()
+	c, _ := fakeChat(t, t.TempDir(), 100)
+	a := memAgent(c)
+	bigAgentLog(t, c, "Big", 3, 10)
+	run := func(n, count int) string {
+		b, _ := json.Marshal("Big:2")
+		s, _ := callTool(a, false, "zoom", toolArgs{ID: b, N: n, Count: count})
+		return s
+	}
+	want := "2+1|tool: Bash {\"command\":\"make test 0\"}\n\n3+1|echo: result 0 xxxxxxxxxx\n\n4+1|tool: Bash {\"command\":\"make test 1\"}"
+	if got := run(1, 3); got != want {
+		t.Fatalf("zoom(\"Big:2\", 1, 3):\n%q\nwant\n%q", got, want)
+	}
+	if got := run(2, 3); got != "count goes with n = 1 only." {
+		t.Fatalf("zoom(\"Big:2\", 2, 3): %q", got)
+	}
+	a.mems = nil
+	if got := run(1, 3); !strings.Contains(got, "-agent-memory=false") {
+		t.Fatalf("with -agent-memory=false: %q", got)
+	}
+}
+
+// A subagent's chat keeps its compactions' view across a restart, as the
+// chat does (see TestCviewSurvivesRestart): view.json holds it.
+func TestAgentMemCviewSurvivesRestart(t *testing.T) {
+	t.Parallel()
+	c, _ := fakeChat(t, t.TempDir(), 300)
+	a := memAgent(c)
+	bigAgentLog(t, c, "Big", 300, 5000)
+	a.mems.setCompact(c.compact)
+	sc, err := a.mems.chat("Big")
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitIdle(t, sc)
+	sc.mu.Lock()
+	live := slices.Clone(sc.cview.keys)
+	sc.mu.Unlock()
+	if !slices.ContainsFunc(live, func(k key) bool { return k.L > 0 }) {
+		t.Fatalf("setup: the compactions' view merged nothing: %v", live)
+	}
+	a.mems.mu.Lock()
+	sc.lock.Close()
+	a.mems.open = nil
+	a.mems.mu.Unlock()
+	b, _ := os.ReadFile(filepath.Join(c.dir, "agents", "Big.mem", "view.json"))
+	if !strings.Contains(string(b), `"cview"`) {
+		t.Fatalf("view.json holds no compactions' view: %.200s", b)
+	}
+	sc, err = a.mems.chat("Big")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sc.mu.Lock()
+	got := slices.Clone(sc.cview.keys)
+	sc.mu.Unlock()
+	if !slices.Equal(got, live) {
+		t.Fatalf("after a restart the compactions' view is\n%v\nnot\n%v", got, live)
 	}
 }

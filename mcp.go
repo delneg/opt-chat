@@ -104,11 +104,11 @@ var (
 // zoom's text on subagents, in the tool and the prompt: their chats as
 // lines, or with -agent-memory=false their whole logs.
 const (
-	zoomAgentLines = "- zoom(\"Name\") gives an agent's chat as lines, and zoom(\"Name:id\", n) opens\n  them as zoom(id, n) does\n"
+	zoomAgentLines = "- zoom(\"Name\") gives an agent's chat as lines, and zoom(\"Name:id\", n) opens\n  them as zoom(id, n) does, and zoom(\"Name:id\", 1, count) reads a run of them\n"
 	zoomAgentWhole = "- zoom(\"Name\") gives an agent's whole chat\n"
 	zoomDesc       = "Open the line id+n of the view into the two lines of n/2 under it; n = 1 gives the message whole, with its images. " +
 		"With n = 1, count gives the count messages from id on, whole, up to 64 KB. "
-	zoomAgentTool      = `zoom("Name") gives a subagent's chat as lines, and zoom("Name:id", n) opens its line id+n, as for the chat's.`
+	zoomAgentTool      = `zoom("Name") gives a subagent's chat as lines, and zoom("Name:id", n) opens its line id+n, and zoom("Name:id", 1, count) its messages, as for the chat's.`
 	zoomAgentWholeTool = `zoom("Name") gives a subagent's whole chat.`
 	// search's text on subagents' chats, which it leaves out with -agent-memory=false.
 	searchAgentLines = "\n  its words; then a line per subagent whose chat holds it, with the zooms\n  that open its hits\n"
@@ -235,7 +235,7 @@ func callTool(a *Agent, fromAgent bool, tool string, x toolArgs) (string, []stri
 	}
 	if agent, line, ok := strings.Cut(s, ":"); tool == "zoom" && isName && ok { // "Name:id": a line of a subagent's chat
 		if j, err := strconv.Atoi(line); err == nil {
-			return a.ZoomAgentLine(agent, j, n)
+			return a.ZoomAgentLine(agent, j, n, x.Count)
 		}
 	}
 	switch {

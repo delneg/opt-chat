@@ -35,7 +35,7 @@ Tools:
 - zoom(id, 1) gives message id whole, with its images; zoom(id, 1, count) the
   count messages from id on, to read a stretch of the chat word for word
 - zoom("Name") gives an agent's chat as lines, and zoom("Name:id", n) opens
-  them as zoom(id, n) does
+  them as zoom(id, n) does, and zoom("Name:id", 1, count) reads a run of them
 - date(id) gives the date and time of message id
 - search(text, before) finds the messages that hold text, newest first, each
   with the view's line that holds it; when none does, those that best share

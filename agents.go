@@ -501,10 +501,12 @@ func (a *Agent) tell(name string, ts ...tell) (string, bool) {
 		delete(a.userTurn, name)
 		return fmt.Sprintf("[%s] has just ended.", name), false
 	}
-	if a.looping(name) {
-		h := a.halts[name]
-		h.queued = append(h.queued, msg[0].Text)
-		return fmt.Sprintf("Sent: [%s] is in a loop: it gets this after its current step, in this turn.", name), true
+	if h := a.halts[name]; h != nil && a.looping(name) {
+		h.inTurn = true // one at rest is at work again
+		h.queue(msg)
+		if !resting {
+			return fmt.Sprintf("Sent: [%s] is in a loop: it gets this after its current step, in this turn.", name), true
+		}
 	}
 	if resting {
 		return fmt.Sprintf("Sent: [%s] is at work on it, with all it knew, and will report again.", name), true
@@ -522,7 +524,16 @@ func (a *Agent) queueHeldLocked(name string, h *halt, p *proc) {
 	a.held[name] = nil
 	a.logTells(name, ts)
 	if msg := tellBlocks(ts, ""); p.send(msg...) {
-		h.queued, h.told = append(h.queued, msg[0].Text), h.told+1
+		h.queue(msg)
+		h.told++
+	}
+}
+
+// queue notes msg, sent in a loop's turn, as queued until Claude Code
+// echoes it, by its first text; a.mu held.
+func (h *halt) queue(msg []block) {
+	if len(msg) > 0 && msg[0].Type == "text" && msg[0].Text != "" {
+		h.queued = append(h.queued, msg[0].Text)
 	}
 }
 

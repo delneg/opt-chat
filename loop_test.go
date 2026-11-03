@@ -285,7 +285,20 @@ func TestAgentLoopTellInTurn(t *testing.T) {
 	if n := len(hookInputs(t, l)); n != 0 {
 		t.Fatalf("%d hook calls: its turn ended", n)
 	}
+	a.Tell("Mid", "") // nothing to queue: no harm
 	a.StopAgent("Mid")
+
+	// One a tell set to work again, after its loop's report, takes the next in that turn too.
+	l = loopHookFor(t, `exit 0`)
+	a.Spawn("Again", "loop-task", "", "", 0, l)
+	report()
+	a.Tell("Again", "step-task now")
+	waitFor(t, "its steps", func() bool { return strings.Contains(c.ZoomAgent("Again"), "step 2") })
+	if got := a.Tell("Again", "mid-two"); !strings.Contains(got, "after its current step") {
+		t.Fatal(got)
+	}
+	waitFor(t, "the tell in its turn", func() bool { return strings.Contains(c.ZoomAgent("Again"), "noted: mid-two") })
+	a.StopAgent("Again")
 
 	l = loopHookFor(t, `[ $n -le 1 ] && echo '{"decision":"block","reason":"go on"}'; exit 0`)
 	a.Spawn("Late", "late-task", "", "", 0, l)

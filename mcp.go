@@ -39,7 +39,8 @@ func serveMCP(a *Agent) (string, string, error) {
 			return
 		}
 		resp := map[string]any{"jsonrpc": "2.0", "id": req.ID}
-		if res, ok := mcpResult(a, req.Method, req.Params, r.URL.Query().Has("agent")); ok {
+		q := r.URL.Query() // a subagent's: ?agent=its name
+		if res, ok := mcpResult(a, req.Method, req.Params, q.Has("agent"), q.Get("agent")); ok {
 			resp["result"] = res
 		} else {
 			resp["error"] = map[string]any{"code": -32601, "message": "Method not found: " + req.Method}
@@ -85,10 +86,12 @@ var (
 			"leave it out for the user's setting (/autocompact) or the cap (-agent-compact-max, 400k by default), which it can only lower. "+
 			"loop: keeps it at work turn after turn, as a Claude Code Stop hook would: after each turn opt-chat runs command (sh, in dir, the Stop hook's JSON on stdin), "+
 			`and a {"decision":"block","reason":...} sends the reason as its next message; it reports once the hook lets it stop, or after max turns (60). `+
-			"Leave it out unless asked.",
+			"Leave it out unless asked. "+
+			"spawn: true lets it start and tell subagents of its own, with these tools; their reports go to it, not to you, and theirs can't start any. "+
+			"Leave it out unless the user asks, or its task is big enough to split among helpers.",
 			schema([]string{"name", "task"}, map[string]any{"name": str, "task": str, "effort": map[string]any{"type": "string", "enum": efforts}, "model": str,
 				"autocompact": map[string]any{"type": "integer", "minimum": windowMin, "maximum": windowMax},
-				"loop":        schema([]string{"command", "dir"}, map[string]any{"command": str, "dir": str, "max": num})})),
+				"loop":        schema([]string{"command", "dir"}, map[string]any{"command": str, "dir": str, "max": num}), "spawn": map[string]any{"type": "boolean"}})),
 		tool("tell", "Send a subagent a message. A running one gets it between its tool calls; any other goes on with it where it stopped "+
 			"(after its report, or stopped by a restart of opt-chat), with all it knew, and reports again.",
 			schema([]string{"name", "message"}, map[string]any{"name": str, "message": str})),
@@ -145,7 +148,7 @@ func withProp(t map[string]any, name string, schema map[string]any) map[string]a
 	return t
 }
 
-func mcpResult(a *Agent, method string, params jsontext.Value, fromAgent bool) (any, bool) {
+func mcpResult(a *Agent, method string, params jsontext.Value, fromAgent bool, caller string) (any, bool) {
 	switch method {
 	case "initialize":
 		var p struct {
@@ -164,7 +167,7 @@ func mcpResult(a *Agent, method string, params jsontext.Value, fromAgent bool) (
 			Args toolArgs `json:"arguments"`
 		}
 		json.Unmarshal(params, &p)
-		text, images := callTool(a, fromAgent, p.Name, p.Args)
+		text, images := callTool(a, fromAgent, caller, p.Name, p.Args)
 		content := []map[string]any{}
 		for _, b := range a.chat.interleave(text, images) { // each image where its message has it
 			switch {
@@ -191,6 +194,7 @@ type toolArgs struct {
 	Model   string         `json:"model"`
 	Window  int            `json:"autocompact"`
 	Loop    *loopHook      `json:"loop"`
+	Spawns  bool           `json:"spawn"`
 	MCP     []string       `json:"mcp"`
 	Text    string         `json:"text"`
 	Before  int            `json:"before"`
@@ -200,8 +204,9 @@ type toolArgs struct {
 	Count   int            `json:"count"`
 }
 
-// callTool runs one tool and returns its text and the images that go with it.
-func callTool(a *Agent, fromAgent bool, tool string, x toolArgs) (string, []string) {
+// callTool runs one tool and returns its text and the images that go with
+// it; caller is the subagent's that calls it, when it says.
+func callTool(a *Agent, fromAgent bool, caller, tool string, x toolArgs) (string, []string) {
 	id, n := x.ID, x.N
 	var s string
 	isName := json.Unmarshal(id, &s) == nil
@@ -231,9 +236,9 @@ func callTool(a *Agent, fromAgent bool, tool string, x toolArgs) (string, []stri
 	case tool == "search":
 		return a.chat.Search(x.Text, x.Before), nil
 	case (tool == "spawn" || tool == "tell") && fromAgent:
-		return "Only Opt starts and tells subagents.", nil
+		return a.subCall(caller, tool, x), nil
 	case tool == "spawn":
-		return a.Spawn(x.Name, x.Task, x.Effort, x.Model, x.Window, x.Loop, x.MCP...), nil
+		return a.spawn("", x.Spawns, x.Name, x.Task, x.Effort, x.Model, x.Window, x.Loop, x.MCP...), nil
 	case tool == "tell":
 		return a.Tell(x.Name, x.Message, x.MCP...), nil
 	case tool == "wake":

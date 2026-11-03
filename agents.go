@@ -70,6 +70,12 @@ func joinEfforts() string { return strings.Join(efforts, ", ") }
 // Spawn starts an agent and returns at once. An empty effort is
 // -agent-effort; an empty model, -agent-model.
 func (a *Agent) Spawn(name, task, effort, model string, window int, loop *loopHook, mcp ...string) string {
+	return a.spawn("", false, name, task, effort, model, window, loop, mcp...)
+}
+
+// spawn is Spawn by parent, "" for Opt: see spawns.go. With spawns, it may
+// start subagents of its own.
+func (a *Agent) spawn(parent string, spawns bool, name, task, effort, model string, window int, loop *loopHook, mcp ...string) string {
 	if strings.TrimSpace(task) == "" {
 		return "No task given."
 	}
@@ -109,17 +115,21 @@ func (a *Agent) Spawn(name, task, effort, model string, window int, loop *loopHo
 	name = a.freeNameLocked(name)
 	a.running[name] = nil // reserved until its call starts
 	a.subLocked(name, func(s *sub) {
-		*s = sub{Name: name, Model: model, Effort: effort, State: "starting", Started: nowMs(), MCP: grant}
+		*s = sub{Name: name, Model: model, Effort: effort, State: "starting", Started: nowMs(), MCP: grant, Parent: parent}
 	})
 	h := a.haltLocked(name)
 	a.mu.Unlock()
 	go func() {
 		defer a.calls.Done() // after its report is in the chat
-		a.runAgent(name, h, agentRecord{Session: newSession(), Model: model, Effort: effort, Window: window, Task: task, Loop: loop, MCP: grant}, nil)
+		a.runAgent(name, h, agentRecord{Session: newSession(), Model: model, Effort: effort, Window: window, Task: task, Loop: loop, MCP: grant, Spawns: spawns, Parent: parent}, nil)
 	}()
 	with := ""
 	if len(grant) > 0 {
 		with = ", with " + strings.Join(grant, ", ")
+	}
+	if parent != "" { // so Opt knows who it is
+		a.chat.Log("work", fmt.Sprintf("[opt-chat] [%s] started subagent [%s] of its own, on %s%s: its reports go to [%s], not to you. Its task: %s\n\nIts chat: zoom(%q)",
+			parent, name, strings.TrimSpace(model+" "+effort), with, parent, head(task, 300), name))
 	}
 	return fmt.Sprintf("Started [%s] in the background, on %s%s. Its report will come as a message starting \"[%s]\".", name, model, with, name)
 }
@@ -231,11 +241,15 @@ type tell struct {
 	msg    []block  // the user's, as the subagent gets it: text, images, files
 	logged bool     // in its log already: sent now (tellNow), its turn ended first
 	grant  []string // MCP servers Opt gives it with this: see Tell
+	from   string   // another subagent's, its parent's or its own's, text headed so: see spawns.go
 }
 
 func (t tell) kind() string {
-	if t.user {
+	switch {
+	case t.user:
 		return "user"
+	case t.from != "":
+		return "sub"
 	}
 	return "opt"
 }
@@ -257,6 +271,8 @@ func tellBlocks(ts []tell, head string) []block {
 		switch {
 		case t.user:
 			out = append(append(out, textBlock(userHead)), t.msg...)
+		case t.from != "":
+			out = append(out, textBlock(t.text))
 		case i == 0:
 			out = append(out, textBlock(head+t.text))
 		case ts[i-1].user:
@@ -458,7 +474,7 @@ func (a *Agent) tell(name string, ts ...tell) (string, bool) {
 		a.userTurnLocked(name, !opt)
 		a.chat.hub.notice("info", "[%s] back at work", name)
 		a.chat.hub.sound(soundAck)
-	case a.looping(name):
+	case a.looping(name) && (h == nil || !h.inTurn || !h.replays): // between two turns: it goes ahead of the next
 		a.logTells(name, ts) // in its log at once, as a tell at work
 		for i := range ts {
 			ts[i].logged = true
@@ -467,7 +483,7 @@ func (a *Agent) tell(name string, ts ...tell) (string, bool) {
 		if opt && a.userTurn[name] {
 			a.userTurnLocked(name, false)
 		}
-		return fmt.Sprintf("Sent: [%s] is in a loop: it gets this when its turn ends, ahead of the loop's next step.", name), true
+		return fmt.Sprintf("Sent: [%s] is in a loop, between two turns: it gets this ahead of the next.", name), true
 	case opt && a.userTurn[name]: // Opt's tell in the user's turn: it reports at its end
 		a.userTurnLocked(name, false)
 	}
@@ -485,10 +501,29 @@ func (a *Agent) tell(name string, ts ...tell) (string, bool) {
 		delete(a.userTurn, name)
 		return fmt.Sprintf("[%s] has just ended.", name), false
 	}
+	if a.looping(name) {
+		h := a.halts[name]
+		h.queued = append(h.queued, msg[0].Text)
+		return fmt.Sprintf("Sent: [%s] is in a loop: it gets this after its current step, in this turn.", name), true
+	}
 	if resting {
 		return fmt.Sprintf("Sent: [%s] is at work on it, with all it knew, and will report again.", name), true
 	}
 	return "Sent.", true
+}
+
+// queueHeldLocked sends the tells held for name, in a loop, into the turn
+// p has underway: Claude Code takes them after its current step. a.mu held.
+func (a *Agent) queueHeldLocked(name string, h *halt, p *proc) {
+	ts := a.held[name]
+	if len(ts) == 0 {
+		return
+	}
+	a.held[name] = nil
+	a.logTells(name, ts)
+	if msg := tellBlocks(ts, ""); p.send(msg...) {
+		h.queued, h.told = append(h.queued, msg[0].Text), h.told+1
+	}
 }
 
 func (a *Agent) logTells(name string, ts []tell) {
@@ -503,7 +538,7 @@ func (a *Agent) logTells(name string, ts []tell) {
 // as Cmd+Enter stops Opt's turn for one: the tool calls it has underway
 // are cut short, and it goes on with t at once, its task still whoever's
 // it was. A tell waits for its step to end, which a long command makes a
-// long wait, and in a loop for its turn to end. In a loop, t goes first
+// long wait, and in a loop between two turns for the next. In a loop, t goes first
 // when the cut turn ends, ahead of the Stop hook's next message (see
 // loopStep); between two of its turns, the interrupt finds nothing to cut
 // and t goes as the next. False when it is not at work in a way an
@@ -608,6 +643,12 @@ type halt struct {
 	now     []tell // the user's, sent now: it was interrupted for them (tellNow); under a.mu
 	cut     bool   // interrupted for the user's message, until its turn's result; under a.mu
 	restart []tell // non-nil: its call ends, to go on from its saved session with these (see restartLocked); under a.mu
+	// In a loop: inTurn while Claude Code is in a turn of its task, not
+	// between two (its hook runs, it compacts); replays once Claude Code has
+	// echoed a message as it took it; queued, the first text of each tell
+	// sent in its turn, until it is echoed. Under a.mu.
+	inTurn, replays bool
+	queued          []string
 }
 
 // haltLocked makes the halt of the subagent name's call about to run; a.mu held.
@@ -736,7 +777,14 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 		if size > 0 {
 			on += ", its context at " + k(size) + " tokens"
 		}
-		a.report(fmt.Sprintf("%s\n\nRan on %s. Full chat: zoom(%q)", text, on, name)) // as UniiChat ends a report
+		text = fmt.Sprintf("%s\n\nRan on %s. Full chat: zoom(%q)", text, on, name) // as UniiChat ends a report
+		if rec.Parent != "" {
+			if a.toParent(rec.Parent, name, text) {
+				return
+			}
+			text += fmt.Sprintf("\n\n(opt-chat: [%s], which started it, can't take its report: the user stopped it, or it is gone. So it comes to you.)", rec.Parent)
+		}
+		a.report(text)
 	}
 	report := func(text string) { // the end
 		a.mu.Lock()
@@ -890,6 +938,21 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 		if e.Parent != nil {
 			return
 		}
+		if e.Type == "user" && e.Replay { // taken: the tells in it are queued no more
+			a.mu.Lock()
+			first := !h.replays
+			h.replays = true
+			for _, b := range e.blocks() {
+				if i := slices.IndexFunc(h.queued, func(q string) bool { return b.Type == "text" && strings.HasPrefix(b.Text, q) }); i >= 0 {
+					h.queued = slices.Delete(h.queued, i, i+1)
+				}
+			}
+			if first && h.inTurn && !h.cut { // tells held until now go in this turn
+				a.queueHeldLocked(name, h, p)
+			}
+			a.mu.Unlock()
+			return
+		}
 		if e.Type == "system" && e.Subtype == "status" {
 			if e.Status == "compacting" { // its own, mid-task, or one asked
 				a.setSub(name, func(s *sub) {
@@ -1023,6 +1086,7 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 	acking = false
 	a.mu.Lock()
 	p.send(second...)
+	h.inTurn = true
 	a.running[name] = p
 	a.subLocked(name, func(s *sub) { s.State = "working" })
 	if rec.Loop != nil {
@@ -1046,6 +1110,8 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 		lines := c.viewNow()
 		a.mu.Lock()
 		h.cut = false
+		more := len(h.queued) > 0 // a tell came too late for this turn: Claude Code runs it as the next
+		h.inTurn = more
 		if r := a.resting[name]; r != nil && r.p == p && r.compacting { // the compaction's end, not a report
 			r.compacting, r.compacted = false, true
 			a.subLocked(name, func(s *sub) { s.State = "resting" })
@@ -1073,6 +1139,7 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 					a.userTurnLocked(name, !anyOpt(msgs))
 					msg = tellBlocks(msgs, optHead)
 				}
+				h.inTurn = true
 				p.send(anchored(lines, name, task, msg)...)
 			}
 			a.mu.Unlock()
@@ -1104,19 +1171,28 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 			p.send(tellBlocks(ts, "")...)
 			continue
 		}
+		if lp.hook != nil && more && !lp.compacting { // the next turn is the tell's: the hook runs as that one ends
+			lp.again = false
+			a.queueHeldLocked(name, h, p) // the user's, sent now, cut this turn: it goes too
+			a.mu.Unlock()
+			continue
+		}
 		// Asked to compact at a step, but its turn ended first: compacted
 		// now, as it reports.
 		asked := forced == 1 || h.compact
 		forced, h.compact = 0, false
 		a.subLocked(name, func(s *sub) { s.Compact = false })
 		if lp.compacting { // its compaction between turns is over: the next comes with the view and its task
-			a.mu.Unlock()
 			lp.compacting = false
-			a.setSub(name, func(s *sub) { s.State = "working" })
-			if q := a.takeHeld(name); len(q) > 0 { // Opt's tells first
+			a.subLocked(name, func(s *sub) { s.State = "working" })
+			if q := a.held[name]; len(q) > 0 { // Opt's tells first
+				a.held[name] = nil
+				a.logTells(name, q)
 				lp.next = q
 			}
+			h.inTurn = true
 			p.send(anchored(lines, name, task, tellBlocks(lp.next, optHead))...)
+			a.mu.Unlock()
 			continue
 		}
 		final := e.Result
@@ -1138,7 +1214,11 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 					a.setSub(name, func(s *sub) { s.State = "compacting" })
 					p.send(textBlock(compactAsk))
 				} else {
+					a.mu.Lock()
+					h.inTurn = true
 					p.send(tellBlocks(next, "")...)
+					a.queueHeldLocked(name, h, p) // came as it was sent
+					a.mu.Unlock()
 				}
 				continue
 			}

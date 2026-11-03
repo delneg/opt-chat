@@ -19,7 +19,10 @@ import (
 // Claude Code at work. Hooks stay off in every call (see ownSettings), so
 // opt-chat runs the hook itself at the end of each turn: a "block" sends
 // its reason back as the next message, and the chat sees nothing until the
-// loop ends. Opt's tells wait for the turn's end and go first.
+// loop ends. A tell in a turn goes in it, after its current step, as for
+// one not in a loop; one between two turns goes ahead of the hook's next
+// message. One sent too late for its turn runs as the next turn: the hook
+// waits for that one's end (see halt.queued).
 type loopHook struct {
 	Command string `json:"command"`      // run by sh in Dir, Claude Code's Stop hook input on stdin
 	Dir     string `json:"dir"`          // the input's cwd

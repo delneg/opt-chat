@@ -2458,7 +2458,7 @@ function moving(s) { return ['working', 'starting', 'compacting'].includes(s?.st
 function Dot({ s }) { return html`<span class=${'dot' + (moving(s) ? ' moving' : '')} aria-hidden="true">●</span>`; }
 
 function subMeta(s) {
-  return [s.model, s.effort, s.dir && 'in ' + tilde(s.dir), s.context && `${k(s.context)} context`, s.compact ? 'compacts at its next step' : s.window ? `compacts past ${k(s.window)}` : s.blank && 'autocompact off',
+  return [s.parent && `[${s.parent}]'s`, s.model, s.effort, s.dir && 'in ' + tilde(s.dir), s.context && `${k(s.context)} context`, s.compact ? 'compacts at its next step' : s.window ? `compacts past ${k(s.window)}` : s.blank && 'autocompact off',
     s.steps && count(s.steps, 'step')].filter(Boolean).join(' · ');
 }
 
@@ -2599,8 +2599,17 @@ function stepMsgs(name, steps, off) {
     const at = { i: `${name}:${off + j}`, date: s.at || undefined }; // unix ms
     switch (s.kind) {
       case 'user': out.push({ kind: 'user', text: s.text, ...at }); break;
-      case 'task': out.push({ kind: 'user', from: 'task from Opt', text: s.text, ...at }); break;
+      case 'task': { // from its parent, a subagent Opt let start its own, or from Opt
+        const parent = (S.status?.subs || []).find(x => x.name === name)?.parent;
+        out.push({ kind: 'user', from: parent ? `task from [${parent}]` : 'task from Opt', text: s.text, ...at });
+        break;
+      }
       case 'opt': out.push({ kind: 'user', from: 'Opt told it', text: s.text, ...at }); break;
+      case 'sub': { // its parent's tell, or its own subagent's report: "From [Name], …:" heads it
+        const nl = s.text.indexOf('\n');
+        out.push({ kind: 'user', from: s.text.slice(0, nl).replace(/:$/, ''), text: s.text.slice(nl + 1), ...at });
+        break;
+      }
       case 'loop': out.push({ kind: 'user', text: 'Stop hook: ' + s.text, ...at }); break;
       case 'thinking': out.push({ kind: 'thought', text: s.text, ...at }); break;
       case 'agent': out.push({ kind: 'opt', text: s.text, ...at }); break;
@@ -2770,7 +2779,7 @@ function FullButton({ name }) {
 // lastFrom is who wrote to the agent last, of Opt and its Stop hook: 'opt'
 // (a tell), 'task' or 'loop'. Whether the user set it to work, s.user says.
 function lastFrom(steps) {
-  for (let j = steps.length - 1; j >= 0; j--) if (['opt', 'task', 'loop'].includes(steps[j].kind)) return steps[j].kind;
+  for (let j = steps.length - 1; j >= 0; j--) if (['opt', 'task', 'loop', 'sub'].includes(steps[j].kind)) return steps[j].kind;
   return '';
 }
 
@@ -2780,10 +2789,11 @@ function fullState(s, now) {
   const [cls, label] = subState(s, now);
   if (cls === 'ask') return [cls, label];
   const from = lastFrom(S.agent?.name === s.name ? S.agent.steps : []); // the user's mid-task message leaves it Opt's task
-  const whose = s.user ? 'your message' : from === 'opt' ? 'Opt\'s message' : from === 'loop' ? 'its Stop hook\'s reason' : 'Opt\'s task';
+  const whose = s.user ? 'your message' : from === 'opt' ? 'Opt\'s message' : from === 'loop' ? 'its Stop hook\'s reason' : from === 'sub' ? 'a subagent\'s message'
+    : s.parent ? `[${s.parent}]'s task` : 'Opt\'s task';
   switch (s.state) {
     case 'working': return [cls, `working on ${whose}`, elapsed(now - s.started)];
-    case 'resting': return [cls, `${s.user ? 'replied to you' : 'reported to Opt'} · at rest${s.until > now ? `, its call open ${Math.ceil((s.until - now) / 60000)}m more` : ''}`];
+    case 'resting': return [cls, `${s.user ? 'replied to you' : s.parent ? `reported to [${s.parent}]` : 'reported to Opt'} · at rest${s.until > now ? `, its call open ${Math.ceil((s.until - now) / 60000)}m more` : ''}`];
     case 'halted': case 'stopped': return [cls, label.replace('a tell resumes it', 'a message resumes it')];
     case 'ended': return [cls, 'its call ended · a message resumes it'];
   }
@@ -2985,7 +2995,7 @@ function agentFind(text, mine) {
   if (!a || a.name !== S.find?.agent || !terms.length && !mine) return { hits, total: 0, terms };
   const lower = terms.map(t => t.toLowerCase());
   for (let j = a.steps.length - 1; j >= 0; j--) {
-    const s = a.steps[j], kind = { user: 'user', task: 'opt', opt: 'opt', agent: 'work', loop: 'note' }[s.kind];
+    const s = a.steps[j], kind = { user: 'user', task: 'opt', opt: 'opt', sub: 'opt', agent: 'work', loop: 'note' }[s.kind];
     if (!kind || mine && kind !== 'user') continue;
     const low = s.text.toLowerCase(), at = lower.map(t => low.indexOf(t));
     if (at.some(x => x < 0)) continue;

@@ -39,6 +39,7 @@ type sub struct {
 	MCP     []string `json:"mcp,omitzero"`     // the servers for subagents only Opt granted it
 	Dir     string   `json:"dir,omitzero"`     // where its tools run, when not Opt's folder
 	Blank   bool     `json:"blank,omitzero"`   // the user's own: no view, no task
+	Parent  string   `json:"parent,omitzero"`  // the subagent that started it, whose it is
 }
 
 // subsKept is how many ended subagents the rail keeps listing.
@@ -340,6 +341,12 @@ func (a *Agent) agentContext(name string) (contextReply, bool) {
 	m := []string{on, "State: " + cmp.Or(s.State, rec.State)}
 	if rec.Dir != "" {
 		m = append(m, "Folder: "+rec.Dir)
+	}
+	if rec.Parent != "" {
+		m = append(m, fmt.Sprintf("Started by [%s], which its reports go to", rec.Parent))
+	}
+	if rec.Spawns {
+		m = append(m, "Starts and tells subagents of its own")
 	}
 	if s.Context > 0 {
 		m = append(m, fmt.Sprintf("Context: %s tokens, as its latest request read", k(s.Context)))

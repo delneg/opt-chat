@@ -42,7 +42,7 @@ land there. The web tests go through real HTTP and WebSocket connections.
 | `reload.go` | `/reload` and SIGUSR1: build, wait for the chat to be idle, stop every call, exec in place |
 | `chat.go`, `view.go` | the log, the summary tree, the view and its merges |
 | `claude.go` | `claude -p` calls: turns, compactions, subagents |
-| `agents.go`, `subs.go`, `resume.go` | subagents, the page's agents rail, resuming saved sessions |
+| `agents.go`, `subs.go`, `resume.go`, `spawns.go` | subagents, the page's agents rail, resuming saved sessions; subagents a subagent starts |
 | `mcp.go`, `wake.go` | the `zoom`, `date`, `search`, `spawn`, `tell` and `wake` tools over MCP; wake-ups |
 | `hub.go`, `web.go` | updates to pages and the terminal; the page's server and its guards |
 | `find.go` | the page's find (Ctrl/Cmd+F): matches in the whole log, and the log around one |

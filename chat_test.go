@@ -1165,10 +1165,10 @@ func TestZoomRun(t *testing.T) {
 	}
 	// The tool: count goes with n = 1 alone.
 	a := &Agent{chat: c, running: map[string]*proc{}, writing: map[string]chan struct{}{}}
-	if got, _ := callTool(a, false, "zoom", toolArgs{ID: jsontext.Value("0"), Count: 2}); got != "0+1|user: hi\n\n1+1|tool: zoom {\"id\":0}" {
+	if got, _ := callTool(a, false, "", "zoom", toolArgs{ID: jsontext.Value("0"), Count: 2}); got != "0+1|user: hi\n\n1+1|tool: zoom {\"id\":0}" {
 		t.Fatalf("tool: %q", got)
 	}
-	if got, _ := callTool(a, false, "zoom", toolArgs{ID: jsontext.Value("0"), N: 2, Count: 2}); got != "count goes with n = 1 only." {
+	if got, _ := callTool(a, false, "", "zoom", toolArgs{ID: jsontext.Value("0"), N: 2, Count: 2}); got != "count goes with n = 1 only." {
 		t.Fatalf("count with n 2: %q", got)
 	}
 }

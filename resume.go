@@ -37,11 +37,13 @@ type agentRecord struct {
 	Dir       string    `json:"dir,omitzero"`       // where its tools run; "": Opt's folder (-cwd)
 	Blank     bool      `json:"blank,omitzero"`     // the user's own, made from the page: no view, no task, its window as chosen (see NewAgent)
 	Cleared   bool      `json:"cleared,omitzero"`   // the user's own, cleared from the rail: a restart doesn't list it again
+	Spawns    bool      `json:"spawns,omitzero"`    // Opt let it start and tell subagents of its own: see spawns.go
+	Parent    string    `json:"parent,omitzero"`    // the subagent that started it: its reports go there
 }
 
 // sub is the rail's entry for the subagent name, as its record has it.
 func (r agentRecord) sub(name string) sub {
-	return sub{Name: name, Model: r.Model, Effort: r.Effort, Window: r.Window, State: r.State, Dir: r.Dir, Blank: r.Blank}
+	return sub{Name: name, Model: r.Model, Effort: r.Effort, Window: r.Window, State: r.State, Dir: r.Dir, Blank: r.Blank, Parent: r.Parent}
 }
 
 func (a *Agent) recordPath(name string) string {

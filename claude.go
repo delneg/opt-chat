@@ -31,7 +31,7 @@ type Agent struct {
 	system          string // the prompt: with agentsMD's instructions, the head of every cached prefix
 	agentsMD        string // the user's instructions, read again when the file changes; "": none
 	mcpConfig       string // the chat's tools, for turns and compactions
-	agentMCP        string // the same tools, for subagents, which can't spawn or tell
+	agentMCP        string // the same tools, for subagents: see agentMCPFor
 	model, effort   string // turns
 	amodel, aeffort string // subagents
 	cmodel, ceffort string // compactions
@@ -84,7 +84,7 @@ type Agent struct {
 	planRaw     jsontext.Value           // and its answer, for /usage
 	subs        map[string]*sub          // this run's subagents, as the page's rail shows them: see subs.go
 	halts       map[string]*halt         // each subagent's call underway, at work or at rest, by name: see StopAgent
-	held        map[string][]tell        // tells for a subagent in a loop, at work: sent as its turn ends; see loop.go
+	held        map[string][]tell        // tells for a subagent in a loop, between two turns: sent ahead of the next; see loop.go
 	subLive     map[string]*agentLive    // what each subagent at work is writing now: see agentDelta
 	userTurn    map[string]bool          // a subagent's turn underway is the user's: it reports to no one; see tell
 	recMu       sync.Mutex               // agents/<Name>.json: see resume.go
@@ -238,7 +238,8 @@ type event struct {
 		Pre     int    `json:"pre_tokens"`
 		Post    int    `json:"post_tokens"`
 	} `json:"compact_metadata"` // system compact_boundary: Claude Code compacted the call's context
-	Status string `json:"status"` // system status: compacting, or null once done
+	Status string `json:"status"`   // system status: compacting, or null once done
+	Replay bool   `json:"isReplay"` // user: a message of ours, echoed as Claude Code takes it (--replay-user-messages)
 
 	RequestID string          `json:"request_id"` // control_request: Claude Code asks
 	Request   jsontext.Value  `json:"request"`
@@ -493,7 +494,7 @@ func (a *Agent) startCall(ctx context.Context, model, effort string, r role, win
 	a.mu.Unlock()
 	switch r {
 	case roleAgent:
-		mcp = a.agentMCP
+		mcp = agentMCPFor(a.agentMCP, who)
 	case roleBtw: // the rest asks, and is refused (below); allow rules are no part of the cached prompt
 		allowed = []string{"mcp__opt__zoom", "mcp__opt__date", "mcp__opt__search"}
 	case roleCompact:
@@ -525,7 +526,9 @@ func (a *Agent) startCall(ctx context.Context, model, effort string, r role, win
 	}
 	args = append(args, "--permission-mode", perm, "--allowedTools", strings.Join(allowed, ","))
 	if r == roleAgent { // saved, so it can be resumed: see resume.go
-		args = append(args, extra...)
+		// Each message echoed as Claude Code takes it: a tell to one in a
+		// loop goes in its turn (see Agent.tell).
+		args = append(append(args, "--replay-user-messages"), extra...)
 	} else {
 		args = append(args, "--no-session-persistence")
 	}

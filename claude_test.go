@@ -110,6 +110,15 @@ func fakeClaude() {
 		}
 		return text, images
 	}
+	// replay echoes a message as Claude Code takes it, with --replay-user-messages.
+	replay := func(line string) {
+		if slices.Contains(os.Args, "--replay-user-messages") {
+			var m map[string]any
+			json.Unmarshal([]byte(line), &m)
+			m["isReplay"] = true
+			emit(m)
+		}
+	}
 	statusAsks, mcpOff := 0, map[string]bool{}
 	// control answers a control request as Claude Code would; false for
 	// any other line.
@@ -207,6 +216,7 @@ func fakeClaude() {
 		if control(line) {
 			continue
 		}
+		replay(line)
 		text, images := read(line)
 		in := text // what follows the view: triggers in the view are of turns before
 		if i := strings.LastIndex(text, "</chat>"); i >= 0 {
@@ -294,6 +304,7 @@ func fakeClaude() {
 				}
 			}
 			for _, l := range waiting {
+				replay(l)
 				text, _ := read(l)
 				result("read now: " + text)
 			}
@@ -316,6 +327,7 @@ func fakeClaude() {
 					json.Unmarshal([]byte(l), &r)
 					interrupted = r.Request["subtype"] == "interrupt"
 					if !interrupted && !control(l) {
+						replay(l)
 						next, _ := read(l)
 						say(textBlock("noted: " + next))
 					}
@@ -331,6 +343,11 @@ func fakeClaude() {
 					break
 				}
 			}
+		case strings.Contains(in, "late-task"): // a step, then a while writing its reply: a message meanwhile runs as a turn of its own
+			say(block{Type: "tool_use", ID: "l1", Name: "Bash", Input: []byte(`{"command":"step"}`)})
+			emit(map[string]any{"type": "user", "message": map[string]any{"content": []block{{Type: "tool_result", ToolID: "l1", Content: []byte(`"ok"`)}}}})
+			time.Sleep(500 * time.Millisecond)
+			result("late done")
 		case strings.Contains(in, "big-task"):
 			emit(map[string]any{"type": "assistant", "message": map[string]any{"content": []map[string]any{{"type": "text", "text": "working"}},
 				"usage": map[string]any{"input_tokens": 10, "cache_read_input_tokens": 300000}}})

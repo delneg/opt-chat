@@ -264,3 +264,41 @@ func TestAgentLoopTellNow(t *testing.T) {
 		t.Fatalf("hook inputs: %v", in)
 	}
 }
+
+// A tell to a subagent in a loop, in a turn, goes in that turn: Claude
+// Code takes it after its current step, as one not in a loop. One that
+// comes too late for the turn runs as the next, and the hook waits for
+// that one's end: it never runs twice for one turn.
+func TestAgentLoopTellInTurn(t *testing.T) {
+	t.Parallel()
+	c, _ := fakeChat(t, t.TempDir(), 100)
+	a, _ := fakeAgent(t, c)
+	report, quiet := loopReports(t, a)
+
+	l := loopHookFor(t, `exit 0`)
+	a.Spawn("Mid", "step-task", "", "", 0, l)
+	waitFor(t, "its steps", func() bool { return strings.Contains(c.ZoomAgent("Mid"), "step 2") })
+	if got := a.Tell("Mid", "mid-tell"); !strings.HasPrefix(got, "Sent: [Mid] is in a loop: it gets this after its current step") {
+		t.Fatal(got)
+	}
+	waitFor(t, "the tell in its turn", func() bool { return strings.Contains(c.ZoomAgent("Mid"), "noted: mid-tell") })
+	if n := len(hookInputs(t, l)); n != 0 {
+		t.Fatalf("%d hook calls: its turn ended", n)
+	}
+	a.StopAgent("Mid")
+
+	l = loopHookFor(t, `[ $n -le 1 ] && echo '{"decision":"block","reason":"go on"}'; exit 0`)
+	a.Spawn("Late", "late-task", "", "", 0, l)
+	waitFor(t, "its step", func() bool { return strings.Contains(c.ZoomAgent("Late"), `"command":"step"`) })
+	if got := a.Tell("Late", "late-tell"); !strings.Contains(got, "after its current step") {
+		t.Fatal(got)
+	}
+	if got := report(); !strings.HasPrefix(got, fmt.Sprintf("[Late] answer to %q", loopFeedback+"go on")) {
+		t.Fatalf("report: %q", got)
+	}
+	quiet()
+	in := hookInputs(t, l)
+	if len(in) != 2 || !strings.Contains(in[0]["last_assistant_message"].(string), "late-tell") || in[0]["stop_hook_active"] != false || in[1]["stop_hook_active"] != true {
+		t.Fatalf("hook inputs: %v", in)
+	}
+}

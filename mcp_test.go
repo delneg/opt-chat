@@ -110,7 +110,7 @@ func TestMCP(t *testing.T) {
 		t.Fatalf("zoom of a message with a PDF: %v", out)
 	}
 	for _, args := range []string{`{"name":"spawn","arguments":{"name":"X","task":"t"}}`, `{"name":"tell","arguments":{"name":"X","message":"m"}}`} {
-		if _, out := post(agentURL, `{"jsonrpc":"2.0","id":7,"method":"tools/call","params":`+args+`}`); text(out) != "Only Opt starts and tells subagents." {
+		if _, out := post(agentURL, `{"jsonrpc":"2.0","id":7,"method":"tools/call","params":`+args+`}`); text(out) != notLet {
 			t.Fatalf("a subagent's %s: %v", args, out)
 		}
 	}

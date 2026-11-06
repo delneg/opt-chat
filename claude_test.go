@@ -353,6 +353,28 @@ func fakeClaude() {
 			emit(map[string]any{"type": "user", "message": map[string]any{"content": []block{{Type: "tool_result", ToolID: "l1", Content: []byte(`"ok"`)}}}})
 			time.Sleep(500 * time.Millisecond)
 			result("late done")
+		case strings.Contains(in, "pile-task"): // as late-task; then, as Claude Code 2.1.318 took messages waiting at a turn's end, the first two as one turn, echoed alone and then together, the third as a turn of its own
+			say(block{Type: "tool_use", ID: "p1", Name: "Bash", Input: []byte(`{"command":"step"}`)})
+			emit(map[string]any{"type": "user", "message": map[string]any{"content": []block{{Type: "tool_result", ToolID: "p1", Content: []byte(`"ok"`)}}}})
+			time.Sleep(500 * time.Millisecond)
+			result("pile done")
+			var waiting []string
+			for len(waiting) < 3 {
+				if l := <-lines; !control(l) {
+					waiting = append(waiting, l)
+				}
+			}
+			first, _ := read(waiting[0])
+			second, _ := read(waiting[1])
+			replay(waiting[0])
+			var both map[string]any
+			json.Unmarshal([]byte(waiting[1]), &both)
+			both["isReplay"], both["message"] = true, map[string]any{"role": "user", "content": []block{textBlock(first + "\n"), textBlock(second)}}
+			emit(both)
+			result(fmt.Sprintf("together: %q", first+"\n"+second))
+			replay(waiting[2])
+			third, _ := read(waiting[2])
+			result(fmt.Sprintf("answer to %q", third))
 		case strings.Contains(in, "big-task"):
 			emit(map[string]any{"type": "assistant", "message": map[string]any{"content": []map[string]any{{"type": "text", "text": "working"}},
 				"usage": map[string]any{"input_tokens": 10, "cache_read_input_tokens": 300000}}})

@@ -315,3 +315,65 @@ func TestAgentLoopTellInTurn(t *testing.T) {
 		t.Fatalf("hook inputs: %v", in)
 	}
 }
+
+// Claude Code may take tells that came too late for a turn as one turn,
+// echoing the first alone and then those it took together: a tell still
+// waiting stays queued, and the hook runs once its turn ends, even when two
+// tells start alike (LoopTell.tla's TurnsAgree).
+func TestAgentLoopTellsTogether(t *testing.T) {
+	t.Parallel()
+	c, _ := fakeChat(t, t.TempDir(), 100)
+	a, _ := fakeAgent(t, c)
+	report, quiet := loopReports(t, a)
+	l := loopHookFor(t, `exit 0`)
+	a.Spawn("Pile", "pile-task", "", "", 0, l)
+	waitFor(t, "its step", func() bool { return strings.Contains(agentPlain(c.dir, "Pile"), `"command":"step"`) })
+	for _, text := range []string{"same", "other", "same"} {
+		if got := a.Tell("Pile", text); !strings.Contains(got, "after its current step") {
+			t.Fatal(got)
+		}
+	}
+	if got := report(); !strings.HasPrefix(got, `[Pile] answer to "same"`) {
+		t.Fatalf("report: %q", got)
+	}
+	quiet()
+	if in := hookInputs(t, l); len(in) != 1 || in[0]["last_assistant_message"] != `answer to "same"` {
+		t.Fatalf("hook inputs: %v", in)
+	}
+}
+
+// A tell held as a loop ends goes after the report, ahead of one Opt sends
+// on reading the report (LoopTell.tla's InOrder).
+func TestAgentLoopLateOrder(t *testing.T) {
+	t.Parallel()
+	c, _ := fakeChat(t, t.TempDir(), 100)
+	a, _ := fakeAgent(t, c)
+	reported, told := make(chan string, 8), false
+	a.report = func(text string) {
+		if !told { // as its report comes, before the held tell goes
+			told = true
+			a.Tell("Order", "second-tell")
+		}
+		reported <- text
+	}
+	next := func() string {
+		t.Helper()
+		select {
+		case got := <-reported:
+			return got
+		case <-time.After(15 * time.Second):
+			t.Fatal("no report")
+			return ""
+		}
+	}
+	l := loopHookFor(t, `[ $n -eq 1 ] && sleep 1; exit 0`)
+	a.Spawn("Order", "loop-task", "", "", 0, l)
+	waitFor(t, "its hook", func() bool { _, err := os.Stat(filepath.Join(l.Dir, "n")); return err == nil })
+	a.Tell("Order", "first-tell")
+	if got := next(); !strings.Contains(got, "loop-task") {
+		t.Fatalf("first: %q", got)
+	}
+	if got, want := next(), fmt.Sprintf("[Order] answer to %q", "first-tell\n\nsecond-tell"); !strings.HasPrefix(got, want) {
+		t.Fatalf("second: %q, want %q", got, want)
+	}
+}

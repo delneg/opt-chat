@@ -241,6 +241,7 @@ type event struct {
 	} `json:"compact_metadata"` // system compact_boundary: Claude Code compacted the call's context
 	Status string `json:"status"`   // system status: compacting, or null once done
 	Replay bool   `json:"isReplay"` // user: a message of ours, echoed as Claude Code takes it (--replay-user-messages)
+	UUID   string `json:"uuid"`     // a replay's: that of the last message it holds (see sendID)
 
 	RequestID string          `json:"request_id"` // control_request: Claude Code asks
 	Request   jsontext.Value  `json:"request"`
@@ -711,15 +712,30 @@ func childEnvOf(environ []string) []string {
 
 // send writes one user message; false once stdin is closed.
 func (p *proc) send(content ...block) bool {
+	_, ok := p.sendAs("", content)
+	return ok
+}
+
+// sendID sends a message with a uuid of its own, and gives it: Claude Code
+// echoes it with the replay of the last message a turn takes, its input
+// in order, so a replay with it says it took this one and every one before
+// (measured on Claude Code 2.1.318).
+func (p *proc) sendID(content ...block) (string, bool) { return p.sendAs(newSession(), content) }
+
+func (p *proc) sendAs(id string, content []block) (string, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.stdin == nil {
-		return false
+		return "", false
 	}
 	content = slices.DeleteFunc(slices.Clone(content), func(b block) bool { return b.Type == "text" && b.Text == "" })
-	b, _ := json.Marshal(map[string]any{"type": "user", "message": map[string]any{"role": "user", "content": content}})
+	m := map[string]any{"type": "user", "message": map[string]any{"role": "user", "content": content}}
+	if id != "" {
+		m["uuid"] = id
+	}
+	b, _ := json.Marshal(m)
 	_, err := p.stdin.Write(append(b, '\n'))
-	return err == nil
+	return id, err == nil
 }
 
 func (p *proc) close() {

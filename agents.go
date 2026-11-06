@@ -41,6 +41,7 @@ type rest struct {
 	compacted  bool   // since its last message
 	goOn       bool   // compacting mid-task: after it, it goes on with its task
 	pending    []tell // tells that came while compacting
+	late       []tell // tells that came as it ended its turn: they go after its report, ahead of the next
 }
 
 // k is a count of tokens, as 250k.
@@ -442,7 +443,6 @@ func (a *Agent) tell(name string, ts ...tell) (string, bool) {
 	lines := a.chat.viewNow() // in case it was compacted: before a.mu
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	opt := anyOpt(ts)
 	p, ok := a.running[name]
 	r, resting := a.resting[name]
 	if ok && p == nil {
@@ -454,6 +454,14 @@ func (a *Agent) tell(name string, ts ...tell) (string, bool) {
 			a.restartLocked(name)
 		}
 	}
+	if resting && len(r.late) > 0 { // they go first, after its report
+		ts = append(r.late, ts...)
+		r.late = nil
+	}
+	if len(ts) == 0 {
+		return "", false
+	}
+	opt := anyOpt(ts)
 	switch h := a.halts[name]; {
 	case h != nil && h.restart != nil:
 		a.logTells(name, ts) // now, in its log, as a tell at work
@@ -498,14 +506,15 @@ func (a *Agent) tell(name string, ts ...tell) (string, bool) {
 		msg = anchored(lines, name, r.task, tellBlocks(ts, optHead))
 		a.note(name, func(r *agentRecord) { r.Compacted = false })
 	}
-	if !p.send(msg...) {
+	id, sent := p.sendID(msg...)
+	if !sent {
 		delete(a.running, name)
 		delete(a.userTurn, name)
 		return fmt.Sprintf("[%s] has just ended.", name), false
 	}
 	if h := a.halts[name]; h != nil && a.looping(name) {
 		h.inTurn = true // one at rest is at work again
-		h.queue(msg)
+		h.queue(id, msg)
 		if !resting {
 			return fmt.Sprintf("Sent: [%s] is in a loop: it gets this after its current step, in this turn.", name), true
 		}
@@ -525,17 +534,18 @@ func (a *Agent) queueHeldLocked(name string, h *halt, p *proc) {
 	}
 	a.held[name] = nil
 	a.logTells(name, ts)
-	if msg := tellBlocks(ts, ""); p.send(msg...) {
-		h.queue(msg)
+	msg := tellBlocks(ts, "")
+	if id, ok := p.sendID(msg...); ok {
+		h.queue(id, msg)
 		h.told++
 	}
 }
 
-// queue notes msg, sent in a loop's turn, as queued until Claude Code
-// echoes it, by its first text; a.mu held.
-func (h *halt) queue(msg []block) {
-	if len(msg) > 0 && msg[0].Type == "text" && msg[0].Text != "" {
-		h.queued = append(h.queued, msg[0].Text)
+// queue notes msg, sent in a loop's turn with the uuid id, as queued until
+// Claude Code echoes it; a.mu held. An empty one has nothing to take.
+func (h *halt) queue(id string, msg []block) {
+	if len(msg) > 0 {
+		h.queued = append(h.queued, id)
 	}
 }
 
@@ -661,8 +671,8 @@ type halt struct {
 	restart []tell // non-nil: its call ends, to go on from its saved session with these (see restartLocked); under a.mu
 	// In a loop: inTurn while Claude Code is in a turn of its task, not
 	// between two (its hook runs, it compacts); replays once Claude Code has
-	// echoed a message as it took it; queued, the first text of each tell
-	// sent in its turn, until it is echoed. Under a.mu.
+	// echoed a message as it took it; queued, the uuid of each tell sent in
+	// its turn, until it is echoed (see sendID). Under a.mu.
 	inTurn, replays bool
 	queued          []string
 }
@@ -959,10 +969,8 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 			a.mu.Lock()
 			first := !h.replays
 			h.replays = true
-			for _, b := range e.blocks() {
-				if i := slices.IndexFunc(h.queued, func(q string) bool { return b.Type == "text" && strings.HasPrefix(b.Text, q) }); i >= 0 {
-					h.queued = slices.Delete(h.queued, i, i+1)
-				}
+			if i := slices.Index(h.queued, e.UUID); i >= 0 { // it takes its input in order: this one and every one before
+				h.queued = slices.Delete(h.queued, 0, i+1)
 			}
 			if first && h.inTurn && !h.cut { // tells held until now go in this turn
 				a.queueHeldLocked(name, h, p)
@@ -1251,7 +1259,8 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 			a.resting = map[string]*rest{}
 		}
 		delete(a.running, name)
-		r := &rest{p: p, until: time.Now().Add(cmp.Or(a.rest, agentRest)), task: task, compacting: window > 0 && size > window || asked, compacted: midCompacted}
+		r := &rest{p: p, until: time.Now().Add(cmp.Or(a.rest, agentRest)), task: task, compacting: window > 0 && size > window || asked, compacted: midCompacted,
+			late: append(a.held[name], h.now...)} // tells that came as its loop ended, or as it ended its turn
 		mid := midCompacted
 		midCompacted = false
 		a.resting[name] = r
@@ -1268,9 +1277,10 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 			delete(a.resting, oldest)
 			a.subLocked(oldest, func(s *sub) { s.State = "ended" })
 		}
-		late := append(a.held[name], h.now...) // tells that came as its loop ended, or as it ended its turn
-		if len(late) > 0 {
-			a.held[name], h.now = nil, nil
+		late := len(r.late) > 0
+		h.now = nil
+		if a.looping(name) {
+			a.held[name] = nil
 		}
 		user := a.userTurn[name]
 		delete(a.userTurn, name)
@@ -1286,8 +1296,8 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 			send(final)
 		}
 		a.chat.hub.sound(soundDone)
-		if len(late) > 0 {
-			a.tell(name, late...)
+		if late {
+			a.tell(name) // unless a tell came first and took them
 		}
 		a.mu.Lock()
 		again := h.restart != nil && a.resting[name] == r // asked while it ended its turn

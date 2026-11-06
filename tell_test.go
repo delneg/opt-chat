@@ -287,6 +287,29 @@ func TestTellUserNow(t *testing.T) {
 	}
 }
 
+// The user's message sent now as a subagent not in a loop ends its turn,
+// too late to cut it, goes after its report, as a message to it at rest:
+// it is not in a loop for that.
+func TestTellUserNowAsItEnds(t *testing.T) {
+	t.Parallel()
+	c, _ := fakeChat(t, t.TempDir(), 100)
+	a, _ := fakeAgent(t, c)
+	report, _ := loopReports(t, a)
+	a.Spawn("End", "late-task", "", "", 0, nil)
+	waitFor(t, "its step", func() bool { return strings.Contains(agentPlain(c.dir, "End"), `"command":"step"`) })
+	if out, ok := a.TellUser("End", "hurry", nil, true); !ok || out != "Sent: [End] was interrupted to read it now." {
+		t.Fatal(out, ok)
+	}
+	if got := report(); !strings.HasPrefix(got, "[End] late done") {
+		t.Fatalf("its report: %q", got)
+	}
+	waitFor(t, "its answer", func() bool { return strings.Contains(agentPlain(c.dir, "End"), "hurried: "+userHead+"hurry") })
+	waitFor(t, "End at rest", func() bool { return agentState(a, "End") == "resting" })
+	if got := a.Tell("End", "more"); strings.Contains(got, "loop") {
+		t.Fatal(got)
+	}
+}
+
 // A subagent cut off by a quit as it answered the user goes on when
 // opt-chat starts again, the user's turn still: it reports nothing to Opt.
 func TestUserTurnSurvivesRestart(t *testing.T) {

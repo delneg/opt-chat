@@ -4,6 +4,7 @@
 # order forbids), and expects check.sh to report that property broken.
 # Each mutant is one or more find-and-replace pairs on the spec, read from
 # stdin: a find, a line "=>", its replacement, and "--" between pairs.
+# PYTHON names the Python to run (python3).
 # Exit status 1 if a mutant goes uncaught.
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -14,7 +15,7 @@ mutant() { # name, property, config; the pairs on stdin
   mkdir "$d/agentmem"
   cp ../tlc.sh "$d/"
   cp AgentMem.tla ./*.cfg check.sh "$d/agentmem/"
-  python3 -c '
+  ${PYTHON:-python3} -c '
 import sys
 p, pairs = sys.argv[1], sys.stdin.read()
 s = open(p).read()

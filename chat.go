@@ -792,7 +792,7 @@ func (c *Chat) refit() {
 // firstLine is an error's first line: Claude Code's go on with advice,
 // links and ids, which would fill the terminal at each failure.
 func firstLine(err error) string {
-	s, _, _ := strings.Cut(err.Error(), "\n")
+	s, _, _ := strings.Cut(strings.TrimSpace(err.Error()), "\n")
 	return s
 }
 

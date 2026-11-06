@@ -590,8 +590,8 @@ func TestFailingLines(t *testing.T) {
 	}
 }
 
-// A line the models' safeguards flag is skipped at once, never tried
-// again: a message's without its text, which may be what they flag, so
+// A line the models' safeguards flag, with its context and without, is
+// skipped at once, never tried again: a message's without its text, which may be what they flag, so
 // the merges over it don't take it on; a merge's as its halves' lines, cut.
 func TestFlaggedLines(t *testing.T) {
 	t.Parallel()
@@ -635,13 +635,41 @@ func TestFlaggedLines(t *testing.T) {
 	if len(tries) != 2 {
 		t.Fatalf("tries: %v", tries)
 	}
-	for in, n := range tries {
-		if n != 1 {
+	for in, n := range tries { // with its context, then without
+		if n != 2 {
 			t.Fatalf("tried %d times: %q", n, in)
 		}
 	}
 	if w := r.warnings(); len(w) != 2 || !strings.Contains(w[0], "skipped") || strings.Contains(strings.Join(w, ""), "\n") {
 		t.Fatalf("warnings: %q", w)
+	}
+}
+
+// A line flagged for its context alone, as a message whose head or line
+// the safeguards flag, is built without it: it is not skipped.
+func TestFlaggedContext(t *testing.T) {
+	t.Parallel()
+	c, _ := fakeChat(t, t.TempDir(), 100)
+	inner := c.compact
+	c.mu.Lock()
+	c.compact = func(ctx context.Context, lines []string, stable int, task []block) (string, error) {
+		if strings.Contains(task[0].Text, "compress message 0 ") {
+			return "flag-me", nil // a line whose text the safeguards flag
+		}
+		if strings.Contains(strings.Join(lines, "\n"), "flag-me") {
+			return "", errFlagged
+		}
+		return inner(ctx, lines, stable, task)
+	}
+	c.mu.Unlock()
+	c.Log("note", strings.Repeat("a", 600))
+	waitIdle(t, c)
+	c.Log("note", strings.Repeat("b", 600))
+	waitIdle(t, c)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if l := c.line(key{0, 1}); l != "1+1|"+strings.Repeat("s", 100) {
+		t.Fatalf("line: %q", l)
 	}
 }
 

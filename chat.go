@@ -722,6 +722,13 @@ func (c *Chat) build(k key, compact compactor, ctxLines []string, stable int, ta
 	ctx, cancel := context.WithTimeout(context.Background(), compactTimeout)
 	text, err := compact(ctx, ctxLines, stable, task)
 	cancel()
+	if errors.Is(err, errFlagged) && len(ctxLines) > 0 {
+		// What they flag may be its context, as a message's head there,
+		// not its own: once more without it, before it is skipped.
+		ctx, cancel = context.WithTimeout(context.Background(), compactTimeout)
+		text, err = compact(ctx, nil, 0, task)
+		cancel()
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	delete(c.busy, k)

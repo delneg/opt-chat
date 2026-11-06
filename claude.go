@@ -921,11 +921,36 @@ func awaitResult(p *proc, u *usage, each func(event)) error {
 	}
 }
 
+// errFlagged is a compaction the models' safeguards refused, on Opus too:
+// its content decides that, so no try is left.
+var errFlagged = errors.New("the models' safeguards flagged it")
+
+// flagged matches a refusal by a model's safeguards, as Claude Code words it
+// ("API Error: Sonnet 5.5's safeguards flagged this message ... change your
+// model"), or by the usage policy's older check.
+var flagged = regexp.MustCompile(`safeguards flagged|violate our Usage Policy`)
+
+// flagModel is the model a compaction the safeguards flag goes to.
+const flagModel = "opus"
+
 // Compact builds one tree line, enforcing the size with the ruler, the cut,
 // and retries. The first stable lines of its context are the same for the
-// compactions running meanwhile.
+// compactions running meanwhile. One the safeguards flag goes to Opus at
+// once, as Claude Code's refusal says to change the model; flagged there too,
+// it fails with errFlagged.
 func (a *Agent) Compact(ctx context.Context, lines []string, stable int, task []block) (string, error) {
-	p, err := a.start(ctx, a.cmodel, a.ceffort, roleCompact)
+	line, err := a.compactOn(ctx, a.cmodel, lines, stable, task)
+	if err != nil && flagged.MatchString(err.Error()) && !strings.Contains(a.cmodel, flagModel) {
+		line, err = a.compactOn(ctx, flagModel, lines, stable, task)
+	}
+	if err != nil && flagged.MatchString(err.Error()) {
+		return "", errFlagged
+	}
+	return line, err
+}
+
+func (a *Agent) compactOn(ctx context.Context, model string, lines []string, stable int, task []block) (string, error) {
+	p, err := a.start(ctx, model, a.ceffort, roleCompact)
 	if err != nil {
 		return "", err
 	}

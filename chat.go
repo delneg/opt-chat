@@ -728,12 +728,20 @@ func (c *Chat) build(k key, compact compactor, ctxLines []string, stable int, ta
 	if err != nil && c.compact == nil {
 		return // quitting: the next run builds it
 	}
-	if err != nil {
+	if errors.Is(err, errFlagged) {
+		// Its content decides, so it is skipped at once: a message's line
+		// without its text, which the merges over it would take on.
+		c.hub.notice("warn", "compaction %s skipped: %v, on Opus too. Zoom shows what it holds.", k.name(), err)
+		text = c.fallback(k)
+		if k.L == 0 {
+			text = c.msgs[k.I].Kind + ": (skipped: " + err.Error() + ")" + notSummarized
+		}
+	} else if err != nil {
 		f := c.failing[k]
 		if f == nil {
 			f = &failure{}
 			c.failing[k] = f
-			c.hub.notice("warn", "compaction %s failed, trying again later: %v", k.name(), err)
+			c.hub.notice("warn", "compaction %s failed, trying again later: %s", k.name(), firstLine(err))
 		}
 		if f.n > 0 && c.written > f.at {
 			f.strikes++
@@ -753,7 +761,7 @@ func (c *Chat) build(k key, compact compactor, ctxLines []string, stable int, ta
 			return
 		}
 		// It fails while other lines get built: its source, cut, stands in.
-		c.hub.notice("warn", "compaction %s failed %d times while other lines were built: its line is its source, cut and marked: %v", k.name(), f.n, err)
+		c.hub.notice("warn", "compaction %s failed %d times while other lines were built: its line is its source, cut and marked: %s", k.name(), f.n, firstLine(err))
 		c.hub.sound(soundError)
 		text = c.fallback(k)
 	} else {
@@ -779,6 +787,13 @@ func (c *Chat) refit() {
 	if c.growCview() || c.view.shrinking != was {
 		c.saveView()
 	}
+}
+
+// firstLine is an error's first line: Claude Code's go on with advice,
+// links and ids, which would fill the terminal at each failure.
+func firstLine(err error) string {
+	s, _, _ := strings.Cut(err.Error(), "\n")
+	return s
 }
 
 // notSummarized ends a line no model could write, which zoom opens as any other.

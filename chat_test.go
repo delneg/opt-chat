@@ -539,12 +539,13 @@ func TestImportKeepsDetail(t *testing.T) {
 func TestFailingLines(t *testing.T) {
 	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
+	r := record(c)
 	inner := c.compact
 	c.mu.Lock()
 	c.retryFor = 5 * time.Millisecond
 	c.compact = func(ctx context.Context, lines []string, stable int, task []block) (string, error) {
 		if strings.Contains(task[0].Text, "compress message") && strings.Contains(task[0].Text, "poison") {
-			return "", errors.New("refused")
+			return "", errors.New("refused\n\nRequest ID: req_1")
 		}
 		return inner(ctx, lines, stable, task)
 	}
@@ -581,6 +582,66 @@ func TestFailingLines(t *testing.T) {
 	c.mu.Unlock()
 	if !strings.HasPrefix(line, "3+1|note: poison 3 ppp") || !strings.HasSuffix(line, notSummarized) || len(line) > nodeMax+8 {
 		t.Fatalf("stand-in: %q", line)
+	}
+	for _, w := range r.warnings() { // the error's first line alone
+		if strings.Contains(w, "\n") || strings.Contains(w, "Request ID") {
+			t.Fatalf("warning: %q", w)
+		}
+	}
+}
+
+// A line the models' safeguards flag is skipped at once, never tried
+// again: a message's without its text, which may be what they flag, so
+// the merges over it don't take it on; a merge's as its halves' lines, cut.
+func TestFlaggedLines(t *testing.T) {
+	t.Parallel()
+	c, _ := fakeChat(t, t.TempDir(), 300) // too long to join without a model
+	r := record(c)
+	inner := c.compact
+	var mu sync.Mutex
+	tries := map[string]int{}
+	c.mu.Lock()
+	c.compact = func(ctx context.Context, lines []string, stable int, task []block) (string, error) {
+		in := task[0].Text
+		if strings.Contains(in, "compress message") && strings.Contains(in, "be-flagged") || strings.Contains(in, "merge lines 2+1 and 3+1") {
+			mu.Lock()
+			tries[in[:40]]++
+			mu.Unlock()
+			return "", errFlagged
+		}
+		return inner(ctx, lines, stable, task)
+	}
+	c.mu.Unlock()
+	c.Log("note", strings.Repeat("a", 600))
+	c.Log("user", "be-flagged "+strings.Repeat("b", 600))
+	c.Log("note", strings.Repeat("c", 600))
+	c.Log("note", strings.Repeat("d", 600))
+	waitFor(t, "their lines", func() bool {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		return c.built(key{0, 1}) && c.built(key{1, 1})
+	})
+	c.mu.Lock()
+	skipped, merged := c.line(key{0, 1}), c.line(key{1, 1})
+	c.mu.Unlock()
+	if want := "1+1|user: (skipped: the models' safeguards flagged it)" + notSummarized; skipped != want {
+		t.Fatalf("skipped: %q, want %q", skipped, want)
+	}
+	if !strings.HasPrefix(merged, "2+2|") || !strings.HasSuffix(merged, notSummarized) {
+		t.Fatalf("merge: %q", merged)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(tries) != 2 {
+		t.Fatalf("tries: %v", tries)
+	}
+	for in, n := range tries {
+		if n != 1 {
+			t.Fatalf("tried %d times: %q", n, in)
+		}
+	}
+	if w := r.warnings(); len(w) != 2 || !strings.Contains(w[0], "skipped") || strings.Contains(strings.Join(w, ""), "\n") {
+		t.Fatalf("warnings: %q", w)
 	}
 }
 

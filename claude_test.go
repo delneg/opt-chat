@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -270,6 +271,10 @@ func fakeClaude() {
 		case strings.Contains(in, "Compaction:") && strings.Contains(in, "make-it-long"):
 			failRetry = strings.Contains(in, "then-fail")
 			result(strings.Repeat("x", 600))
+		case strings.Contains(in, "Compaction:") && strings.Contains(in, "be-flagged") && (strings.Contains(in, "always") || flagOf(os.Args, "--model") != "opus"):
+			emit(map[string]any{"type": "result", "is_error": true, "result": "API Error: Small's safeguards flagged this message (https://www.anthropic.com/legal/aup). This sometimes happens with safe, normal conversations.\n\nTry rephrasing the request in a new session or change your model.\n\nDetails: `[reasoning_extraction]`"})
+		case strings.Contains(in, "Compaction:") && strings.Contains(in, "be-flagged"):
+			result("opus line")
 		case strings.Contains(in, "Compaction:"):
 			result(fmt.Sprintf("line with %d images", images))
 		case strings.HasPrefix(text, "/compact "): // at rest, a while
@@ -604,6 +609,21 @@ func TestCompact(t *testing.T) {
 	a.cbare = false
 	if n, u := a.takeCompactions(); n != 7 || u.Read == 0 {
 		t.Fatalf("compactions counted: %d, %v", n, u)
+	}
+
+	// One the safeguards flag goes to Opus at once, and if Opus refuses
+	// too, fails as flagged: its content decides, so no try is left.
+	got, err = a.Compact(context.Background(), nil, 0, []block{textBlock("Compaction: be-flagged")})
+	if all := calls(); err != nil || got != "opus line" || flagOf(all[len(all)-2], "--model") != "small" || flagOf(all[len(all)-1], "--model") != "opus" {
+		t.Fatalf("flagged: %q, %v", got, err)
+	}
+	n := len(calls())
+	if _, err = a.Compact(context.Background(), nil, 0, []block{textBlock("Compaction: be-flagged always")}); !errors.Is(err, errFlagged) || len(calls()) != n+2 {
+		t.Fatalf("flagged on both: %v, %d calls", err, len(calls())-n)
+	}
+	a.cmodel = "opus"
+	if _, err = a.Compact(context.Background(), nil, 0, []block{textBlock("Compaction: be-flagged always")}); !errors.Is(err, errFlagged) || len(calls()) != n+3 {
+		t.Fatalf("flagged on Opus: %v, %d calls", err, len(calls())-n-2)
 	}
 }
 

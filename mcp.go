@@ -70,13 +70,12 @@ var (
 		return map[string]any{"name": name, "description": desc, "inputSchema": input}
 	}
 	mcpTools = []map[string]any{
-		tool("zoom", "Open the line id+n of the view into the two lines of n/2 under it; n = 1 gives the message whole, with its images. "+
-			"With n = 1, count gives the count messages from id on, whole, up to 64 KB. "+
-			`zoom("Name") gives a subagent's whole chat.`,
+		tool("zoom", zoomDesc+zoomAgentTool,
 			schema([]string{"id"}, map[string]any{"id": map[string]any{"type": []string{"integer", "string"}}, "n": num, "count": num})),
 		tool("date", "The date and time of message id.", schema([]string{"id"}, map[string]any{"id": num})),
 		tool("search", "Find the messages of the whole chat that hold text (a word, a name, a number, an error; any case), newest first, 20 at a time: "+
-			"each with a snippet, its date, and the view's line that holds it, to zoom into; when none does, the 10 that best share its words. before: go on from this message id.",
+			"each with a snippet, its date, and the view's line that holds it, to zoom into; when none does, the 10 that best share its words. "+searchAgentTool+
+			"before: go on from this message id.",
 			schema([]string{"text"}, map[string]any{"text": str, "before": num})),
 		tool("spawn", `Start a subagent on a task, in the background, and return at once. Its report comes back as a message starting "[Name]". Never wait for it. `+
 			"A subagent sees the view and the user's instructions, but knows what you want only from its task. "+
@@ -105,9 +104,24 @@ var (
 		schema(nil, map[string]any{"at": str, "message": str, "every": str, "cancel": num}))
 )
 
+// zoom's text on subagents, in the tool and the prompt: their chats as
+// lines, or with -agent-memory=false their whole logs.
+const (
+	zoomAgentLines = "- zoom(\"Name\") gives an agent's chat as lines, and zoom(\"Name:id\", n) opens\n  them as zoom(id, n) does, and zoom(\"Name:id\", 1, count) reads a run of them\n"
+	zoomAgentWhole = "- zoom(\"Name\") gives an agent's whole chat\n"
+	zoomDesc       = "Open the line id+n of the view into the two lines of n/2 under it; n = 1 gives the message whole, with its images. " +
+		"With n = 1, count gives the count messages from id on, whole, up to 64 KB. "
+	zoomAgentTool      = `zoom("Name") gives a subagent's chat as lines, and zoom("Name:id", n) opens its line id+n, and zoom("Name:id", 1, count) its messages, as for the chat's.`
+	zoomAgentWholeTool = `zoom("Name") gives a subagent's whole chat.`
+	// search's text on subagents' chats, which it leaves out with -agent-memory=false.
+	searchAgentLines = "\n  its words; then a line per subagent whose chat holds it, with the zooms\n  that open its hits\n"
+	searchAgentTool  = `On its first page, then, a line per subagent whose chat holds text, with zoom("Name:id", 1) for its newest hits. `
+)
+
 // mcpList is the tools the chat serves: wake only with -wake. spawn's
 // autocompact goes up to the cap; spawn and tell take mcp when the user
-// has servers for subagents only, which it names.
+// has servers for subagents only, which it names. zoom says what it gives
+// of a subagent.
 func (a *Agent) mcpList() []map[string]any {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -123,6 +137,14 @@ func (a *Agent) mcpList() []map[string]any {
 			}
 			t = withProp(t, "mcp", map[string]any{"type": "array", "items": str,
 				"description": what + strings.Join(a.mcpAgents, ", ") + ". It has the servers on for all anyway. Leave it out unless its task needs one."})
+		}
+		if t["name"] == "zoom" && a.mems == nil {
+			t = maps.Clone(t)
+			t["description"] = zoomDesc + zoomAgentWholeTool
+		}
+		if t["name"] == "search" && a.mems == nil {
+			t = maps.Clone(t)
+			t["description"] = strings.Replace(t["description"].(string), searchAgentTool, "", 1)
 		}
 		tools[i] = t
 	}
@@ -216,9 +238,14 @@ func callTool(a *Agent, fromAgent bool, caller, tool string, x toolArgs) (string
 	} else if err == nil {
 		isName = false
 	}
+	if agent, line, ok := strings.Cut(s, ":"); tool == "zoom" && isName && ok { // "Name:id": a line of a subagent's chat
+		if j, err := strconv.Atoi(line); err == nil {
+			return a.ZoomAgentLine(agent, j, n, x.Count)
+		}
+	}
 	switch {
 	case tool == "zoom" && isName:
-		return a.chat.ZoomAgent(s), nil
+		return a.ZoomAgent(s), nil
 	case tool == "zoom" && err != nil:
 		return "id must be a message id or a subagent's name.", nil
 	case tool == "zoom" && x.Count > 1 && n > 1:
@@ -234,7 +261,11 @@ func callTool(a *Agent, fromAgent bool, caller, tool string, x toolArgs) (string
 	case tool == "date":
 		return a.chat.Date(i), nil
 	case tool == "search":
-		return a.chat.Search(x.Text, x.Before), nil
+		s := a.chat.Search(x.Text, x.Before)
+		if x.Before <= 0 { // the first page: the subagents' chats too
+			s += a.searchAgents(x.Text)
+		}
+		return s, nil
 	case (tool == "spawn" || tool == "tell") && fromAgent:
 		return a.subCall(caller, tool, x), nil
 	case tool == "spawn":

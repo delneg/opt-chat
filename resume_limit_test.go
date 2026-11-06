@@ -38,9 +38,9 @@ func TestResumeAtReset(t *testing.T) {
 	waitFor(t, "the turn's No reply", func() bool { return workLine(c, "[opt-chat] No reply: Claude AI usage limit reached") })
 
 	deadline := time.Now().Add(8 * time.Second)
-	for !workLine(c, "[opt-chat] usage limit reset") || !strings.Contains(c.ZoomAgent("Worker"), "usage limit") {
+	for !workLine(c, "[opt-chat] usage limit reset") || !strings.Contains(agentPlain(c.dir, "Worker"), "usage limit") {
 		if time.Now().After(deadline) {
-			t.Fatalf("nothing resumed at the reset: turn %v, Worker %q", workLine(c, "[opt-chat] usage limit reset"), c.ZoomAgent("Worker"))
+			t.Fatalf("nothing resumed at the reset: turn %v, Worker %q", workLine(c, "[opt-chat] usage limit reset"), agentPlain(c.dir, "Worker"))
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
@@ -312,8 +312,8 @@ func TestResumeSkipsSubagentThatFinished(t *testing.T) {
 		return n >= 2
 	})
 	time.Sleep(3500 * time.Millisecond) // past the reset the limit named
-	if strings.Contains(c.ZoomAgent("Worker"), "usage limit has reset") {
-		t.Errorf("Worker finished before the reset, then was told to pick up after it:\n%s", c.ZoomAgent("Worker"))
+	if strings.Contains(agentPlain(c.dir, "Worker"), "usage limit has reset") {
+		t.Errorf("Worker finished before the reset, then was told to pick up after it:\n%s", agentPlain(c.dir, "Worker"))
 	}
 }
 

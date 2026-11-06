@@ -116,9 +116,15 @@ type Chat struct {
 	// compact builds one line with a model; set before the first pump, nil
 	// again at quit.
 	compact compactor
+	role    chatRole // whose chat: the main one's, or a subagent's; see agentmem.go
+	broken  error    // a subagent's chat's write failed: it writes no more (failWrite)
 }
 
-func openChat(dir string) (*Chat, error) {
+func openChat(dir string) (*Chat, error) { return openChatAs(dir, chatRole{}) }
+
+// openChatAs opens the chat in dir as role's: a subagent's chat's failed
+// writes stop it, not opt-chat (failWrite).
+func openChatAs(dir string, role chatRole) (*Chat, error) {
 	for _, d := range []string{"main", "tree", "files", "btw", "usage"} {
 		if err := os.MkdirAll(filepath.Join(dir, d), 0o700); err != nil {
 			return nil, err
@@ -133,10 +139,17 @@ func openChat(dir string) (*Chat, error) {
 		lock.Close()
 		return nil, fmt.Errorf("another opt-chat owns %s", dir)
 	}
+	opened := false
+	defer func() {
+		if !opened { // a subagent's chat is opened again later in this run
+			lock.Close()
+		}
+	}()
 	c := &Chat{
 		dir: dir, lock: lock, tree: map[key]string{}, redo: map[key]bool{}, queued: map[key]bool{}, busy: map[key]bool{},
 		failing: map[key]*failure{}, changed: make(chan struct{}), jobs: defaultJobs,
 		view: view{lo: viewLo, hi: viewHi}, cview: view{lo: cviewLo, hi: cviewHi},
+		role: role,
 	}
 	// By id, not by file: a day file is named by the clock, which can go back.
 	var msgs []Msg
@@ -212,6 +225,7 @@ func openChat(dir string) (*Chat, error) {
 		c.resetCview()
 	}
 	c.saveView()
+	opened = true
 	return c, nil
 }
 
@@ -276,6 +290,9 @@ func appendRaw(path string, b []byte) error {
 // appendDay appends each v as one line to sub/<today>.jsonl, in one write,
 // and fsyncs it.
 func (c *Chat) appendDay(sub string, vs ...any) {
+	if c.broken != nil {
+		return
+	}
 	var b []byte
 	var err error
 	for _, v := range vs {
@@ -286,8 +303,34 @@ func (c *Chat) appendDay(sub string, vs ...any) {
 		err = appendRaw(filepath.Join(c.dir, sub, time.Now().Format(time.DateOnly)+".jsonl"), b)
 	}
 	if err != nil {
-		// ponytail: a failed write is fatal; the log is history and must not have holes.
-		fatal("write %s: %v", sub, err)
+		c.failWrite(fmt.Errorf("write %s: %w", sub, err))
+	}
+}
+
+// failWrite ends a write to disk that failed. The main chat's log is
+// history and must have no holes, so opt-chat stops. A subagent's chat
+// stops writing, so its files stay a first part of what it held, and
+// agentMems.fed opens it again from them. c.mu held, or c not yet shared.
+func (c *Chat) failWrite(err error) {
+	if c.role.sub == "" {
+		fatal("%v", err)
+	}
+	if !c.role.warned.Swap(true) {
+		c.warn(true, fmt.Sprintf("%v; zoom(\"%s\") gives its whole log until the chat opens again", err, c.role.sub))
+	}
+	c.broken = err
+}
+
+// warn says a compaction's or a write's failure on the page: a subagent's
+// chat's on the main chat's, named.
+func (c *Chat) warn(sound bool, s string) {
+	h := c.hub
+	if c.role.sub != "" {
+		h, s = c.role.notices, fmt.Sprintf("[%s] memory: %s", c.role.sub, s)
+	}
+	h.notice("warn", "%s", s)
+	if sound {
+		h.sound(soundError)
 	}
 }
 
@@ -303,7 +346,7 @@ func (c *Chat) logRef(kind, text, ref string, images ...string) {
 }
 
 // logMsgs appends messages (their kind, text, date and images) in one
-// write, each split as Log splits it.
+// write, each split as Log splits it, its parts numbered from its Part.
 func (c *Chat) logMsgs(ms []Msg) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -311,8 +354,8 @@ func (c *Chat) logMsgs(ms []Msg) {
 	var parts []any
 	for _, m := range ms {
 		for j, part := range splitText(m.Text, clipMax) {
-			p := Msg{I: len(c.msgs), Kind: m.Kind, Text: part, Size: len(m.Kind) + 2 + len(part), Date: m.Date, Ref: m.Ref, Part: j, Imported: m.Imported}
-			if j == 0 {
+			p := Msg{I: len(c.msgs), Kind: m.Kind, Text: part, Size: len(m.Kind) + 2 + len(part), Date: m.Date, Ref: m.Ref, Part: m.Part + j, Imported: m.Imported}
+			if p.Part == 0 {
 				p.Images = m.Images
 			}
 			c.msgs = append(c.msgs, p)
@@ -429,6 +472,9 @@ func readView(b []byte) (savedView, error) {
 
 func (c *Chat) saveView() {
 	c.flushNodes() // first: the view may hold them
+	if c.broken != nil {
+		return
+	}
 	pairs := func(keys []key) [][2]int { return lo.Map(keys, func(k key, _ int) [2]int { return [2]int{k.L, k.I} }) }
 	v := savedView{Keys: pairs(c.view.keys), Shrinking: c.view.shrinking,
 		Cview: &savedView{Keys: pairs(c.cview.keys), Shrinking: c.cview.shrinking}}
@@ -436,10 +482,9 @@ func (c *Chat) saveView() {
 	tmp := filepath.Join(c.dir, "view.json.tmp")
 	os.Remove(tmp)
 	if err := appendRaw(tmp, b); err != nil { // written and synced before it replaces the old one
-		fatal("view.json: %v", err)
-	}
-	if err := os.Rename(tmp, filepath.Join(c.dir, "view.json")); err != nil {
-		fatal("view.json: %v", err)
+		c.failWrite(fmt.Errorf("view.json: %w", err))
+	} else if err := os.Rename(tmp, filepath.Join(c.dir, "view.json")); err != nil {
+		c.failWrite(fmt.Errorf("view.json: %w", err))
 	}
 }
 
@@ -705,14 +750,27 @@ func (c *Chat) pick(side int, redo bool) (key, bool) {
 func (c *Chat) pump() {
 	for c.compact != nil && len(c.busy) < c.jobs { // nil: before the chat starts, or quitting
 		k, ok := c.next()
-		if !ok {
-			return
+		if !ok || !c.role.take() {
+			break
 		}
 		c.busy[k] = true
 		ctxLines, stable, task := c.compactInput(k)
 		go c.build(k, c.compact, ctxLines, stable, task)
 	}
+	c.role.pumped(c.compact != nil && c.waiting())
 }
+
+// waiting is whether a line is ready to build, not being built and not
+// waiting out a failure: the subagents' chats wait for it. One that keeps
+// failing holds up none of theirs.
+func (c *Chat) waiting() bool {
+	free := func(k key) bool { return !c.busy[k] && !c.cooling(k) }
+	return slices.ContainsFunc(c.ready0, func(i int) bool { return free(key{0, i}) }) || slices.ContainsFunc(c.readyM, free)
+}
+
+// idle is whether no line is being built or waiting to be: closed now,
+// the chat loses no work.
+func (c *Chat) idle() bool { return len(c.busy) == 0 && len(c.ready0) == 0 && len(c.readyM) == 0 }
 
 // compactor builds one line with a model from its context (the first stable
 // lines of it the same for compactions running at once) and its task.
@@ -732,13 +790,14 @@ func (c *Chat) build(k key, compact compactor, ctxLines []string, stable int, ta
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	delete(c.busy, k)
+	c.role.done()
 	if err != nil && c.compact == nil {
 		return // quitting: the next run builds it
 	}
 	if errors.Is(err, errFlagged) {
 		// Its content decides, so it is skipped at once: a message's line
 		// without its text, which the merges over it would take on.
-		c.hub.notice("warn", "compaction %s skipped: %v, on Opus too. Zoom shows what it holds.", k.name(), err)
+		c.warn(false, fmt.Sprintf("compaction %s skipped: %v, on Opus too. Zoom shows what it holds.", k.name(), err))
 		text = c.fallback(k)
 		if k.L == 0 {
 			text = c.msgs[k.I].Kind + ": (skipped: " + err.Error() + ")" + notSummarized
@@ -748,7 +807,7 @@ func (c *Chat) build(k key, compact compactor, ctxLines []string, stable int, ta
 		if f == nil {
 			f = &failure{}
 			c.failing[k] = f
-			c.hub.notice("warn", "compaction %s failed, trying again later: %s", k.name(), firstLine(err))
+			c.warn(false, fmt.Sprintf("compaction %s failed, trying again later: %s", k.name(), firstLine(err)))
 		}
 		if f.n > 0 && c.written > f.at {
 			f.strikes++
@@ -768,13 +827,15 @@ func (c *Chat) build(k key, compact compactor, ctxLines []string, stable int, ta
 			return
 		}
 		// It fails while other lines get built: its source, cut, stands in.
-		c.hub.notice("warn", "compaction %s failed %d times while other lines were built: its line is its source, cut and marked: %s", k.name(), f.n, firstLine(err))
-		c.hub.sound(soundError)
+		c.warn(true, fmt.Sprintf("compaction %s failed %d times while other lines were built: its line is its source, cut and marked: %s", k.name(), f.n, firstLine(err)))
 		text = c.fallback(k)
 	} else {
 		c.written++
 	}
 	delete(c.failing, k)
+	if k.L == 0 && c.role.sub == "" {
+		text = withChatRef(c.msgs[k.I], text)
+	}
 	c.setNode(k, text)
 	c.flushNodes()
 	c.refit()
@@ -842,7 +903,7 @@ func (c *Chat) compactInput(k key) ([]string, int, []block) {
 	if k.L == 0 {
 		m := c.msgs[k.I]
 		in := fmt.Sprintf("Compaction: compress message %d into one line of at most 512 bytes\n"+
-			"(about 70 words), the length of this ruler:\n%s\n%s<input>\n%s: %s\n", k.I, ruler, c.callBlock(k.I), m.Kind, ownTags.Replace(m.Text))
+			"(about 70 words), the length of this ruler:\n%s\n%s%s<input>\n%s: %s\n", k.I, ruler, c.role.whose(), c.callBlock(k.I), m.Kind, ownTags.Replace(m.Text))
 		if f := c.failing[k]; len(m.Images) > 0 && f != nil && f.strikes >= giveUp/2 { // they may be what fails
 			return ctx, stable, []block{textBlock(in + fmt.Sprintf("[%d attached, which could not be read]\n</input>", len(m.Images)))}
 		}
@@ -855,8 +916,8 @@ func (c *Chat) compactInput(k key) ([]string, int, []block) {
 	return ctx, stable, []block{textBlock(fmt.Sprintf("Compaction: merge lines %s and %s, adjacent, into one line of at most\n"+
 		"512 bytes (about 70 words), the length of this ruler:\n%s\n"+
 		"<chat> may hold their messages, %d to %d, in more detail: take details\nof them from there too.\n"+
-		"<input>\n%s\n%s\n</input>",
-		a.name(), b.name(), ruler, k.start(), k.end()-1, c.line(a), c.line(b)))}
+		"%s<input>\n%s\n%s\n</input>",
+		a.name(), b.name(), ruler, k.start(), k.end()-1, c.role.whose(), c.line(a), c.line(b)))}
 }
 
 // compactContext is the compactions' view's lines up to node k.
@@ -1043,16 +1104,16 @@ func (c *Chat) callView() []string {
 // callKeys are callView's lines' nodes. Caller holds c.mu.
 func (c *Chat) callKeys() []key {
 	keys := c.view.keys
-	if !slices.ContainsFunc(keys, func(k key) bool { return !c.built(k) }) && c.view.bytes <= viewHi {
+	if !slices.ContainsFunc(keys, func(k key) bool { return !c.built(k) }) && c.view.bytes <= c.view.hi {
 		return keys
 	}
 	weigh := func(k key) int { return len(c.callLine(k)) + 1 }
 	size := lo.SumBy(keys, weigh)
-	if size > viewHi {
-		keys, size = merged(keys, len(c.msgs), func(a, b key) bool { return !c.built(a) && !c.built(b) }, weigh, size, viewLo)
+	if size > c.view.hi {
+		keys, size = merged(keys, len(c.msgs), func(a, b key) bool { return !c.built(a) && !c.built(b) }, weigh, size, c.view.lo)
 	}
-	if size > viewHi {
-		keys, _ = merged(keys, len(c.msgs), func(a, b key) bool { return true }, weigh, size, viewLo)
+	if size > c.view.hi {
+		keys, _ = merged(keys, len(c.msgs), func(a, b key) bool { return true }, weigh, size, c.view.lo)
 	}
 	return keys
 }
@@ -1060,18 +1121,31 @@ func (c *Chat) callKeys() []key {
 // callLine is line k as a call sees it: a message not summarized yet shows
 // its head, up to nodeMax bytes.
 func (c *Chat) callLine(k key) string {
-	if k.L > 0 || c.built(k) {
+	if c.built(k) || k.L > 0 && !c.role.mergedHeads() {
 		return c.line(k)
 	}
-	m := c.msgs[k.I]
+	if k.L > 0 { // its first and last messages' heads
+		last := min(k.end(), len(c.msgs)) - 1
+		return fmt.Sprintf("%s|%s … %s %s", k.name(), c.msgHead(k.start(), mergedHead), c.msgHead(last, mergedHead), unbuilt)
+	}
+	return fmt.Sprintf("%s|%s %s", k.name(), c.msgHead(k.I, nodeMax), unbuilt)
+}
+
+// mergedHead is how much of each of its two messages a merged line not
+// summarized yet shows.
+const mergedHead = 120
+
+// msgHead is message i as "kind: text", cut to n bytes.
+func (c *Chat) msgHead(i, n int) string {
+	m := c.msgs[i]
 	text := flat(m.Text)
-	if cut := head(text, nodeMax); cut != text {
+	if cut := head(text, n); cut != text {
 		text = cut + "…"
 	}
 	if n := len(m.Images); n > 0 {
 		text += fmt.Sprintf(" [%d attached]", n)
 	}
-	return fmt.Sprintf("%s|%s: %s %s", k.name(), m.Kind, text, unbuilt)
+	return m.Kind + ": " + text
 }
 
 // Zoom opens line id+n into its two halves; n = 1 gives the message whole,
@@ -1244,10 +1318,10 @@ var (
 	recallTag = strings.NewReplacer("<recall>", "‹recall›", "</recall>", "‹/recall›")
 )
 
-// Recall finds the limit messages before message before that best share
-// the words of text, rare words weighing most, with no model call, as a
-// block for a turn's input; "" when none does. A summary line keeps only
-// so much of a message, so a turn gets these raw: names, numbers, paths.
+// shared finds the limit messages before message before that best share
+// the words of text, rare words weighing most, with no model call, a line
+// each for Recall; "" when none does. A summary line keeps only so much of
+// a message, so a turn gets these raw: names, numbers, paths.
 // Each word of three characters or more weighs its BM25 inverse document
 // frequency squared, so that the rare words lead, and nothing when half
 // the messages or more hold it. A message scores the sum of the weights of
@@ -1258,24 +1332,8 @@ var (
 // out, and so are messages the view shows whole.
 // (After https://github.com/ericjuta/omp-optchat/releases/tag/v0.9.0,
 // whose recall tool takes such messages as candidates.)
-func (c *Chat) Recall(text string, before, limit int) string {
-	lines := c.shared(text, before, limit)
-	if lines == "" {
-		return ""
-	}
-	return fmt.Sprintf("[opt-chat] Recall: messages from the log that share this message's rarest words,\n"+
-		"found by words alone, so some may be beside the point; each cut to %d bytes\n"+
-		"around its rarest word: zoom(id, 1) opens one whole.\n<recall>\n", recallCut) + lines + "</recall>\n\n"
-}
-
-// shared is Recall's messages, a line each; "" when none.
 func (c *Chat) shared(text string, before, limit int) string {
-	var terms []string
-	for _, w := range nonWord.Split(strings.ToLower(text), -1) {
-		if utf8.RuneCountInString(w) >= 3 && !slices.Contains(terms, w) && len(terms) < 64 {
-			terms = append(terms, w)
-		}
-	}
+	terms := recallTerms(text)
 	if len(terms) == 0 || limit <= 0 {
 		return ""
 	}
@@ -1284,17 +1342,59 @@ func (c *Chat) shared(text string, before, limit int) string {
 	c.mu.Unlock()
 	before = min(before, len(msgs))
 	lookups := lookupRefs(msgs[:before])
-	df := make([]int, len(terms))
-	type hit struct {
-		i     int
-		terms []int
-		score float64
+	hits, weight := rankShared(msgs[:before], terms, func(m Msg) bool { return lookups[m.Ref] }, func(hits []recallHit) []recallHit {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		// Shown whole: a message's own line, written with no model call. Behind
+		// a backlog, the call may see its parent instead (callView): kept then.
+		if slices.ContainsFunc(c.view.keys, func(k key) bool { return !c.built(k) }) {
+			return hits
+		}
+		return slices.DeleteFunc(hits, func(h recallHit) bool {
+			return c.viewLine(h.i).L == 0 && msgs[h.i].Size <= nodeMax && len(msgs[h.i].Images) == 0
+		})
+	})
+	var b strings.Builder
+	for _, h := range hits[:min(limit, len(hits))] {
+		m := msgs[h.i]
+		fmt.Fprintf(&b, "%d+1|%s, %s: %s\n", h.i, m.Kind, m.Date.Local().Format("2006-01-02"), recallTag.Replace(flat(excerpt(m.Text, terms[h.rarest(weight)], recallCut))))
 	}
-	var hits []hit
+	return b.String()
+}
+
+// recallTerms are text's words of three characters or more, in lower case,
+// each once, at most 64.
+func recallTerms(text string) []string {
+	var terms []string
+	for _, w := range nonWord.Split(strings.ToLower(text), -1) {
+		if utf8.RuneCountInString(w) >= 3 && !slices.Contains(terms, w) && len(terms) < 64 {
+			terms = append(terms, w)
+		}
+	}
+	return terms
+}
+
+// recallHit is a message of msgs that holds some of terms, by their index.
+type recallHit struct {
+	i     int
+	terms []int
+	score float64
+}
+
+// rarest is the term of h that weighs most.
+func (h recallHit) rarest(weight []float64) int {
+	return slices.MaxFunc(h.terms, func(a, b int) int { return cmp.Compare(weight[a], weight[b]) })
+}
+
+// rankShared is the messages of msgs that share terms, best first, and the
+// terms' weights, as Recall says; skip leaves a message out of the count
+// too, drop takes hits out after the count.
+func rankShared(msgs []Msg, terms []string, skip func(Msg) bool, drop func([]recallHit) []recallHit) ([]recallHit, []float64) {
+	df := make([]int, len(terms))
+	var hits []recallHit
 	n, total := 0, 0
-	for i := range before {
-		m := msgs[i]
-		if lookups[m.Ref] {
+	for i, m := range msgs {
+		if skip(m) {
 			continue
 		}
 		n, total = n+1, total+len(m.Text)
@@ -1307,19 +1407,11 @@ func (c *Chat) shared(text string, before, limit int) string {
 			}
 		}
 		if found != nil {
-			hits = append(hits, hit{i: i, terms: found})
+			hits = append(hits, recallHit{i: i, terms: found})
 		}
 	}
 	weight := lo.Map(df, func(d, _ int) float64 { w := max(0, math.Log((float64(n-d)+0.5)/(float64(d)+0.5))); return w * w })
-	c.mu.Lock()
-	// Shown whole: a message's own line, written with no model call. Behind
-	// a backlog, the call may see its parent instead (callView): kept then.
-	if !slices.ContainsFunc(c.view.keys, func(k key) bool { return !c.built(k) }) {
-		hits = slices.DeleteFunc(hits, func(h hit) bool {
-			return c.viewLine(h.i).L == 0 && msgs[h.i].Size <= nodeMax && len(msgs[h.i].Images) == 0
-		})
-	}
-	c.mu.Unlock()
+	hits = drop(hits)
 	// k1 is BM25's usual. Its usual b, 0.75, buried long replies and
 	// reports: on questions drawn from a real chat, 0.3 put the message
 	// holding the answer in the first 8 for 40 of 56 against 32, and the
@@ -1331,20 +1423,13 @@ func (c *Chat) shared(text string, before, limit int) string {
 		norm := (k1 + 1) / (1 + k1*(1-lenB+lenB*float64(len(msgs[h.i].Text))/avg))
 		hits[j].score = norm * lo.SumBy(h.terms, func(t int) float64 { return weight[t] })
 	}
-	slices.SortStableFunc(hits, func(a, b hit) int { return cmp.Or(cmp.Compare(b.score, a.score), cmp.Compare(b.i, a.i)) })
+	slices.SortStableFunc(hits, func(a, b recallHit) int { return cmp.Or(cmp.Compare(b.score, a.score), cmp.Compare(b.i, a.i)) })
 	if len(hits) == 0 || hits[0].score <= 0 {
-		return ""
+		return nil, weight
 	}
 	// Far behind the best, a hit shares only middling words: noise.
 	top := hits[0].score
-	hits = slices.DeleteFunc(hits, func(h hit) bool { return h.score < top/4 })
-	var b strings.Builder
-	for _, h := range hits[:min(limit, len(hits))] {
-		m := msgs[h.i]
-		rare := slices.MaxFunc(h.terms, func(a, b int) int { return cmp.Compare(weight[a], weight[b]) })
-		fmt.Fprintf(&b, "%d+1|%s, %s: %s\n", h.i, m.Kind, m.Date.Local().Format("2006-01-02"), recallTag.Replace(flat(excerpt(m.Text, terms[rare], recallCut))))
-	}
-	return b.String()
+	return slices.DeleteFunc(hits, func(h recallHit) bool { return h.score < top/4 }), weight
 }
 
 // excerpt is up to n bytes of s around the first place it holds word, in

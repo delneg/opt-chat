@@ -74,7 +74,7 @@ func TestNewAgent(t *testing.T) {
 	if real, _ := filepath.EvalSymlinks(proj); strings.TrimSpace(string(wd)) != real {
 		t.Fatalf("it ran in %q, not %s", wd, real)
 	}
-	log := c.ZoomAgent("proj")
+	log := a.ZoomAgent("proj")
 	if !strings.Contains(log, `agent: answer to "You are subagent [proj], the user's own`) || !strings.Contains(log, `from the page:\nhi there"`) ||
 		strings.Contains(log, "<chat>") || strings.Contains(log, "task:") {
 		t.Fatalf("its log: %q", log)
@@ -86,7 +86,7 @@ func TestNewAgent(t *testing.T) {
 		t.Fatal(out)
 	}
 	waitFor(t, "its second reply", func() bool {
-		return strings.Contains(c.ZoomAgent("proj"), "and again\"") && agentState(a, "proj") == "resting"
+		return strings.Contains(a.ZoomAgent("proj"), "and again\"") && agentState(a, "proj") == "resting"
 	})
 	if n := len(workLines(c, "[opt-chat] The user made")); n != 1 {
 		t.Fatalf("%d notes of who it is", n)
@@ -211,7 +211,7 @@ func TestNewAgentRetry(t *testing.T) {
 	}
 	waitFor(t, "its reply", func() bool { return agentState(a, name) == "resting" })
 	rec, _ := a.loadRecord(name)
-	if all := calls(); len(all) != 1 || flagOf(all[0], "--session-id") != rec.Session || !strings.Contains(c.ZoomAgent(name), "You are subagent [Again], the user's own") {
+	if all := calls(); len(all) != 1 || flagOf(all[0], "--session-id") != rec.Session || !strings.Contains(a.ZoomAgent(name), "You are subagent [Again], the user's own") {
 		t.Fatalf("its calls: %q", all)
 	}
 }

@@ -193,7 +193,7 @@ const stepsMax = 512 << 10
 // "@" and the unix ms it was written, and on a tool call and its echo "#"
 // and the call's id; "tool@1761134400000#toolu_01: ". Logs from before
 // have the kind alone, "tool: ".
-var stepStart = regexp.MustCompile(`(?m)^(task|on|opt|user|agent|thinking|tool|echo|loop|compacted|cut)(?:@(\d+)(?:#(\S+?))?)?: `)
+var stepStart = regexp.MustCompile(`(?m)^(task|on|opt|user|sub|agent|thinking|tool|echo|loop|compacted|cut)(?:@(\d+)(?:#(\S+?))?)?: `)
 
 // stepHead is s's head in the log, as stepStart reads it.
 func stepHead(s step) string {

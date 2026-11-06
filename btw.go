@@ -105,7 +105,7 @@ type asideRun struct {
 func (a *Agent) btw(lines []string, earlier []Aside, m message, before int) (r asideRun, err error) {
 	c := a.chat
 	input := a.atWork()
-	if r := c.Recall(unframed(m.full()), before, a.recall); r != "" {
+	if r := a.Recall(unframed(m.full()), before, a.recall); r != "" {
 		input = append(input, textBlock(r))
 	}
 	if len(earlier) > 0 {

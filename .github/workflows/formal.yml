@@ -1,0 +1,23 @@
+name: formal
+on:
+  push:
+    branches: [master]
+    paths: [agentmem.go, agents.go, chat.go, subs.go, 'formal/**', .github/workflows/formal.yml]
+  pull_request:
+    paths: [agentmem.go, agents.go, chat.go, subs.go, 'formal/**', .github/workflows/formal.yml]
+permissions:
+  contents: read
+jobs:
+  agentmem:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: model-check subagent memory
+        run: formal/agentmem/check.sh
+      - name: every property can fail
+        run: formal/agentmem/mutants.sh

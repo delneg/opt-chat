@@ -28,14 +28,15 @@ import (
 // loop (Bash, Read, Edit, ...); this program only owns the memory.
 type Agent struct {
 	chat            *Chat
-	system          string // the prompt: with agentsMD's instructions, the head of every cached prefix
-	agentsMD        string // the user's instructions, read again when the file changes; "": none
-	mcpConfig       string // the chat's tools, for turns and compactions
-	agentMCP        string // the same tools, for subagents: see agentMCPFor
-	model, effort   string // turns
-	amodel, aeffort string // subagents
-	cmodel, ceffort string // compactions
-	cbare           bool   // memory summary calls on a different model from the turns get no tools
+	mems            *agentMems // the subagents' chats, see agentmem.go; nil: -agent-memory=false
+	system          string     // the prompt: with agentsMD's instructions, the head of every cached prefix
+	agentsMD        string     // the user's instructions, read again when the file changes; "": none
+	mcpConfig       string     // the chat's tools, for turns and compactions
+	agentMCP        string     // the same tools, for subagents: see agentMCPFor
+	model, effort   string     // turns
+	amodel, aeffort string     // subagents
+	cmodel, ceffort string     // compactions
+	cbare           bool       // memory summary calls on a different model from the turns get no tools
 	perm, cwd       string
 	tools           string
 	claude          string            // the claude command: "" for the one on PATH
@@ -1253,7 +1254,7 @@ func (t *Turn) Run(ctx context.Context, msgs []message) error {
 		}
 	}
 	recalled, recallAt := make(chan string, 1), len(input)
-	go func() { recalled <- c.Recall(strings.Join(asked, "\n"), before, a.recall) }()
+	go func() { recalled <- a.Recall(strings.Join(asked, "\n"), before, a.recall) }()
 	for _, m := range msgs {
 		if !m.logged {
 			c.Log(m.kind, m.full(), m.images...)

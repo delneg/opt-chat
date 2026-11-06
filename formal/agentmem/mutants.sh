@@ -24,7 +24,7 @@ for pair in pairs.split("\n--\n"):
     s = s.replace(a, b.rstrip("\n"))
 open(p, "w").write(s)
 ' "$d/agentmem/AgentMem.tla"
-  sed -i "s/^PROPS=.*/PROPS=($prop)/" "$d/agentmem/check.sh"
+  sed -i.orig "s/^PROPS=.*/PROPS=($prop)/" "$d/agentmem/check.sh" # a suffix: GNU's sed and macOS's alike
   if "$d/agentmem/check.sh" "$cfg" > "$d/out" 2>&1; then
     echo "MISSED $prop ($name)"; miss=1
   elif grep -q "FAIL $prop" "$d/out"; then

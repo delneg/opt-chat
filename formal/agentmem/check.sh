@@ -37,7 +37,7 @@ for cfg in "${CONFIGS[@]}"; do
     rm -rf "$tmp/meta"
     keep=()
     for q in "${left[@]}"; do [ "$q" = "$p" ] || keep+=("$q"); done
-    left=("${keep[@]}")
+    left=(${keep[@]+"${keep[@]}"}) # empty, bash before 4.4 calls it unbound under set -u
   done
 done
 exit $fail

@@ -9,7 +9,10 @@ JAR=${TLA_JAR:-${XDG_CACHE_HOME:-$HOME/.cache}/tla/tla2tools-$VER.jar}
 if [ ! -f "$JAR" ]; then
   mkdir -p "$(dirname "$JAR")"
   curl -fsSL -o "$JAR.tmp" "https://github.com/tlaplus/tlaplus/releases/download/v$VER/tla2tools.jar"
-  echo "$SUM  $JAR.tmp" | sha256sum -c --quiet >&2
+  got=$(sha256sum "$JAR.tmp" | cut -d' ' -f1) # GNU's and macOS's alike
+  if [ "$got" != "$SUM" ]; then
+    echo "tla2tools.jar: sha256 $got, want $SUM" >&2; rm -f "$JAR.tmp"; exit 1
+  fi
   mv "$JAR.tmp" "$JAR"
 fi
 echo "$JAR"

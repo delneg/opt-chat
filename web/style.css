@@ -378,6 +378,19 @@ a { color: var(--blue); }
 .rail-log .edge { padding: 0 0 1em; }
 .card .now .el { flex: none; padding-right: 1ch; }
 .card.on { background: var(--bg); box-shadow: 0 0 0 1px var(--blue); cursor: default; }
+/* the rail's tree: a subagent's own beneath it, smaller, each on a line from it */
+.branch { display: flex; flex-direction: column; gap: .15em; }
+.kids { display: flex; flex-direction: column; gap: .15em; margin-left: 2.4ch; padding-left: 1.6ch; }
+.kids > * { position: relative; }
+.kids > *::before { content: ""; position: absolute; left: -1.6ch; top: -.15em; bottom: 0; border-left: 1px solid var(--border); }
+.kids > *:last-child::before { bottom: auto; height: 1.4em; }
+.kids > *::after { content: ""; position: absolute; left: -1.6ch; top: 1.25em; width: 1.3ch; border-top: 1px solid var(--border); }
+.card.kid { padding: .35em 1ch .4em; font-size: .9em; }
+.card.kid .meta, .card.kid .now { padding-left: 2.2ch; }
+.card .fold { color: var(--faint); font-size: .9em; padding: 0 .5ch; border-radius: 4px; }
+.card .fold:hover, .card .fold:focus-visible { color: var(--fg); background: var(--chip); outline: none; }
+.kids .more { text-align: left; color: var(--dim); font-size: .88em; padding: .25em 1ch; border-radius: 4px; }
+.kids .more:hover, .kids .more:focus-visible { color: var(--fg); background: var(--chip); outline: none; }
 
 /* an agent full screen (AgentFull): over Opt's chat, which stays beneath
    as it was, scrolled where it was; blue marks what is the agent's */

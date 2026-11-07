@@ -2603,8 +2603,8 @@ function subState(s, now) {
 function moving(s) { return ['working', 'starting', 'compacting'].includes(s?.state) && !S.asks.some(q => q.who === s.name); }
 function Dot({ s }) { return html`<span class=${'dot' + (moving(s) ? ' moving' : '')} aria-hidden="true">●</span>`; }
 
-function subMeta(s) {
-  return [s.parent && `[${s.parent}]'s`, s.model, s.effort, s.dir && 'in ' + tilde(s.dir), s.context && `${k(s.context)} context`, s.compact ? 'compacts at its next step' : s.window ? `compacts past ${k(s.window)}` : s.blank && 'autocompact off',
+function subMeta(s, kid) { // a subagent's own, under its parent, needs no name of it
+  return [s.parent && !kid && `[${s.parent}]'s`, s.model, s.effort, s.dir && 'in ' + tilde(s.dir), s.context && `${k(s.context)} context`, s.compact ? 'compacts at its next step' : s.window ? `compacts past ${k(s.window)}` : s.blank && 'autocompact off',
     s.steps && count(s.steps, 'step')].filter(Boolean).join(' · ');
 }
 
@@ -2675,6 +2675,7 @@ function Rail() {
   const now = useClock(subs.some(s => s.state === 'working' || s.state === 'resting'));
   const open = S.agent && subs.find(s => s.name === S.agent.name);
   const working = subs.filter(s => s.state === 'working' || s.state === 'starting').length;
+  const tree = railTree(subs);
   return html`<aside class=${'rail' + (S.wide ? '' : ' drawer')} aria-label="subagents">
     <${Grip}/>
     ${S.agent && !S.full
@@ -2686,24 +2687,95 @@ function Rail() {
           <button class="x" title=${S.wide ? 'hide until a new subagent starts (Alt+A or the bar\'s agents show it again)' : 'close (Esc)'} onClick=${() => toggleRail()}>×</button>
         </div>
         <div class="cards">
-          ${subs.map(s => html`<${AgentCard} key=${s.name} s=${s} now=${now}/>`)}
+          ${tree.tops.map(s => html`<${Branch} key=${s.name} s=${s} tree=${tree} now=${now}/>`)}
           ${!subs.length && html`<div class="empty">No subagent has run yet. When Opt starts one, it shows here.</div>`}
         </div>`}
   </aside>`;
 }
 
-function AgentCard({ s, now }) {
+// The rail is a tree: Opt's subagents and the user's own, the newest first,
+// each with its own subagents beneath it, smaller, on a line from it.
+// Those come waiting for the user first, then at work, at rest and ended,
+// each in the order they started; past kidsShown the rest fold into one
+// line that opens them, and the parent's caret folds them all. One whose
+// parent left the rail stands on its own, named as its parent's.
+const kidsShown = 7;
+const kidsOpen = new Set(); // parents whose subagents past kidsShown show
+const kidsFolded = new Set((() => { try { return JSON.parse(localStorage.getItem('kidsFolded')) || []; } catch { return []; } })()); // parents whose subagents are hidden
+
+function kidRank(s) {
+  if (S.asks.some(q => q.who === s.name)) return 0;
+  if (['starting', 'working', 'compacting', 'stopping'].includes(s.state)) return 1;
+  if (s.state === 'resting' || s.state === 'new') return 2;
+  return 3;
+}
+
+const railTree = memo1(subs => {
+  const names = new Set(subs.map(s => s.name)), kids = new Map();
+  for (const s of subs) {
+    if (!s.parent || !names.has(s.parent)) continue;
+    if (!kids.has(s.parent)) kids.set(s.parent, []);
+    kids.get(s.parent).push(s);
+  }
+  for (const list of kids.values()) list.sort((x, y) => kidRank(x) - kidRank(y) || x.started - y.started || (x.name < y.name ? -1 : 1));
+  return { tops: subs.filter(s => !s.parent || !names.has(s.parent)), kids };
+});
+
+// memo1 remembers f's result for its last argument and the questions waiting.
+function memo1(f) {
+  let arg, asks, out;
+  return x => {
+    if (x !== arg || S.asks !== asks) { arg = x; asks = S.asks; out = f(x); }
+    return out;
+  };
+}
+
+// kidsSummary says what subagents are at: "2 at work · 1 ended".
+function kidsSummary(list) {
+  const n = [0, 0, 0, 0];
+  for (const s of list) n[kidRank(s)]++;
+  return [n[0] && `${n[0]} waiting for you`, n[1] && `${n[1]} at work`, n[2] && `${n[2]} at rest`, n[3] && `${n[3]} ended`].filter(Boolean).join(' · ');
+}
+
+function toggleKids(which, name) {
+  if (!which.delete(name)) which.add(name);
+  if (which === kidsFolded) try { localStorage.setItem('kidsFolded', JSON.stringify([...kidsFolded])); } catch {}
+  set({});
+}
+
+function Branch({ s, tree, now, kid }) {
+  const list = tree.kids.get(s.name) || [];
+  const card = html`<${AgentCard} s=${s} now=${now} kid=${kid} kids=${list}/>`;
+  if (!list.length) return card;
+  const folded = kidsFolded.has(s.name), all = kidsOpen.has(s.name) || list.length <= kidsShown;
+  const shown = folded ? [] : all ? list : list.slice(0, kidsShown), hidden = list.slice(shown.length);
+  return html`<div class="branch">${card}
+    <div class="kids">
+      ${shown.map(k => html`<${Branch} key=${k.name} s=${k} tree=${tree} now=${now} kid/>`)}
+      ${hidden.length > 0 && html`<button class="more" onClick=${() => toggleKids(folded ? kidsFolded : kidsOpen, s.name)}
+          title=${folded ? 'show its subagents' : 'show them all'}>▸ ${folded ? count(list.length, 'subagent') : `${hidden.length} more`} · ${kidsSummary(hidden)}</button>`}
+      ${!folded && !hidden.length && list.length > kidsShown && html`<button class="more" onClick=${() => toggleKids(kidsOpen, s.name)}>▴ the first ${kidsShown} only</button>`}
+    </div>
+  </div>`;
+}
+
+function AgentCard({ s, now, kid, kids = [] }) {
   const [cls, label] = subState(s, now);
   const ask = S.asks.find(q => q.who === s.name);
   const step = ask ? ask.tool + ' ' + JSON.stringify(ask.input ?? '') : s.step;
   const tool = step && parseTool(step);
   const open = e => { if (e.type === 'click' || e.key === 'Enter' || e.key === ' ') { e.preventDefault(); if (S.full) goFull(s.name); else openAgent(s.name); } };
   const on = S.full === s.name;
-  return html`<div class=${'card ' + cls + (on ? ' on' : '')} role="button" tabindex="0" aria-current=${on ? 'true' : undefined} onClick=${open} onKeyDown=${e => e.target === e.currentTarget && open(e)}
+  const folded = kidsFolded.has(s.name);
+  const fold = e => { e.stopPropagation(); toggleKids(kidsFolded, s.name); };
+  return html`<div class=${'card ' + cls + (on ? ' on' : '') + (kid ? ' kid' : '')} role="button" tabindex="0" aria-current=${on ? 'true' : undefined} onClick=${open} onKeyDown=${e => e.target === e.currentTarget && open(e)}
       title=${on ? 'full screen now' : S.full ? 'full screen instead' : 'open its steps'}>
-    <div class="top"><${Dot} s=${s}/><span class="name">[${s.name}]</span><span class="state">${label}</span>
+    <div class="top"><${Dot} s=${s}/><span class="name">[${s.name}]</span>
+      ${kids.length > 0 && html`<button class="fold" onClick=${fold} onKeyDown=${e => e.stopPropagation()} aria-expanded=${!folded}
+          title=${folded ? 'show its subagents' : 'hide its subagents'}>${folded ? '▸' : '▾'} ${kids.length}</button>`}
+      <span class="state">${label}</span>
       ${!on && html`<${FullButton} name=${s.name}/>`}<${SubAction} s=${s}/></div>
-    <div class="meta">${subMeta(s)}</div>
+    <div class="meta">${subMeta(s, kid)}</div>
     ${tool && cls !== 'done' && html`<div class="now"><span class="el" aria-hidden="true">⎿</span><span class="tname">${tool.name}</span><span class="args">(${toolArgs(tool.name, tool.input, tool.raw)})</span>${cls === 'work' && s.stepAt ? html`<span class="dim">· ${elapsed(now - s.stepAt)}</span>` : ''}</div>`}
   </div>`;
 }

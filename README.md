@@ -60,6 +60,8 @@ cache over.
   ChatGPT export.
 - The bar shows how big the memory is, the last turn's tokens and your
   plan's usage limits.
+- `/notifications` sets a sound and a desktop notification for each kind of
+  event, down to a subagent's own subagents; the page installs as an app.
 - The page listens on 127.0.0.1 only, behind a secret key.
 
 ## Flags

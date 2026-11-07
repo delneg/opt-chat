@@ -56,6 +56,7 @@ func (a *Agent) subLocked(name string, f func(*sub)) {
 		a.subs[name] = s
 	}
 	f(s)
+	a.chat.hub.setParent(name, s.Parent)
 }
 
 func (a *Agent) setSub(name string, f func(*sub)) {

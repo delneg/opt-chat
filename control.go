@@ -243,7 +243,8 @@ type settings struct {
 	Plugins   map[string]bool   `json:"plugins,omitzero"` // the user's plugins on or off for Opt, by name@marketplace
 	// Subagents' auto-compaction window in tokens; none: off. Never the
 	// chat's own calls: see Agent.start.
-	AgentAutocompact int `json:"agentAutocompact,omitzero"`
+	AgentAutocompact int            `json:"agentAutocompact,omitzero"`
+	Notify           notifySettings `json:"notify,omitzero"` // sounds and desktop notifications (notify.go)
 }
 
 func loadSettings(dir string) settings {

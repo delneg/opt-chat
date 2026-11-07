@@ -45,7 +45,8 @@ land there. The web tests go through real HTTP and WebSocket connections.
 | `agents.go`, `subs.go`, `resume.go`, `spawns.go` | subagents, the page's agents rail, resuming saved sessions; subagents a subagent starts |
 | `agentmem.go` | subagents' memory: each one's chat summarized into a tree of its own, `zoom("Name")` and `zoom("Name:id", n)` |
 | `mcp.go`, `wake.go` | the `zoom`, `date`, `search`, `spawn`, `tell` and `wake` tools over MCP; wake-ups |
-| `hub.go`, `web.go` | updates to pages and the terminal; the page's server and its guards |
+| `hub.go`, `web.go` | updates to pages and the terminal; the page's server and its guards; the app's manifest |
+| `notify.go`, `sound.go` | each kind of event's sound and desktop notification, by the user's switches; playing a sound |
 | `find.go` | the page's find (Ctrl/Cmd+F): matches in the whole log, and the log around one |
 | `tree.go` | the page's view mode (the view, line by line, and its zooms) and `/tree`, the whole memory |
 | `attach.go`, `mention.go` | attachments; the `@` path menu |

@@ -398,5 +398,6 @@ func (a *Agent) resumeAfterLimit(s resumeState) {
 	if len(left) > 0 {
 		text += " Not resumed: " + strings.Join(left, " ")
 	}
+	a.chat.hub.event("app.reset", "", text)
 	a.report(text)
 }

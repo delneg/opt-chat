@@ -48,6 +48,7 @@ const S = {
   cmdSel: 0, // the / menu's chosen line
   cmdShut: null, // the input the / menu was shut on (Esc)
   plugins: null, // and plugins
+  notify: null, // the notifications panel's: { notify (each kind's switches), muted, focused, sounds }, once asked
   mention: null, // the @ menu, open: { start, query, items, sel }
   picker: null, // the model picker, open: { sel, effort }
   newAgent: null, // the menu for a subagent of the user's own, open: { dir, name, model, effort, window, row, items, sel, busy, error }
@@ -230,6 +231,12 @@ function onUpdate(u) {
     }
     case 'step': addStep(u.name, u.step); break;
     case 'end': set({ last: u.end }); send({ t: 'usage' }); break;
+    case 'event': showEvent(u); break;
+    case 'notify': {
+      const p = S.panel?.kind === 'notify' ? { ...S.panel, busy: false, acting: false, error: u.error || '' } : S.panel;
+      set({ notify: u, panel: p });
+      break;
+    }
     case 'notice':
       if (u.level === 'warn' && S.ctx?.loading) set({ ctx: { ...S.ctx, loading: false, failed: true } }); // its context, asked for, is not coming
       notice(u.level, u.s);
@@ -657,6 +664,7 @@ const commands = [
   ['/mcp', 'your Claude Code MCP servers: status, on, for subagents only or off, sign in'],
   ['/skills', 'your Claude Code skills: on or off'],
   ['/plugins', 'your Claude Code plugins, their skills and MCP servers at once: on or off'],
+  ['/notifications', 'desktop notifications and sounds for each kind of event, of Opt, subagents and theirs; install the page as an app'],
   ['/agents', 'list the subagents at work'],
   ['/new', 'a subagent of your own: its folder, model, effort and autocompact; no view, no task (Alt+N)'],
   ['/status', 'Claude Code\'s version and account, this run\'s settings, the view and the plan\'s usage'],
@@ -739,8 +747,8 @@ async function submit(now) {
   const find = inputEl.value.match(/^\/find(?:\s([\s\S]*))?$/);
   if (find && !S.atts.length) { setInput(''); openFind(find[1] || ''); return; }
   if (/^\/tree\s*$/.test(inputEl.value) && !S.atts.length) { setInput(''); window.open('/tree', '_blank', 'noopener'); return; }
-  const panel = inputEl.value.match(/^\/(mcp|skills|plugins)\s*$/);
-  if (panel && !S.atts.length) { setInput(''); openPanel(panel[1]); return; }
+  const panel = inputEl.value.match(/^\/(mcp|skills|plugins|notifications)\s*$/);
+  if (panel && !S.atts.length) { setInput(''); openPanel(panel[1] === 'notifications' ? 'notify' : panel[1]); return; }
   submitting = true;
   try {
     // Uploads finish, those added meanwhile too, and the paths the input
@@ -1907,7 +1915,7 @@ function openPanel(kind) {
 
 function closePanel() { clearInterval(panelTimer); set({ panel: null }); inputEl?.focus(); }
 
-function panelRows() { return (S.panel && S[S.panel.kind]) || []; }
+function panelRows() { return S.panel?.kind === 'notify' ? notifyRows() : (S.panel && S[S.panel.kind]) || []; }
 
 function panelAct(action, row, extra) {
   if (!row || S.panel.acting) return; // one at a time: a second Enter would undo the first
@@ -1917,6 +1925,7 @@ function panelAct(action, row, extra) {
 
 function toggleRow(row) {
   if (!row) return;
+  if (S.panel.kind === 'notify') { notifyAct(row, 'desk'); return; }
   if (S.panel.kind === 'mcp') panelAct(row.off ? 'on' : row.agents ? 'off' : 'agents', row); // on, for subagents only, off
   else if (S.panel.kind === 'plugins') panelAct(row.on ? 'off' : 'on', row);
   else if (!row.locked_by) panelAct('set', row, { state: row.state === 'off' ? 'on' : 'off' });
@@ -1939,6 +1948,7 @@ function panelKey(e) {
     case 'Enter': case ' ': toggleRow(row); break;
     case 'a': if (p.kind === 'mcp') panelAct('signin', row); break;
     case 'r': if (p.kind === 'mcp') panelAct('reconnect', row); break;
+    case 's': if (p.kind === 'notify' && row?.kind) notifyAct(row, 'sound'); break;
     default: return false;
   }
   e.preventDefault();
@@ -1987,6 +1997,10 @@ const panels = {
     about: (on, all) => `Your Claude Code skills, as its /skills lists them: ${on.length} of ${all.length} on, ${on.reduce((n, r) => n + (r.tokens || 0), 0).toLocaleString()} tokens listed. On or off is kept for Opt alone, from its next call.` },
   plugins: { title: 'Plugins', Row: PluginRow, on: r => r.on,
     about: (on, all) => `Your Claude Code plugins, as its /plugins lists them: ${on.length} of ${all.length} on for Opt, each with its skills and MCP servers. On or off is kept for Opt alone, from its next call.` },
+  notify: { title: 'Notifications', Row: NotifyRow, on: () => true, keys: 'desktop, or the line\'s action · s: sound',
+    about: () => 'What opt-chat tells you of: by a sound it plays, and by a desktop notification this browser shows while no page of this chat is in front. '
+      + 'Kept in opt-chat\'s settings.json, for every page. A muted subagent is told of by neither, nor are its own subagents.'
+      + (S.notify?.sounds ? '' : ' Sounds are off in this run: -sounds=false, or no peon-ping.') },
 };
 
 function Panel() {
@@ -2006,8 +2020,137 @@ function Panel() {
       </div>`)}
       ${!rows.length && html`<div class="dim">None.</div>`}
     </div>`}
-    <div class="dim">↑/↓ · Enter or Space: ${mcp ? 'on, subagents only, off · a: sign in · r: reconnect' : 'on/off'} · Esc to close</div>
+    <div class="dim">↑/↓ · Enter or Space: ${kind.keys || (mcp ? 'on, subagents only, off · a: sign in · r: reconnect' : 'on/off')} · Esc to close</div>
   </div>`;
+}
+
+// ------------------------------------------------- notifications, the app
+
+// opt-chat asks every page for a desktop notification as an event comes,
+// by the user's switches (/notifications). One page shows it: the first to
+// take its id, and none while a page of the chat is in front, unless the
+// user wants them then too. A click brings the page, and the subagent's
+// own view.
+let installPrompt = null; // the browser's offer to install the page as an app, kept for the panel
+addEventListener('beforeinstallprompt', e => { e.preventDefault(); installPrompt = e; });
+addEventListener('appinstalled', () => { installPrompt = null; set({}); });
+
+function standalone() { return matchMedia('(display-mode: standalone)').matches || navigator.standalone === true; }
+function notifyPerm() { return 'Notification' in window ? Notification.permission : 'none'; }
+
+// The page in front writes so in localStorage, which every page of the
+// chat shares, every few seconds while it is: one shut while in front
+// stops counting soon.
+const FRONT = 'optFront';
+function inFront() { return !document.hidden && document.hasFocus(); }
+function markFront() {
+  try {
+    if (inFront()) localStorage.setItem(FRONT, JSON.stringify({ page: pageKey, at: Date.now() }));
+    else if (JSON.parse(localStorage.getItem(FRONT) || 'null')?.page === pageKey) localStorage.removeItem(FRONT);
+  } catch {}
+}
+for (const e of ['focus', 'blur', 'pagehide']) addEventListener(e, markFront);
+document.addEventListener('visibilitychange', markFront);
+setInterval(() => { if (inFront()) markFront(); }, 5e3);
+function someFront() {
+  if (inFront()) return true;
+  try {
+    const f = JSON.parse(localStorage.getItem(FRONT) || 'null');
+    return !!f && Date.now() - f.at < 12e3;
+  } catch { return false; }
+}
+
+// firstToShow takes event id for this page; false when another page took it.
+function firstToShow(id) {
+  try {
+    const seen = JSON.parse(localStorage.getItem('optEvents') || '[]');
+    if (seen.includes(id)) return false;
+    localStorage.setItem('optEvents', JSON.stringify([...seen.slice(-49), id]));
+  } catch {}
+  return true;
+}
+
+function showEvent(u) {
+  if (notifyPerm() !== 'granted' || (!u.focused && someFront()) || !firstToShow(u.id)) return;
+  try {
+    // The tag is the id: a page that showed it too only replaces it, unheard.
+    const n = new Notification(u.title, { body: u.body || '', tag: u.id, icon: '/static/icon-192.png', silent: !!u.sound });
+    n.onclick = () => {
+      window.focus();
+      n.close();
+      if (u.who) goFull(u.who);
+      else if (S.full) leaveFull();
+    };
+  } catch {} // a browser that shows them from a service worker alone
+}
+
+async function askNotify() {
+  const p = notifyPerm();
+  const error = p === 'none' ? 'This browser shows no desktop notifications.'
+    : p === 'denied' ? 'This browser blocks them for this page: allow notifications in its site settings, by the address, then come back.' : '';
+  if (error || p === 'granted') { set({ panel: { ...S.panel, error } }); return; }
+  if (await Notification.requestPermission() === 'granted') {
+    try { new Notification('opt-chat', { body: 'Desktop notifications are on.', tag: 'opt-chat-on', icon: '/static/icon-192.png' }); } catch {}
+  }
+  set({ panel: S.panel && { ...S.panel, error: '' } });
+}
+
+async function install() {
+  if (standalone()) { set({ panel: { ...S.panel, error: 'This is the app already.' } }); return; }
+  if (!installPrompt) {
+    set({ panel: { ...S.panel, error: 'Install it from the browser: in Chrome or Edge, the install icon at the right of the address bar (or ⋮ › Cast, save and share › Install page); in Safari, File › Add to Dock.' } });
+    return;
+  }
+  const p = installPrompt;
+  installPrompt = null;
+  p.prompt();
+  await p.userChoice;
+  set({});
+}
+
+function notifyRows() {
+  const n = S.notify;
+  if (!n) return [];
+  const names = [...new Set([...(S.status?.subs || []).map(s => s.name), ...n.muted])];
+  return [{ id: 'perm' }, { id: 'install' }, { id: 'focused' }, ...n.notify.map(r => ({ id: r.key, kind: r })), ...names.map(name => ({ id: 'mute:' + name, name }))];
+}
+
+function notifyAct(row, what) {
+  if (row.id === 'perm') askNotify();
+  else if (row.id === 'install') install();
+  else if (row.id === 'focused') panelAct('focused', row);
+  else if (row.name) panelAct('mute', { id: row.name });
+  else panelAct(what, row);
+}
+
+function Switch({ on, label, row, what }) {
+  return html`<span class=${'sw ' + (on ? 'ok' : 'dim')} onClick=${e => { e.stopPropagation(); notifyAct(row, what); }}>${on ? '●' : '○'} ${label}</span>`;
+}
+
+function NotifyRow({ s }) {
+  const n = S.notify;
+  if (s.kind) {
+    const r = s.kind;
+    return html`<span class="lbl"><span class="dim">${r.who} · </span>${r.label}</span>
+      <span class="st"><${Switch} on=${r.desk} label="desktop" row=${s} what="desk"/> <${Switch} on=${r.sound} label="sound" row=${s} what="sound"/></span><span class="desc"></span>`;
+  }
+  if (s.name) {
+    const muted = n.muted.includes(s.name);
+    return html`<span class="lbl"><span class="dim">Subagent · </span>[${s.name}]</span><span class=${'st ' + (muted ? 'dim' : 'ok')}>${muted ? '○ muted' : '● told of'}</span>
+      <span class="desc">${muted ? 'nor its own subagents' : 'Enter: mute it, and its own subagents'}</span>`;
+  }
+  if (s.id === 'perm') {
+    const p = notifyPerm();
+    const [st, cls, desc] = { granted: ['● on', 'ok', 'this browser shows them'], denied: ['✘ blocked', 'bad', 'allow them in the site settings, by the address'],
+      default: ['○ off', 'dim', 'Enter: ask the browser to show them'], none: ['✘ none', 'bad', 'this browser shows none'] }[p];
+    return html`<span class="lbl">Desktop notifications</span><span class=${'st ' + cls}>${st}</span><span class="desc">${desc}</span>`;
+  }
+  if (s.id === 'install') {
+    const [st, desc] = standalone() ? ['● installed', 'this window is the app'] : installPrompt ? ['○ not installed', 'Enter: install, in a window of its own'] : ['○', 'Enter: how to install it'];
+    return html`<span class="lbl">The page as an app</span><span class=${'st ' + (standalone() ? 'ok' : 'dim')}>${st}</span><span class="desc">${desc}</span>`;
+  }
+  return html`<span class="lbl">While a page is in front</span><span class=${'st ' + (n.focused ? 'ok' : 'dim')}>${n.focused ? '● notify' : '○ quiet'}</span>
+    <span class="desc">${n.focused ? 'notifications show even while you look at the chat' : 'no notifications while you look at the chat'}</span>`;
 }
 
 // ---------------------------------------------------------------- the page

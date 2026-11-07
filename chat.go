@@ -330,7 +330,7 @@ func (c *Chat) warn(sound bool, s string) {
 	}
 	h.notice("warn", "%s", s)
 	if sound {
-		h.sound(soundError)
+		h.event("app.error", "", s)
 	}
 }
 

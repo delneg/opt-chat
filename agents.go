@@ -415,7 +415,7 @@ func (a *Agent) TellUser(name, text string, atts []attachment, now bool) (string
 	}
 	if ok {
 		c.Log("work", userLine(c, name, text, atts), m.images...)
-		c.hub.sound(soundAck)
+		c.hub.event("took", name, text)
 	}
 	return out, ok
 }
@@ -483,7 +483,7 @@ func (a *Agent) tell(name string, ts ...tell) (string, bool) {
 		a.note(name, func(r *agentRecord) { r.State = "working" })
 		a.userTurnLocked(name, !opt)
 		a.chat.hub.notice("info", "[%s] back at work", name)
-		a.chat.hub.sound(soundAck)
+		a.chat.hub.event("took", name, "")
 	case a.looping(name) && (h == nil || !h.inTurn || !h.replays): // between two turns: it goes ahead of the next
 		a.logTells(name, ts) // in its log at once, as a tell at work
 		for i := range ts {
@@ -829,8 +829,8 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 		user := a.userTurn[name]
 		delete(a.userTurn, name)
 		a.mu.Unlock()
-		if state == "failed" { // stopped by the user, a quit or a reload: no sound
-			a.chat.hub.sound(soundError)
+		if state == "failed" { // stopped by the user, a quit or a reload: not told of
+			a.chat.hub.event("error", name, text)
 		}
 		var now agentRecord
 		a.note(name, func(r *agentRecord) {
@@ -882,14 +882,14 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 	switch {
 	case resumed:
 		a.chat.hub.notice("info", "[%s] resumed on %s", name, strings.TrimSpace(model+" "+effort))
-		a.chat.hub.sound(soundStart)
+		a.chat.hub.event("start", name, "")
 	case fresh:
 		a.chat.hub.notice("info", "[%s] started on %s", name, rec.on())
-		a.chat.hub.sound(soundStart)
+		a.chat.hub.event("start", name, "")
 	default:
 		a.agentWrite(name, "task", task)
 		a.chat.hub.notice("info", "[%s] started on %s", name, strings.TrimSpace(model+" "+effort))
-		a.chat.hub.sound(soundStart)
+		a.chat.hub.event("start", name, task)
 		a.agentWrite(name, "on", strings.TrimSpace(model+" "+effort))
 		if err := c.settle(h.ctx, func(int, int) {}); err != nil {
 			report(failed(err))
@@ -1008,7 +1008,7 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 			}
 			a.agentWrite(name, "compacted", fmt.Sprintf("mid-task: %d tokens to %d", e.Compact.Pre, e.Compact.Post))
 			a.chat.hub.notice("info", "[%s]'s context was compacted mid-task, between two steps, %s tokens to %s", name, k(e.Compact.Pre), k(e.Compact.Post))
-			a.chat.hub.sound(soundLimit)
+			a.chat.hub.event("compact", name, fmt.Sprintf("%s tokens to %s", k(e.Compact.Pre), k(e.Compact.Post)))
 			midCompacted = forced == 0 // its next message, after its report, brings the view and its task again
 			a.setSub(name, func(s *sub) {
 				s.Context = size
@@ -1290,12 +1290,17 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 		})
 		compact := r.compacting // read here: the page's compact may set it once unlocked, and sends its own
 		a.mu.Unlock()
+		kind := "report"
 		if user { // its reply was the user's, in its log: Opt gets no report
 			a.chat.hub.notice("info", "[%s] answered you", name)
+			kind = "answer"
 		} else {
 			send(final)
 		}
-		a.chat.hub.sound(soundDone)
+		if e.IsError {
+			kind = "error"
+		}
+		a.chat.hub.event(kind, name, final)
 		if late {
 			a.tell(name) // unless a tell came first and took them
 		}

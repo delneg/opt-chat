@@ -134,6 +134,7 @@ func main() {
 	if *sounds {
 		hb.sounds = newSounder(peonDir())
 	}
+	hb.setNotify(saved.Notify)
 	if *repl {
 		hb.print = replPrinter()
 	} else {
@@ -202,14 +203,17 @@ func main() {
 		}
 		if err := h.reload(rl); err != nil {
 			hb.notice("warn", "reload: %v", err)
-			hb.sound(soundError)
+			hb.event("app.error", "", "reload: "+err.Error())
 		}
 	}
 	if rl != nil {
 		a.onReload = func() { go reload() }
 	}
 	if *wake { // after the hub: one missed while down starts a turn now
-		w, err := startWaker(*dir, func(text string) { h.input(message{kind: "work", text: text}) })
+		w, err := startWaker(*dir, func(text string) {
+			hb.event("wake", "", text)
+			h.input(message{kind: "work", text: text})
+		})
 		if err != nil {
 			fatal("wake: %v", err)
 		}
@@ -230,7 +234,7 @@ func main() {
 	}
 	stopStatus := make(chan struct{})
 	go watchStatus(c, a, hb, stopStatus)
-	hb.sound(soundStart)
+	hb.event("app.start", "", "")
 
 	quit := func() {
 		c.mu.Lock()
@@ -376,7 +380,7 @@ func (h *harness) input(m message) {
 		return
 	}
 	if m.kind == "user" {
-		h.agent.chat.hub.sound(soundAck)
+		h.agent.chat.hub.event("took", "", m.text)
 	}
 	// A report joins the turn underway at once, and so does the user's
 	// message while a tool call runs: the model gets it with the result.
@@ -406,7 +410,7 @@ func (h *harness) inputNow(m message) {
 		return
 	}
 	if m.kind == "user" {
-		h.agent.chat.hub.sound(soundAck)
+		h.agent.chat.hub.event("took", "", m.text)
 	}
 	h.mu.Lock()
 	t := h.turn
@@ -646,7 +650,7 @@ func (h *harness) loop() {
 		err := t.Run(ctx, msgs)
 		if err != nil && ctx.Err() == nil {
 			c.hub.notice("warn", "turn: %v", err)
-			c.hub.sound(soundError)
+			c.hub.event("error", "", err.Error())
 		}
 		h.agent.setWoken(false)
 		h.mu.Lock()
@@ -671,7 +675,7 @@ func (h *harness) loop() {
 			h.queue = append(left, h.queue...)
 		}
 		if err == nil && !cut && !h.stopped && len(h.queue) == 0 { // done, and no turn follows: the user's turn
-			c.hub.sound(soundDone)
+			c.hub.event("done", "", c.lastReply())
 		}
 		h.mu.Unlock()
 		cancel()

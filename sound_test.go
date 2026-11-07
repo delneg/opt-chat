@@ -120,7 +120,7 @@ func TestSoundsOff(t *testing.T) {
 		t.Fatal("sounds without peon-ping")
 	}
 	var nobody *hub
-	nobody.sound(soundAck)
+	nobody.event("took", "", "")
 }
 
 // A category with a chime plays it, at the pack's volume, in place of the

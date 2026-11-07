@@ -139,6 +139,7 @@ func (w *webServer) routes() http.Handler {
 		rw.Header().Set("Cache-Control", "no-cache")
 		files.ServeHTTP(rw, r)
 	})))
+	mux.HandleFunc("GET /manifest.webmanifest", w.manifest)
 	mux.HandleFunc("GET /files/{name}", w.file)
 	mux.HandleFunc("POST /upload", w.upload)
 	mux.HandleFunc("GET /voice", w.voice)
@@ -170,6 +171,10 @@ func (w *webServer) guard(next http.Handler) http.Handler {
 			http.Error(rw, "cross-origin request", http.StatusForbidden)
 			return
 		}
+		if r.Method == http.MethodGet && openFiles[r.URL.Path] { // an app's icons, which a browser may fetch with no cookie
+			next.ServeHTTP(rw, r)
+			return
+		}
 		if t := r.URL.Query().Get("t"); t != "" && w.same(t) {
 			http.SetCookie(rw, &http.Cookie{Name: cookie, Value: w.token, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode, MaxAge: 400 * 24 * 3600})
 			q := r.URL.Query()
@@ -188,6 +193,37 @@ func (w *webServer) guard(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(rw, r)
 	})
+}
+
+// openFiles are served without the key: they say nothing of the chat.
+var openFiles = map[string]bool{"/static/icon-192.png": true, "/static/icon-512.png": true}
+
+// webManifest makes the page an app a browser can install: a window of its
+// own, in the dock or taskbar.
+type webManifest struct {
+	Name       string              `json:"name"`
+	ShortName  string              `json:"short_name"`
+	ID         string              `json:"id"`
+	StartURL   string              `json:"start_url"`
+	Scope      string              `json:"scope"`
+	Display    string              `json:"display"`
+	Background string              `json:"background_color"`
+	Theme      string              `json:"theme_color"`
+	Icons      []map[string]string `json:"icons"`
+}
+
+// manifest serves the app's manifest. The app starts at the address that
+// carries the key, which sets the cookie, as an app with a cookie jar of
+// its own needs (Safari's); so the manifest, like the page, is served only
+// with the key.
+func (w *webServer) manifest(rw http.ResponseWriter, r *http.Request) {
+	rw.Header().Set("Content-Type", "application/manifest+json")
+	rw.Header().Set("Cache-Control", "no-cache")
+	icon := func(n string) map[string]string {
+		return map[string]string{"src": "/static/icon-" + n + ".png", "sizes": n + "x" + n, "type": "image/png"}
+	}
+	json.MarshalWrite(rw, webManifest{Name: "opt-chat", ShortName: "opt-chat", ID: "/", StartURL: "/?t=" + w.token, Scope: "/", Display: "standalone",
+		Background: "#faf9f5", Theme: "#faf9f5", Icons: []map[string]string{icon("192"), icon("512")}})
 }
 
 func (w *webServer) same(t string) bool {
@@ -570,6 +606,8 @@ func (w *webServer) serve(req request) any {
 			h.agent.ClearAgent(agentName(req.Name))
 		}
 		c.hub.setStatus(currentStatus(c, h.agent))
+	case "notify": // the page's notifications panel (notify.go)
+		return h.agent.notifyRequest(req.Action, req.Name)
 	case "paths":
 		found := []foundPath{}
 		for _, p := range filePaths(req.Text) {

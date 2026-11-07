@@ -297,6 +297,8 @@ a { color: var(--blue); }
 .panel .row .st.ok { color: var(--green); }
 .panel .row .st.warn { color: var(--yellow); }
 .panel .row .st.bad { color: var(--red); }
+.panel .row .sw { cursor: pointer; }
+.panel .row .sw:hover { text-decoration: underline; text-underline-offset: .2em; }
 .panel .row .st.dim { color: var(--faint); }
 .panel .row .desc { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .banner { background: var(--red); color: var(--bg); padding: .25em 2ch; font-size: .9em; }

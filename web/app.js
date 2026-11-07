@@ -2752,7 +2752,7 @@ function Branch({ s, tree, now, kid }) {
   return html`<div class="branch">${card}
     <div class="kids">
       ${shown.map(k => html`<${Branch} key=${k.name} s=${k} tree=${tree} now=${now} kid/>`)}
-      ${hidden.length > 0 && html`<button class="more" onClick=${() => toggleKids(folded ? kidsFolded : kidsOpen, s.name)}
+      ${hidden.length > 0 && html`<button class=${'more' + (hidden.some(k => kidRank(k) === 0) ? ' ask' : '')} onClick=${() => toggleKids(folded ? kidsFolded : kidsOpen, s.name)}
           title=${folded ? 'show its subagents' : 'show them all'}>▸ ${folded ? count(list.length, 'subagent') : `${hidden.length} more`} · ${kidsSummary(hidden)}</button>`}
       ${!folded && !hidden.length && list.length > kidsShown && html`<button class="more" onClick=${() => toggleKids(kidsOpen, s.name)}>▴ the first ${kidsShown} only</button>`}
     </div>

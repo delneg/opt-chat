@@ -391,6 +391,7 @@ a { color: var(--blue); }
 .card .fold:hover, .card .fold:focus-visible { color: var(--fg); background: var(--chip); outline: none; }
 .kids .more { text-align: left; color: var(--dim); font-size: .88em; padding: .25em 1ch; border-radius: 4px; }
 .kids .more:hover, .kids .more:focus-visible { color: var(--fg); background: var(--chip); outline: none; }
+.kids .more.ask { color: var(--yellow); }
 
 /* an agent full screen (AgentFull): over Opt's chat, which stays beneath
    as it was, scrolled where it was; blue marks what is the agent's */

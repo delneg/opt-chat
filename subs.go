@@ -42,9 +42,6 @@ type sub struct {
 	Parent  string   `json:"parent,omitzero"`  // the subagent that started it, whose it is
 }
 
-// subsKept is how many ended subagents the rail keeps listing.
-const subsKept = 8
-
 // subLocked applies f to the subagent name, a.mu held.
 func (a *Agent) subLocked(name string, f func(*sub)) {
 	if a.subs == nil {
@@ -67,25 +64,15 @@ func (a *Agent) setSub(name string, f func(*sub)) {
 
 func done(s *sub) bool { return s.State == "ended" || s.State == "failed" || s.State == "halted" }
 
-// subsLocked lists them, the newest first, the ended ones past subsKept
-// forgotten; a.mu held.
+// subsLocked lists them, the newest first; a.mu held. Each stays until
+// the user clears it.
 func (a *Agent) subsLocked() []sub {
 	all := make([]sub, 0, len(a.subs))
 	for _, s := range a.subs {
 		all = append(all, *s)
 	}
 	slices.SortFunc(all, func(x, y sub) int { return cmp.Or(cmp.Compare(y.Started, x.Started), cmp.Compare(x.Name, y.Name)) })
-	n := 0
-	return slices.DeleteFunc(all, func(s sub) bool {
-		if !done(&s) {
-			return false
-		}
-		if n++; n > subsKept {
-			delete(a.subs, s.Name)
-			return true
-		}
-		return false
-	})
+	return all
 }
 
 // step is one entry of a subagent's log: task, on, opt (a tell), user (the

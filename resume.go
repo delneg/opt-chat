@@ -36,7 +36,8 @@ type agentRecord struct {
 	MCP       []string  `json:"mcp,omitzero"`       // the servers for subagents only granted to it
 	Dir       string    `json:"dir,omitzero"`       // where its tools run; "": Opt's folder (-cwd)
 	Blank     bool      `json:"blank,omitzero"`     // the user's own, made from the page: no view, no task, its window as chosen (see NewAgent)
-	Cleared   bool      `json:"cleared,omitzero"`   // the user's own, cleared from the rail: a restart doesn't list it again
+	Cleared   bool      `json:"cleared,omitzero"`   // cleared from the rail: a restart doesn't list it again
+	Kept      bool      `json:"kept,omitzero"`      // written since the rail keeps every subagent until cleared: a restart lists it, however old
 	Spawns    bool      `json:"spawns,omitzero"`    // Opt let it start and tell subagents of its own: see spawns.go
 	Parent    string    `json:"parent,omitzero"`    // the subagent that started it: its reports go there
 }
@@ -65,6 +66,7 @@ func (a *Agent) note(name string, f func(*agentRecord)) {
 	defer a.recMu.Unlock()
 	r, _ := a.loadRecord(name)
 	f(&r)
+	r.Kept = true
 	b, err := json.Marshal(r)
 	if err == nil {
 		err = writeAtomic(a.recordPath(name), b)
@@ -128,6 +130,11 @@ const (
 		cutShort + " Then go on with what the user asked."
 )
 
+// keptSince is how recent a subagent written before the rail kept every
+// one must be, by its record or its log, for a restart to list it and keep
+// it from then on: one cleared from the rail back then was not marked so.
+const keptSince = 72 * time.Hour
+
 // resumeMax is how many times in a row a start resumes a subagent that
 // gets no result in between: one that ends opt-chat each time stops.
 const resumeMax = 3
@@ -136,9 +143,9 @@ const resumeMax = 3
 // one a quit, a crash or a reload cut off mid-task, under a day ago, and
 // resumed fewer than resumeMax times since its last result, while
 // auto-resume is on. For each other one cut off, it gives a report, for
-// the chat. Those stopped in the last day, by a crash, a quit or the user,
-// show in the rail, and so do the user's own used in the last day, unless
-// cleared from it.
+// the chat. Every one the user has not cleared shows in the rail; of
+// those written before the rail kept them all, only those changed within
+// keptSince, which are kept from then on.
 func (a *Agent) recoverAgents() (out []message, cut []string) {
 	files, _ := filepath.Glob(filepath.Join(a.chat.dir, "agents", "*.json"))
 	for _, f := range files {
@@ -184,8 +191,15 @@ func (a *Agent) recoverAgents() (out []message, cut []string) {
 					name, how, why, resumeHint(name), strings.TrimSpace(r.Model+" "+r.Effort), a.chatRef(name))})
 			}
 		}
-		if (r.State == "stopped" || r.State == "halted" || r.Blank && !r.Cleared && (r.State == "new" || saved(r.Session))) && // the user's own, to talk to again
-			time.Since(fi.ModTime()) < 24*time.Hour {
+		last := fi.ModTime()
+		if li, err := os.Stat(a.agentLog(name)); err == nil && li.ModTime().After(last) {
+			last = li.ModTime()
+		}
+		if !r.Cleared && (r.Kept || time.Since(last) < keptSince) &&
+			(!r.Blank || r.State == "new" || saved(r.Session)) { // the user's own, to talk to again
+			if !r.Kept {
+				a.note(name, func(*agentRecord) {})
+			}
 			a.setSub(name, func(s *sub) {
 				*s = r.sub(name)
 				s.Started = fi.ModTime().UnixMilli()

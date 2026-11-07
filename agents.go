@@ -757,14 +757,12 @@ func (a *Agent) ClearAgent(name string) bool {
 	if _, on := a.halts[name]; on || s == nil {
 		return false
 	}
-	if s.Blank { // the user's own: gone from the rail for good; one never started, ended
-		a.note(name, func(r *agentRecord) {
-			r.Cleared = true
-			if r.State == "new" {
-				r.State = "ended"
-			}
-		})
-	}
+	a.note(name, func(r *agentRecord) { // gone from the rail, after a restart too, until told again; the user's own never started, ended
+		r.Cleared = true
+		if r.State == "new" {
+			r.State = "ended"
+		}
+	})
 	delete(a.subs, name)
 	return true
 }

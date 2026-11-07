@@ -1,11 +1,13 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // A subagent of the user's own, from the page's menu: made blank, with no
@@ -213,5 +215,71 @@ func TestNewAgentRetry(t *testing.T) {
 	rec, _ := a.loadRecord(name)
 	if all := calls(); len(all) != 1 || flagOf(all[0], "--session-id") != rec.Session || !strings.Contains(a.ZoomAgent(name), "You are subagent [Again], the user's own") {
 		t.Fatalf("its calls: %q", all)
+	}
+}
+
+// The rail keeps every subagent until the user clears it: ended ones
+// beyond any count, and across restarts, Opt's as the user's own, however
+// old. A record from before it kept them shows if it, or its log, changed
+// within keptSince, and is kept from then on.
+func TestRailKeeps(t *testing.T) {
+	t.Parallel()
+	c, _ := fakeChat(t, t.TempDir(), 100)
+	a, _ := fakeAgent(t, c)
+	a.report = func(string) {}
+	for i := range 12 {
+		a.setSub(fmt.Sprintf("Done%d", i), func(s *sub) { s.State, s.Started = "ended", int64(i+1) })
+	}
+	a.mu.Lock()
+	n := len(a.subsLocked())
+	a.mu.Unlock()
+	if n != 12 {
+		t.Fatalf("%d of 12 ended listed", n)
+	}
+	a.Spawn("Scout", "look around", "", "", 0, nil)
+	waitFor(t, "its rest", func() bool { return agentState(a, "Scout") == "resting" })
+	a.Spawn("Gone", "look around", "", "", 0, nil)
+	waitFor(t, "its rest", func() bool { return agentState(a, "Gone") == "resting" })
+	a.StopAgent("Gone")
+	waitFor(t, "its end", func() bool { return a.ClearAgent("Gone") })
+	a.quit()
+
+	dir := filepath.Join(c.dir, "agents")
+	old := time.Now().Add(-keptSince - time.Hour)
+	for name, rec := range map[string]string{
+		"Ancient": `{"state":"ended","model":"m"}`,             // from before, days old: not shown
+		"Recent":  `{"state":"ended","model":"m"}`,             // from before, today: shown, and kept
+		"Kept":    `{"state":"ended","model":"m","kept":true}`, // days old, kept: shown
+		"Logged":  `{"state":"ended","model":"m"}`,             // from before, days old, its log today: shown
+	} {
+		f := filepath.Join(dir, name+".json")
+		if err := os.WriteFile(f, []byte(rec), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if name != "Recent" {
+			os.Chtimes(f, old, old)
+		}
+	}
+	if err := os.WriteFile(a.agentLog("Logged"), []byte("task\n\nlook\n\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := fakeAgent(t, c)
+	b.recoverAgents()
+	for name, want := range map[string]string{"Scout": "ended", "Gone": "", "Ancient": "", "Recent": "ended", "Kept": "ended", "Logged": "ended"} {
+		if got := agentState(b, name); got != want {
+			t.Fatalf("[%s] after a restart: %q, want %q", name, got, want)
+		}
+	}
+	if b, _ := os.ReadFile(filepath.Join(dir, "Recent.json")); !strings.Contains(string(b), `"kept":true`) {
+		t.Fatalf("Recent's record: %s", b)
+	}
+	os.Chtimes(filepath.Join(dir, "Recent.json"), old, old)
+	if !b.ClearAgent("Scout") {
+		t.Fatal("not cleared")
+	}
+	d, _ := fakeAgent(t, c)
+	d.recoverAgents()
+	if st, st2 := agentState(d, "Scout"), agentState(d, "Recent"); st != "" || st2 != "ended" {
+		t.Fatalf("after another restart: %q, %q", st, st2)
 	}
 }

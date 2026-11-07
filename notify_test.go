@@ -88,7 +88,7 @@ func TestNotifyRules(t *testing.T) {
 		t.Fatalf("ids %v", ids)
 	}
 
-	h.setNotify(notifySettings{Muted: []string{"Lead"}, Focused: true, Rules: map[string]notifyRule{"opt.done": {}, "opt.took": {Desk: true}}})
+	h.setNotify(notifySettings{Muted: []string{"Lead"}, Focused: true, Sound: map[string]bool{"opt.done": false, "opt.took": false}, Desk: map[string]bool{"opt.done": false, "opt.took": true}})
 	n := len(events(r))
 	h.event("report", "Lead", "x")
 	h.event("error", "Help", "x") // its parent muted
@@ -139,7 +139,7 @@ func TestAgentNotify(t *testing.T) {
 	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	r := record(c)
-	c.hub.setNotify(notifySettings{Rules: map[string]notifyRule{"agent.start": {Desk: true}, "sub.start": {Desk: true}}})
+	c.hub.setNotify(notifySettings{Desk: map[string]bool{"agent.start": true, "sub.start": true}})
 	a, _ := fakeAgent(t, c)
 	a.agentMCP = `{"url":"x?agent"}`
 	a.report = func(string) {}
@@ -201,6 +201,9 @@ func TestWebNotify(t *testing.T) {
 	if r := row(u, "opt.took"); r["desk"] != true || r["sound"] != true {
 		t.Fatalf("row %v", r)
 	}
+	if s := loadSettings(wt.c.dir); len(s.Notify.Sound) != 0 { // the sound keeps its default
+		t.Fatalf("settings %+v", s.Notify)
+	}
 	ws.send(map[string]any{"t": "notify", "action": "sound", "name": "opt.took"})
 	ws.next("sound", typ("notify"))
 	ws.send(map[string]any{"t": "notify", "action": "mute", "name": "Scout"})
@@ -211,13 +214,13 @@ func TestWebNotify(t *testing.T) {
 		t.Fatalf("reply %v", u)
 	}
 	s := loadSettings(wt.c.dir)
-	if r := s.Notify.Rules["opt.took"]; !r.Desk || r.Sound || !s.Notify.Focused || !slices.Equal(s.Notify.Muted, []string{"Scout"}) {
+	if !s.Notify.Desk["opt.took"] || s.Notify.Sound["opt.took"] || !s.Notify.Focused || !slices.Equal(s.Notify.Muted, []string{"Scout"}) {
 		t.Fatalf("settings %+v", s.Notify)
 	}
 	wt.c.hub.mu.Lock()
 	held := wt.c.hub.notify
 	wt.c.hub.mu.Unlock()
-	if !held.Focused || !held.Rules["opt.took"].Desk {
+	if !held.Focused || !held.Desk["opt.took"] {
 		t.Fatalf("hub's %+v", held)
 	}
 	ws.send(map[string]any{"t": "notify", "action": "mute", "name": "Scout"}) // and back
@@ -231,7 +234,7 @@ func TestWebNotify(t *testing.T) {
 			t.Fatalf("%v: %v", bad, u)
 		}
 	}
-	if s2 := loadSettings(wt.c.dir); len(s2.Notify.Rules) != 1 || len(s2.Notify.Muted) != 0 {
+	if s2 := loadSettings(wt.c.dir); len(s2.Notify.Desk) != 1 || len(s2.Notify.Sound) != 1 || len(s2.Notify.Muted) != 0 {
 		t.Fatalf("settings after errors %+v", s2.Notify)
 	}
 }
@@ -288,4 +291,34 @@ func TestWebManifest(t *testing.T) {
 	if _, err := os.Stat(filepath.Join("web", "icon-512.png")); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// Opt's turn's end is told of with its last reply, never an earlier
+// turn's; a turn's own reply is in the notification.
+func TestNotifyLastReply(t *testing.T) {
+	t.Parallel()
+	c, _ := fakeChat(t, t.TempDir(), 100)
+	r := record(c)
+	c.hub.setNotify(notifySettings{})
+	c.Log("opt", "an old reply")
+	from := len(logged(c))
+	c.Log("work", "[Scout] reported")
+	if got := c.lastReply(from); got != "" {
+		t.Fatalf("a turn with no reply: %q", got)
+	}
+	c.Log("opt", "first")
+	c.Log("opt", "last")
+	if got := c.lastReply(from); got != "last" {
+		t.Fatalf("got %q", got)
+	}
+	h := newHarness(t, c)
+	h.input(message{kind: "user", text: "stream-reply"})
+	waitFor(t, "its end", func() bool {
+		for _, e := range events(r) {
+			if e.Kind == "opt.done" {
+				return e.Body == "Hello world"
+			}
+		}
+		return false
+	})
 }

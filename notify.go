@@ -69,19 +69,25 @@ type notifyRule struct {
 	Desk  bool `json:"desk"`
 }
 
-// notifySettings are the user's choices, in settings.json.
+// notifySettings are the user's choices, in settings.json: each switch
+// the user flipped, by kind, apart, so the other keeps its default.
 type notifySettings struct {
-	Rules   map[string]notifyRule `json:"rules,omitzero"`   // by kind; none: its default
-	Muted   []string              `json:"muted,omitzero"`   // subagents told of by neither, nor their own
-	Focused bool                  `json:"focused,omitzero"` // notifications also while a page is in front
+	Sound   map[string]bool `json:"sound,omitzero"`
+	Desk    map[string]bool `json:"desk,omitzero"`
+	Muted   []string        `json:"muted,omitzero"`   // subagents told of by neither, nor their own
+	Focused bool            `json:"focused,omitzero"` // notifications also while a page is in front
 }
 
 // rule is the switches of kind k.
 func (n notifySettings) rule(k notifyKind) notifyRule {
-	if r, ok := n.Rules[k.Key]; ok {
-		return r
+	r := notifyRule{Sound: !k.Quiet, Desk: k.Desk}
+	if v, ok := n.Sound[k.Key]; ok {
+		r.Sound = v
 	}
-	return notifyRule{Sound: !k.Quiet, Desk: k.Desk}
+	if v, ok := n.Desk[k.Key]; ok {
+		r.Desk = v
+	}
+	return r
 }
 
 // eventUpdate asks the pages for a desktop notification.
@@ -227,17 +233,16 @@ func (a *Agent) notifyRequest(action, name string) notifyReply {
 		err = a.updateSettings(func(s *settings) {
 			n := &s.Notify
 			switch action {
-			case "sound", "desk":
-				r := n.rule(k)
-				if action == "sound" {
-					r.Sound = !r.Sound
-				} else {
-					r.Desk = !r.Desk
+			case "sound":
+				if n.Sound == nil {
+					n.Sound = map[string]bool{}
 				}
-				if n.Rules == nil {
-					n.Rules = map[string]notifyRule{}
+				n.Sound[k.Key] = !n.rule(k).Sound
+			case "desk":
+				if n.Desk == nil {
+					n.Desk = map[string]bool{}
 				}
-				n.Rules[k.Key] = r
+				n.Desk[k.Key] = !n.rule(k).Desk
 			case "mute":
 				if i := slices.Index(n.Muted, name); i >= 0 {
 					n.Muted = slices.Delete(n.Muted, i, i+1)
@@ -267,17 +272,14 @@ func (a *Agent) notifyRequest(action, name string) notifyReply {
 	return rep
 }
 
-// lastReply is the text of Opt's last reply in this turn, for the
-// notification of its end.
-func (c *Chat) lastReply() string {
+// lastReply is the text of Opt's last reply among the messages from from
+// on, a turn's, for the notification of its end; "" when it wrote none.
+func (c *Chat) lastReply(from int) string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	for i := len(c.msgs) - 1; i >= 0; i-- {
-		switch c.msgs[i].Kind {
-		case "opt":
+	for i := len(c.msgs) - 1; i >= max(from, 0); i-- {
+		if c.msgs[i].Kind == "opt" {
 			return c.msgs[i].Text
-		case "user":
-			return ""
 		}
 	}
 	return ""

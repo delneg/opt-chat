@@ -675,7 +675,7 @@ func (h *harness) loop() {
 			h.queue = append(left, h.queue...)
 		}
 		if err == nil && !cut && !h.stopped && len(h.queue) == 0 { // done, and no turn follows: the user's turn
-			c.hub.event("done", "", c.lastReply())
+			c.hub.event("done", "", c.lastReply(from))
 		}
 		h.mu.Unlock()
 		cancel()

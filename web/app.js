@@ -2049,7 +2049,10 @@ function markFront() {
     else if (JSON.parse(localStorage.getItem(FRONT) || 'null')?.page === pageKey) localStorage.removeItem(FRONT);
   } catch {}
 }
-for (const e of ['focus', 'blur', 'pagehide']) addEventListener(e, markFront);
+for (const e of ['focus', 'blur']) addEventListener(e, markFront);
+addEventListener('pagehide', () => { // shut while in front, it may still look it
+  try { if (JSON.parse(localStorage.getItem(FRONT) || 'null')?.page === pageKey) localStorage.removeItem(FRONT); } catch {}
+});
 document.addEventListener('visibilitychange', markFront);
 setInterval(() => { if (inFront()) markFront(); }, 5e3);
 function someFront() {

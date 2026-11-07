@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -29,7 +30,7 @@ var notifyKinds = []notifyKind{
 	{"opt.took", "took your message", soundAck, false, false},
 	{"opt.done", "ended its turn", soundDone, true, false},
 	{"opt.ask", "asks to run a tool", soundAsk, true, false},
-	{"opt.error", "a turn failed", soundError, true, false},
+	{"opt.error", "failed a turn", soundError, true, false},
 	{"opt.wake", "woke up at a time it set", soundAck, false, true},
 	{"agent.start", "started or resumed", soundStart, false, false},
 	{"agent.took", "took your message, or went back to work", soundAck, false, false},
@@ -142,9 +143,6 @@ func (h *hub) event(kind, who, body string) {
 		switch {
 		case strings.HasPrefix(key, "opt."):
 			title = "Opt " + title
-			if kind == "error" {
-				title = "Opt's turn failed"
-			}
 		case who != "":
 			title = "[" + who + "] " + title
 		default:
@@ -210,17 +208,26 @@ type notifyReply struct {
 // flips subagent name's, focused flips whether a page in front shows them.
 func (a *Agent) notifyRequest(action, name string) notifyReply {
 	h := a.chat.hub
+	k, known := kindOf(name)
 	var err error
-	if action != "" {
-		if serr := a.updateSettings(func(s *settings) {
+	switch {
+	case action == "" || action == "focused":
+	case action == "sound" || action == "desk":
+		if !known {
+			err = fmt.Errorf("no kind of event %q", name)
+		}
+	case action == "mute":
+		if name == "" {
+			err = errors.New("mute whom?")
+		}
+	default:
+		err = fmt.Errorf("unknown action %q", action)
+	}
+	if action != "" && err == nil {
+		err = a.updateSettings(func(s *settings) {
 			n := &s.Notify
 			switch action {
 			case "sound", "desk":
-				k, ok := kindOf(name)
-				if !ok {
-					err = fmt.Errorf("no kind of event %q", name)
-					return
-				}
 				r := n.rule(k)
 				if action == "sound" {
 					r.Sound = !r.Sound
@@ -232,22 +239,16 @@ func (a *Agent) notifyRequest(action, name string) notifyReply {
 				}
 				n.Rules[k.Key] = r
 			case "mute":
-				if name == "" {
-					err = fmt.Errorf("mute whom?")
-				} else if i := slices.Index(n.Muted, name); i >= 0 {
+				if i := slices.Index(n.Muted, name); i >= 0 {
 					n.Muted = slices.Delete(n.Muted, i, i+1)
 				} else {
 					n.Muted = append(n.Muted, name)
 				}
 			case "focused":
 				n.Focused = !n.Focused
-			default:
-				err = fmt.Errorf("unknown action %q", action)
 			}
 			h.setNotify(*n)
-		}); serr != nil && err == nil {
-			err = serr
-		}
+		})
 	}
 	h.mu.Lock()
 	n := h.notify

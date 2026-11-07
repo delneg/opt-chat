@@ -2710,7 +2710,7 @@ function kidRank(s) {
   return 3;
 }
 
-const railTree = memo1(subs => {
+function railTree(subs) {
   const names = new Set(subs.map(s => s.name)), kids = new Map();
   for (const s of subs) {
     if (!s.parent || !names.has(s.parent)) continue;
@@ -2719,15 +2719,6 @@ const railTree = memo1(subs => {
   }
   for (const list of kids.values()) list.sort((x, y) => kidRank(x) - kidRank(y) || x.started - y.started || (x.name < y.name ? -1 : 1));
   return { tops: subs.filter(s => !s.parent || !names.has(s.parent)), kids };
-});
-
-// memo1 remembers f's result for its last argument and the questions waiting.
-function memo1(f) {
-  let arg, asks, out;
-  return x => {
-    if (x !== arg || S.asks !== asks) { arg = x; asks = S.asks; out = f(x); }
-    return out;
-  };
 }
 
 // kidsSummary says what subagents are at: "2 at work · 1 ended".

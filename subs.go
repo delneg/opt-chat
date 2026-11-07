@@ -62,8 +62,6 @@ func (a *Agent) setSub(name string, f func(*sub)) {
 	a.subLocked(name, f)
 }
 
-func done(s *sub) bool { return s.State == "ended" || s.State == "failed" || s.State == "halted" }
-
 // subsLocked lists them, the newest first; a.mu held. Each stays until
 // the user clears it.
 func (a *Agent) subsLocked() []sub {

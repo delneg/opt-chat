@@ -333,6 +333,16 @@ a { color: var(--blue); }
   position: fixed; top: 0; right: 0; bottom: 0; width: min(var(--rail-w, 84ch), 94vw); z-index: 30;
   box-shadow: -12px 0 32px rgba(31, 30, 27, .12); animation: rail-in .16s ease-out;
 }
+/* the hidden rail's tab, on the right edge, that brings it back */
+.rail-tab {
+  position: fixed; top: 50%; right: 0; transform: translateY(-50%); z-index: 20; writing-mode: vertical-rl;
+  padding: 1.2ch .45em; background: var(--chip); color: var(--dim); font-size: .85em;
+  border: 1px solid var(--border); border-right: 0; border-radius: 6px 0 0 6px;
+}
+.rail-tab:hover, .rail-tab:focus-visible { color: var(--fg); background: var(--user-bg); outline: none; }
+.rail-tab .dot { margin-bottom: .6ch; color: var(--faint); }
+.rail-tab.work .dot { color: var(--accent); }
+.rail-tab.ask .dot { color: var(--yellow); }
 /* its left edge, dragged to set its width (Grip) */
 .grip { position: absolute; top: 0; bottom: 0; left: -4px; width: 8px; z-index: 1; cursor: col-resize; touch-action: none; }
 .grip::after { content: ''; position: absolute; top: 0; bottom: 0; left: 3px; width: 2px; background: transparent; transition: background .12s; }

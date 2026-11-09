@@ -2671,7 +2671,8 @@ function Grip() {
 }
 
 // RailTab, on the window's right edge, brings back the rail hidden by its
-// × (as Alt+A and the bar's agents do), saying who is at work.
+// × (as Alt+A and the bar's agents do), saying who is at work. A narrow
+// window has none: it would cover the chat, and its drawer closes often.
 function RailTab() {
   const work = (S.status?.subs || []).filter(atWork).length, ask = S.asks.some(q => q.who);
   return html`<button class=${'rail-tab' + (ask ? ' ask' : work ? ' work' : '')} title="show the agents (Alt+A)" onClick=${() => toggleRail()}>
@@ -3584,7 +3585,7 @@ function App() {
     </div></div>
     </div>
     ${railShown() && !S.wide && html`<div class="scrim" onClick=${() => set({ drawer: false })}/>`}
-    ${railShown() ? html`<${Rail}/>` : S.status?.subs?.length > 0 && html`<${RailTab}/>`}
+    ${railShown() ? html`<${Rail}/>` : S.wide && S.status?.subs?.length > 0 && html`<${RailTab}/>`}
     ${S.dragging && html`<div class="drop"><div>Drop to attach${S.full ? ` for [${S.full}]` : ''}</div></div>`}
     ${S.lightbox && html`<div class="lightbox" role="dialog" aria-label="image; Esc or a click closes it" onClick=${() => set({ lightbox: null })}><img src=${S.lightbox} alt=""/></div>`}
   </div>`;

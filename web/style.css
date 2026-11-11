@@ -412,6 +412,8 @@ a { color: var(--blue); }
 .full-head { flex: none; border-bottom: 1px solid var(--border); }
 .full-head .column { display: flex; flex-wrap: wrap; align-items: baseline; gap: .2em 1.5ch; padding-top: .5em; padding-bottom: .5em; }
 .full-head .column.meta { color: var(--faint); font-size: .9em; padding-top: 0; }
+:is(.rail-meta, .full-head .meta) .pick { color: inherit; padding: 0; border-bottom: 1px dotted var(--border); }
+:is(.rail-meta, .full-head .meta) .pick:hover, :is(.rail-meta, .full-head .meta) .pick:focus-visible { color: var(--fg); border-bottom-color: var(--fg); outline: none; }
 .full-head .back { color: var(--blue); font-weight: 600; }
 .full-head .back:hover { text-decoration: underline; text-underline-offset: .25em; }
 .full-head .agent-name { font-weight: 600; color: var(--blue); }

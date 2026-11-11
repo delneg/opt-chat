@@ -1198,6 +1198,89 @@ func TestCompactAgent(t *testing.T) {
 	}
 }
 
+// The page switches a subagent's model and effort: its call underway at
+// once, through Claude Code's set_model and apply_flag_settings; its
+// record for the calls after, and its report says what it ran on.
+func TestChooseAgent(t *testing.T) {
+	t.Parallel()
+	c, _ := fakeChat(t, t.TempDir(), 100)
+	a, args := fakeAgent(t, c)
+	reported := make(chan string, 4)
+	a.report = func(text string) { reported <- text }
+	report := func() string {
+		select {
+		case got := <-reported:
+			return got
+		case <-time.After(10 * time.Second):
+			t.Fatal("no report")
+			return ""
+		}
+	}
+	on := func(name string) (agentRecord, sub) {
+		r, _ := a.loadRecord(name)
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		return r, *a.subs[name]
+	}
+	if _, err := a.ChooseAgent("Nobody", "sonnet", "low"); err == nil {
+		t.Fatal("chose for no one")
+	}
+	a.Spawn("Idle", "look around", "high", "opus", 0, nil)
+	report()
+	out, err := a.ChooseAgent("Idle", "sonnet", "low")
+	if err != nil || out != "[Idle] now runs on sonnet, effort low." {
+		t.Fatal(out, err)
+	}
+	ctl := strings.Join(fakeFiles(a, ".ctl"), "\n")
+	if !strings.Contains(ctl, `"set_model"`) || !strings.Contains(ctl, `"model":"sonnet"`) || !strings.Contains(ctl, `"apply_flag_settings"`) || !strings.Contains(ctl, `"settings":{"effortLevel":"low"}`) {
+		t.Fatalf("its call at rest wasn't switched: %s", ctl)
+	}
+	if r, s := on("Idle"); r.Model != "sonnet" || r.Effort != "low" || s.Model != "sonnet" || s.Effort != "low" {
+		t.Fatalf("record %s %s, rail %s %s", r.Model, r.Effort, s.Model, s.Effort)
+	}
+	for _, bad := range [][2]string{{"two words", "low"}, {"sonnet", "lots"}} {
+		if _, err := a.ChooseAgent("Idle", bad[0], bad[1]); err == nil {
+			t.Fatalf("took %q", bad)
+		}
+	}
+	if out, err := a.ChooseAgent("Idle", "", "medium"); err != nil || out != "[Idle] now runs on sonnet, effort medium." { // the model kept
+		t.Fatal(out, err)
+	}
+	if r, _ := on("Idle"); r.Model != "sonnet" || r.Effort != "medium" {
+		t.Fatalf("record %s %s", r.Model, r.Effort)
+	}
+	if !strings.Contains(agentPlain(c.dir, "Idle"), "on: sonnet medium") {
+		t.Fatalf("Idle's log doesn't say: %q", agentPlain(c.dir, "Idle"))
+	}
+
+	a.StopAgent("Idle")
+	waitFor(t, "its call's end", func() bool {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		return a.halts["Idle"] == nil
+	})
+	if out, err := a.ChooseAgent("Idle", "fable", "high"); err != nil || out != "[Idle] runs on fable, effort high, from its next call." {
+		t.Fatal(out, err)
+	}
+	a.Tell("Idle", "go on")
+	if got := report(); !strings.Contains(got, "Ran on fable high") {
+		t.Fatalf("report: %q", got)
+	}
+	calls := args()
+	last := strings.Join(calls[len(calls)-1], " ")
+	if !strings.Contains(last, "--model fable") || !strings.Contains(last, "--effort high") || !strings.Contains(last, "--resume") {
+		t.Fatalf("resumed as %s", last)
+	}
+
+	a.mu.Lock()
+	a.running["Soon"] = nil // starting
+	a.subs["Soon"] = &sub{Name: "Soon", State: "starting"}
+	a.mu.Unlock()
+	if out, err := a.ChooseAgent("Soon", "sonnet", "low"); err == nil {
+		t.Fatal("chose for one starting:", out)
+	}
+}
+
 // A turn's input holds the messages recall finds for the user's words (a
 // voice message's here), ahead of the user's message, and the log holds
 // only that message.

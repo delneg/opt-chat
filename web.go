@@ -318,14 +318,14 @@ type request struct {
 	Before int          `json:"before"`
 	Seq    int          `json:"seq"`
 	Key    string       `json:"key"`    // send: the same on a send again after a reconnect
-	Model  string       `json:"model"`  // model: the turns' model; newAgent: its
-	Effort string       `json:"effort"` // model: their effort; newAgent: its
+	Model  string       `json:"model"`  // model: the turns' model, or with name the subagent's; newAgent: its
+	Effort string       `json:"effort"` // model: their effort, or its; newAgent: its
 	Save   bool         `json:"save"`   // model: for later runs too
 	Mode   string       `json:"mode"`   // mode: the permission mode
 	Allow  bool         `json:"allow"`  // answer: yes
 	Always bool         `json:"always"` // answer: yes, and don't ask again
 	Action string       `json:"action"` // mcp: on, off, agents (for subagents only), reconnect, signin; skills: set; plugins: on, off; empty: list
-	Name   string       `json:"name"`   // mcp, skills: which; steps, tellAgent, agentContext, compactAgent, newAgent: the subagent's
+	Name   string       `json:"name"`   // mcp, skills: which; steps, tellAgent, agentContext, compactAgent, newAgent, model: the subagent's
 	Dir    string       `json:"dir"`    // newAgent: the folder its tools run in
 	Window int          `json:"window"` // newAgent: the context it compacts past; 0: never
 	State  string       `json:"state"`  // skills: on, off, name-only, user-invocable-only
@@ -534,6 +534,14 @@ func (w *webServer) serve(req request) any {
 			return restoreReply{T: "restore", Text: m.text, Files: m.uploads}
 		}
 	case "model":
+		if req.Name != "" { // a subagent's, from its full-screen view
+			out, err := h.agent.ChooseAgent(agentName(req.Name), req.Model, req.Effort)
+			if err != nil {
+				return noticeUpdate{T: "notice", Level: "warn", S: err.Error() + "."}
+			}
+			c.hub.setStatus(currentStatus(c, h.agent))
+			return noticeUpdate{T: "notice", Level: "info", S: out}
+		}
 		if err := h.agent.choose(req.Model, req.Effort, req.Save); err != nil {
 			return noticeUpdate{T: "notice", Level: "warn", S: err.Error()}
 		}

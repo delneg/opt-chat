@@ -446,6 +446,26 @@ func TestWebModel(t *testing.T) {
 	if u := ws.next("refused", typ("notice")); u["level"] != "warn" {
 		t.Fatalf("a bad effort: %v", u)
 	}
+
+	// From a subagent's full-screen view: its own, the turns' kept.
+	name, ok := wt.h.agent.NewAgent("Mine", t.TempDir(), "opus", "high", 0)
+	if !ok {
+		t.Fatal(name)
+	}
+	ws.send(map[string]any{"t": "model", "name": name, "model": "sonnet", "effort": "low"})
+	if u := ws.next("its choice", typ("notice")); u["s"] != "[Mine] runs on sonnet, effort low, from its next call." {
+		t.Fatalf("its choice: %v", u)
+	}
+	wt.c.hub.mu.Lock()
+	st = wt.c.hub.status
+	wt.c.hub.mu.Unlock()
+	if st.Model != "default" || len(st.Subs) != 1 || st.Subs[0].Model != "sonnet" || st.Subs[0].Effort != "low" {
+		t.Fatalf("the bar and the rail: %+v", st)
+	}
+	ws.send(map[string]any{"t": "model", "name": "Nobody", "model": "sonnet", "effort": "low"})
+	if u := ws.next("no one", typ("notice")); u["level"] != "warn" || u["s"] != "no subagent [Nobody]." {
+		t.Fatalf("no one: %v", u)
+	}
 }
 
 // The page asks for the plan's limits; they come in the bar's status.

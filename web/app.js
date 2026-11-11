@@ -657,8 +657,8 @@ function Mention() {
 }
 
 const commands = [
-  ['/model', 'choose the model and effort for turns (Alt+P)'],
-  ['/effort', 'show or set their effort'],
+  ['/model', 'choose the model and effort for turns, or in a subagent\'s view its own (Alt+P)'],
+  ['/effort', 'show or set their effort, or in a subagent\'s view its own'],
   ['/mode', 'show or set the permission mode (Shift+Tab)'],
   ['/autocompact', 'compact a subagent past this context, as 250k, between two steps, under the -agent-compact-max cap (never the chat\'s)'],
   ['/mcp', 'your Claude Code MCP servers: status, on, for subagents only or off, sign in'],
@@ -742,6 +742,13 @@ async function submit(now) {
   }
   if (S.conn !== 'open') { notice('warn', 'Not connected: your message stays in the input until opt-chat is back.'); return; }
   if (/^\/model\s*$/.test(inputEl.value) && !S.atts.length) { setInput(''); openPicker(); return; }
+  const pick = to && !S.atts.length && inputEl.value.match(/^\/(model|effort)(?:\s+(\S+))?\s*$/); // a subagent's, in its view
+  if (pick) {
+    setInput('');
+    if (!pick[2]) openPicker();
+    else send({ t: 'model', name: to, [pick[1]]: pick[2] });
+    return;
+  }
   if (/^\/view\s*$/.test(inputEl.value) && !S.atts.length) { setInput(''); toggleMem(); return; }
   if (/^\/new\s*$/.test(inputEl.value) && !S.atts.length) { setInput(''); openNew(); return; }
   const find = inputEl.value.match(/^\/find(?:\s([\s\S]*))?$/);
@@ -1573,18 +1580,23 @@ function effortName(e) { return e === 'xhigh' ? 'Extra high' : e[0].toUpperCase(
 
 function levelsOf(m) { return m?.supportedEffortLevels?.length ? m.supportedEffortLevels : EFFORTS; }
 
-function openPicker() {
+// openPicker opens the model picker for who, a subagent, or for Opt's
+// turns: in a subagent's full-screen view, that subagent's.
+function openPicker(who = S.full || '') {
   if (S.panel) closePanel();
   if (S.newAgent) closeNew();
   if (!S.models || S.modelsError) send({ t: 'models' });
-  set({ picker: { sel: -1, effort: S.status?.effort || 'high' }, help: false });
+  set({ picker: { sel: -1, effort: pickerOn(who)?.effort || 'high', who }, help: false });
 }
+
+// pickerOn is what who, or Opt's turns, runs on now.
+function pickerOn(who) { return who ? (S.status?.subs || []).find(s => s.name === who) : S.status; }
 
 function closePicker() { set({ picker: null }); inputEl?.focus(); }
 
 function pickerSel(rows) {
   const p = S.picker;
-  return p.sel >= 0 ? Math.min(p.sel, rows.length - 1) : Math.max(0, rows.findIndex(m => m.value === S.status?.model));
+  return p.sel >= 0 ? Math.min(p.sel, rows.length - 1) : Math.max(0, rows.findIndex(m => m.value === pickerOn(p.who)?.model));
 }
 
 function pickModel(save) {
@@ -1592,7 +1604,7 @@ function pickModel(save) {
   if (!m) return;
   const levels = levelsOf(m);
   const effort = levels.includes(S.picker.effort) ? S.picker.effort : levels.includes('high') ? 'high' : levels[levels.length - 1];
-  send({ t: 'model', model: m.value, effort, save });
+  send({ t: 'model', model: m.value, effort, save, name: S.picker.who });
   closePicker();
 }
 
@@ -1621,7 +1633,7 @@ function pickerKey(e) {
   }
   e.preventDefault();
   e.stopPropagation();
-  if (S.picker) set({ picker: { sel, effort } });
+  if (S.picker) set({ picker: { ...S.picker, sel, effort } });
   return true;
 }
 
@@ -1629,16 +1641,18 @@ function Picker() {
   const p = S.picker, rows = pickerRows(), sel = pickerSel(rows), m = rows[sel];
   const supports = !m || m.supportsEffort !== false;
   const levels = levelsOf(m);
-  const effort = levels.includes(p.effort) ? p.effort : 'high';
-  return html`<div class="picker" role="dialog" aria-label="Select model">
-    <div class="title">Select model</div>
-    <div class="dim">Switch between Claude models. Enter keeps your pick for later runs too; s, for this run only.</div>
+  const effort = levels.includes(p.effort) ? p.effort : 'high', now = pickerOn(p.who)?.model;
+  return html`<div class="picker" role="dialog" aria-label=${p.who ? `Select [${p.who}]'s model` : 'Select model'}>
+    <div class="title">${p.who ? `Select [${p.who}]'s model` : 'Select model'}</div>
+    <div class="dim">${p.who
+      ? `Switch [${p.who}] between Claude models: its call underway takes your pick at its next request, and so do its calls after. Opt's turns keep theirs.`
+      : 'Switch between Claude models. Enter keeps your pick for later runs too; s, for this run only.'}</div>
     ${S.models === null ? html`<div class="rows dim">Asking Claude Code for its models…</div>` : html`<div class="rows">
       ${S.modelsError && html`<div class="err">Claude Code didn't list its models: ${S.modelsError}</div>`}
       ${rows.map((r, j) => html`<div class=${'row' + (j === sel ? ' sel' : '')} key=${r.value}
           onClick=${() => set({ picker: { ...S.picker, sel: j } })} onDblClick=${() => { set({ picker: { ...S.picker, sel: j } }); pickModel(true); }}>
         <span class="ptr">${j === sel ? '❯' : ''}</span><span class="num">${j + 1}.</span>
-        <span class="lbl">${modelLabel(r)}${r.value === S.status?.model ? html` <span class="ok">✔</span>` : ''}</span>
+        <span class="lbl">${modelLabel(r)}${r.value === now ? html` <span class="ok">✔</span>` : ''}</span>
         <span class="desc">${modelBlurb(r)}</span>
       </div>`)}
     </div>`}
@@ -1646,7 +1660,7 @@ function Picker() {
       ? html`<span class="dot">●</span> ${effortName(effort)} effort <span class="dim">←/→ to adjust</span>
           <span class="scale">${levels.map(l => html`<span class=${l === effort ? 'on' : ''}>${l}</span>`)}</span>`
       : html`<span class="dim">This model takes no effort setting.</span>`}</div>
-    <div class="dim">Enter to set as default · s to use this run only · Esc to cancel</div>
+    <div class="dim">${p.who ? 'Enter to switch · Esc to cancel' : 'Enter to set as default · s to use this run only · Esc to cancel'}</div>
   </div>`;
 }
 
@@ -2254,7 +2268,7 @@ function Footer() {
   const s = S.status, l = S.last;
   const right = [];
   if (s) {
-    right.push(html`<button title="choose the model and effort (Alt+P)" onClick=${openPicker}>${s.model} · ${s.effort}</button>`);
+    right.push(html`<button title=${'choose the model and effort of Opt\'s turns' + (S.full ? '' : ' (Alt+P)')} onClick=${() => openPicker('')}>${s.model} · ${s.effort}</button>`);
     right.push(html`<span title="every message in the chat, kept for good">${count(s.msgs, 'message')}</span>`,
       html`<span title="the view as kept: the chat as lines of the summary tree, merged as it grows to stay about this size; its KB count summarized lines only. A turn reads it as is once every line is summarized, until then merged further: Opt's view (Alt+V) shows what a turn reads now">view ${count(s.viewLines, 'line')}, ${Math.round(s.viewBytes / 1000)} KB</span>`);
     if (s.backlog || s.merges) right.push(html`<span class="busy" title=${count(s.running, 'compaction') + ' running'}>summarizing ${[s.backlog && count(s.backlog, 'message'), s.merges && count(s.merges, 'merge')].filter(Boolean).join(' + ')}</span>`);
@@ -2603,9 +2617,16 @@ function subState(s, now) {
 function moving(s) { return ['working', 'starting', 'compacting'].includes(s?.state) && !S.asks.some(q => q.who === s.name); }
 function Dot({ s }) { return html`<span class=${'dot' + (moving(s) ? ' moving' : '')} aria-hidden="true">●</span>`; }
 
-function subMeta(s, kid) { // a subagent's own, under its parent, needs no name of it
-  return [s.parent && !kid && `[${s.parent}]'s`, s.model, s.effort, s.dir && 'in ' + tilde(s.dir), s.context && `${k(s.context)} context`, s.compact ? 'compacts at its next step' : s.window ? `compacts past ${k(s.window)}` : s.blank && 'autocompact off',
-    s.steps && count(s.steps, 'step')].filter(Boolean).join(' · ');
+// subMeta says what a subagent runs on and how far it got; a subagent's
+// own, under its parent, needs no name of it. With pick, its model and
+// effort are a button that opens the picker for it.
+function subMeta(s, kid, pick) {
+  const on = [s.model, s.effort].filter(Boolean).join(' · ');
+  const parts = [s.parent && !kid && `[${s.parent}]'s`,
+    on && pick ? html`<button class="pick" title=${`choose [${s.name}]'s model and effort` + (S.full === s.name ? ' (Alt+P)' : '')} onClick=${() => openPicker(s.name)}>${on}</button>` : on,
+    s.dir && 'in ' + tilde(s.dir), s.context && `${k(s.context)} context`, s.compact ? 'compacts at its next step' : s.window ? `compacts past ${k(s.window)}` : s.blank && 'autocompact off',
+    s.steps && count(s.steps, 'step')].filter(Boolean);
+  return pick ? html`<span>${parts.flatMap((p, j) => j ? [' · ', p] : [p])}</span>` : parts.join(' · '); // one span: the line's flex keeps it whole
 }
 
 // useClock re-renders each second while on.
@@ -2901,7 +2922,7 @@ function AgentView({ a, s, now }) {
       ${s && html`<${FullButton} name=${a.name}/><${CompactButton} s=${s}/><${SubAction} s=${s}/>`}
       <button class="x" title=${S.wide ? 'hide until a new subagent starts (Alt+A or the bar\'s agents show it again)' : 'close (Esc)'} onClick=${() => toggleRail()}>×</button>
     </div>
-    ${s && html`<div class="rail-meta">${subMeta(s)}</div>`}
+    ${s && html`<div class="rail-meta">${subMeta(s, false, true)}</div>`}
     <div class="rail-log" ref=${ref} onScroll=${() => { const el = ref.current; stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60; }}>
       ${a.cut && html`<div class="edge">Its earlier steps: zoom("${a.name}") in the chat, or agents/${a.name}.log</div>`}
       ${a.loading ? html`<div class="edge">Loading its steps…</div>` : !list.length && html`<div class="edge">No steps yet.</div>`}
@@ -3077,7 +3098,7 @@ function AgentFull({ a, s }) {
         ${s && html`<${CompactButton} s=${s}/><${SubAction} s=${s}/>`}
       </span>
     </div>
-    ${s && html`<div class="column meta">${subMeta(s)}</div>`}</div>
+    ${s && html`<div class="column meta">${subMeta(s, false, true)}</div>`}</div>
     ${S.ctx?.name === a.name && html`<${Ctx} c=${S.ctx}/>`}
     ${S.find?.agent === a.name && html`<${FindBar}/>`}
     <div class="scroll full-log" ref=${ref} onScroll=${() => {

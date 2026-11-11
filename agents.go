@@ -748,6 +748,49 @@ func (a *Agent) CompactAgent(name string) (string, bool) {
 	return fmt.Sprintf("[%s] compacts its context at its next step, then goes on.", name), true
 }
 
+// ChooseAgent switches the subagent name to model and effort, as the
+// page's picker asks; an empty one keeps its own. Its call underway, at
+// work or at rest, takes them at its next request, through Claude Code's
+// set_model and apply_flag_settings (both measured on 2.1.322); its record
+// keeps them for the calls after. One starting can't switch yet.
+func (a *Agent) ChooseAgent(name, model, effort string) (string, error) {
+	switch {
+	case model != "" && !modelName.MatchString(model):
+		return "", fmt.Errorf("%q is no model name", model)
+	case effort != "" && !validEffort(effort):
+		return "", fmt.Errorf("effort %q is none of %s", effort, joinEfforts())
+	}
+	a.mu.Lock()
+	s := a.subs[name]
+	p, running := a.running[name]
+	switch {
+	case s == nil:
+		a.mu.Unlock()
+		return "", fmt.Errorf("no subagent [%s]", name)
+	case running && p == nil:
+		a.mu.Unlock()
+		return "", fmt.Errorf("[%s] is starting: choose again in a moment", name)
+	}
+	if r := a.resting[name]; r != nil {
+		p = r.p
+	}
+	model, effort = cmp.Or(model, s.Model), cmp.Or(effort, s.Effort)
+	a.subLocked(name, func(s *sub) { s.Model, s.Effort = model, effort })
+	var rec agentRecord
+	a.note(name, func(r *agentRecord) {
+		r.Model, r.Effort = model, effort
+		rec = *r
+	})
+	now := p != nil && p.control("opt-model", map[string]any{"subtype": "set_model", "model": model}) &&
+		p.control("opt-effort", map[string]any{"subtype": "apply_flag_settings", "settings": map[string]any{"effortLevel": effort}})
+	a.mu.Unlock()
+	a.agentWrite(name, "on", rec.on()) // in its log, for zoom
+	if now {
+		return fmt.Sprintf("[%s] now runs on %s, effort %s.", name, model, effort), nil
+	}
+	return fmt.Sprintf("[%s] runs on %s, effort %s, from its next call.", name, model, effort), nil
+}
+
 // ClearAgent drops a subagent whose call has ended from the rail; its log
 // stays, for zoom. False when its call is still underway.
 func (a *Agent) ClearAgent(name string) bool {
@@ -798,6 +841,9 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 			text = "[" + name + "] " + text
 		}
 		on := strings.TrimSpace(model + " " + effort)
+		if now, err := a.loadRecord(name); err == nil { // the page may have switched it meanwhile
+			on = strings.TrimSpace(now.Model + " " + now.Effort)
+		}
 		if size > 0 {
 			on += ", its context at " + k(size) + " tokens"
 		}

@@ -835,15 +835,18 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 	fresh := rec.State == "new" // the user's own: msg starts its session, with no view
 	resumed := len(msg) > 0 && !fresh
 	size := 0 // its context: the tokens its latest request read
+	ranOn := func() string { // the page may have switched it mid-call: see ChooseAgent
+		if now, err := a.loadRecord(name); err == nil {
+			return strings.TrimSpace(now.Model + " " + now.Effort)
+		}
+		return strings.TrimSpace(model + " " + effort)
+	}
 	send := func(text string) {
 		a.chat.hub.notice("info", "[%s] done", name)
 		if !strings.HasPrefix(text, "["+name+"]") { // as the prompt asks of a report
 			text = "[" + name + "] " + text
 		}
-		on := strings.TrimSpace(model + " " + effort)
-		if now, err := a.loadRecord(name); err == nil { // the page may have switched it meanwhile
-			on = strings.TrimSpace(now.Model + " " + now.Effort)
-		}
+		on := ranOn()
 		if size > 0 {
 			on += ", its context at " + k(size) + " tokens"
 		}
@@ -902,7 +905,7 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 		case byUser:
 			a.chat.hub.notice("info", "[%s] stopped", name)
 			a.chat.Log("work", fmt.Sprintf("[%s] stopped: the user stopped it from the page before it finished, so it sends no report. %s\n\nRan on %s. %s",
-				name, resumeHint(name), strings.TrimSpace(model+" "+effort), a.chatRef(name)))
+				name, resumeHint(name), ranOn(), a.chatRef(name)))
 			return
 		case state == "stopped":
 			how, why := "quit", ""

@@ -75,6 +75,7 @@ type (
 		T     string `json:"t"` // notice
 		Level string `json:"level"`
 		S     string `json:"s"`
+		At    int64  `json:"at,omitzero"` // unix ms it was made; 0: as it is sent (see MarshalJSON)
 	}
 	thoughtUpdate struct {
 		T string `json:"t"` // thought: a whole thinking block
@@ -427,6 +428,18 @@ func (h *hub) ended(e turnEnd) {
 
 // notice tells the pages and the terminal something outside the chat: level
 // warn or info.
+// MarshalJSON stamps a notice with when it goes out, unless it has its time:
+// the pages put it among a subagent's steps by it (agentRows in app.js).
+// Notices go out as they are made, from many places, so this is the one
+// that sees them all.
+func (n noticeUpdate) MarshalJSON() ([]byte, error) {
+	type plain noticeUpdate // without this method
+	if n.At == 0 {
+		n.At = nowMs()
+	}
+	return json.Marshal(plain(n))
+}
+
 func (h *hub) notice(level, f string, a ...any) {
 	s := fmt.Sprintf(f, a...)
 	if h == nil || h.print == nil {

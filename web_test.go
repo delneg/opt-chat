@@ -517,3 +517,26 @@ func TestWebSteps(t *testing.T) {
 		return u["t"] == "notice" && strings.HasPrefix(u["s"].(string), "No log for [Nobody]")
 	})
 }
+
+// A notice carries when it was made, so a subagent's view can put it among
+// the steps by time: their numbers shift as the log's tail is cut.
+func TestNoticeAt(t *testing.T) {
+	t.Parallel()
+	before := nowMs()
+	b, err := json.Marshal(noticeUpdate{T: "notice", Level: "info", S: "[A] back at work"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var u struct {
+		T     string `json:"t"`
+		Level string `json:"level"`
+		S     string `json:"s"`
+		At    int64  `json:"at"`
+	}
+	if err := json.Unmarshal(b, &u); err != nil || u.S != "[A] back at work" || u.T != "notice" || u.At < before || u.At > nowMs() {
+		t.Fatalf("%s: %+v %v", b, u, err)
+	}
+	if b, _ := json.Marshal(noticeUpdate{T: "notice", S: "x", At: 7}); !strings.Contains(string(b), `"at":7`) {
+		t.Fatalf("its own time lost: %s", b)
+	}
+}

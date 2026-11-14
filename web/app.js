@@ -239,7 +239,7 @@ function onUpdate(u) {
     }
     case 'notice':
       if (u.level === 'warn' && S.ctx?.loading) set({ ctx: { ...S.ctx, loading: false, failed: true } }); // its context, asked for, is not coming
-      notice(u.level, u.s);
+      notice(u.level, u.s, u.at);
       break;
     case 'agentContext': if (S.ctx?.name === u.name) set({ ctx: { name: u.name, sections: u.sections || [], loading: false } }); break;
     case 'aside': set({ asides: mergeAsides(S.asides, [u.aside]), unseen: S.unseen || (!!u.aside.a && document.hidden) }); break;
@@ -309,11 +309,12 @@ function onUpdate(u) {
   }
 }
 
-// notice adds a line to the log. One that comes while a subagent is full
-// screen shows in its view too (who), after its steps so far (step).
-function notice(level, s) {
-  const who = S.full || '', step = who && S.agent?.name === who ? S.agent.off + S.agent.steps.length : 0;
-  set({ notices: S.notices.concat({ id: ++noticeSeq, after: lastI, level, s, who, step }).slice(-50) });
+// notice adds a line to the log, made at at (unix ms, opt-chat's clock for
+// its own). One that comes while a subagent is full screen shows in its
+// view too (who), among its steps by that time: their numbers shift as
+// the tail of its log the page holds moves, so they can't place it.
+function notice(level, s, at = Date.now()) {
+  set({ notices: S.notices.concat({ id: ++noticeSeq, after: lastI, level, s, who: S.full || '', at }).slice(-50) });
 }
 
 // histText is a message as ↑ recalls it: without its attachments, which
@@ -2879,8 +2880,8 @@ function agentRows(a, busy, notes = []) {
   const out = [];
   let j = 0;
   for (const it of list) {
-    const at = +it.m.i.slice(it.m.i.lastIndexOf(':') + 1);
-    for (; j < notes.length && notes[j].step <= at; j++) out.push({ note: notes[j], key: 'n' + notes[j].id });
+    const d = it.m.date; // when its step was written; none in an old log
+    for (; d && j < notes.length && notes[j].at < d; j++) out.push({ note: notes[j], key: 'n' + notes[j].id });
     out.push(it);
   }
   for (; j < notes.length; j++) out.push({ note: notes[j], key: 'n' + notes[j].id });

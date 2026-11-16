@@ -118,6 +118,20 @@ function memo(fn) {
   };
 }
 
+// Guard keeps a part of the page that fails to draw from taking the whole
+// page with it: a logged message stays in the log for good, so one the page
+// can't draw (a tool call whose input is not what its tool takes, say)
+// would break every load. It shows what went wrong and text, the part's
+// own words as they are; the rest of the page goes on.
+class Guard extends Component {
+  componentDidCatch(err) { console.error(err); this.setState({ err }); }
+  render({ children, text }, { err }) {
+    if (!err) return children;
+    const s = String(text ?? '');
+    return html`<div class="notice warn"><span>!</span><span>The page could not show this (${String(err?.message || err)}). As it is:${'\n'}${s.length > 4000 ? s.slice(0, 4000) + '…' : s}</span></div>`;
+  }
+}
+
 // ---------------------------------------------------------------- server
 
 let ws = null, lastI = -1, retries = 0, sendSeq = 0, pathSeq = 0, noticeSeq = 0;
@@ -1145,6 +1159,7 @@ function k(n) { return n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n || 0);
 // tilde shortens a path: relative to where Opt's tools run, as Claude Code
 // shows it, or else from ~.
 function tilde(p) {
+  if (typeof p !== 'string') return p == null ? '' : JSON.stringify(p); // a path that is none: as it is
   const cwd = S.status?.cwd, home = S.status?.dir?.match(/^\/(Users|home)\/[^/]+/)?.[0];
   if (cwd && cwd !== home && p?.startsWith(cwd + '/')) return p.slice(cwd.length + 1);
   return home && p?.startsWith(home + '/') ? '~' + p.slice(home.length) : p;
@@ -1244,7 +1259,7 @@ function row(it) {
   if (it.aside) return html`<${AsideView} key=${it.key} a=${it.aside}/>`;
   if (it.sep) return html`<div class="sep" key=${it.key}><span class="lbl">${it.sep}</span></div>`;
   // data-i: a find finds its message in the page by it (markFound, here)
-  return html`<div class="row-m" key=${it.key} data-i=${it.m.i}><${MsgView} m=${it.m} echo=${it.echo} state=${it.state}/></div>`;
+  return html`<div class="row-m" key=${it.key} data-i=${it.m.i}><${Guard} text=${it.m.text}><${MsgView} m=${it.m} echo=${it.echo} state=${it.state}/></${Guard}></div>`;
 }
 
 // Log is the chat, virtualized: only the rows in view and near it are in
@@ -1452,7 +1467,14 @@ function oneLine(s, n) {
   return s.length > n ? s.slice(0, n) + '…' : s;
 }
 
+// toolArgs is a tool call's input on one line, as Claude Code shows it; an
+// input its tool would not take (a field that is no text or number) shows
+// as it was written.
 function toolArgs(name, x, raw) {
+  try { return argsOf(name, x, raw); } catch { return oneLine(raw, 140); }
+}
+
+function argsOf(name, x, raw) {
   if (!x || typeof x !== 'object') return oneLine(raw, 140);
   switch (name) {
     case 'Bash': return oneLine(x.command, 140);
@@ -1490,8 +1512,8 @@ function LiveTool({ name, raw }) {
 
 function ToolInput({ name, x, raw }) {
   if (!x) return html`<pre>${raw}</pre>`;
-  if (name === 'Bash') return html`<pre>${x.command}</pre>`;
-  if (name === 'Edit' && typeof x.old_string === 'string') {
+  if (name === 'Bash' && typeof x.command === 'string') return html`<pre>${x.command}</pre>`;
+  if (name === 'Edit' && typeof x.old_string === 'string' && typeof x.new_string === 'string') {
     return html`<pre class="diff">${x.old_string.split('\n').map(l => html`<div class="del">- ${l}</div>`)}${x.new_string.split('\n').map(l => html`<div class="add">+ ${l}</div>`)}</pre>`;
   }
   if (name === 'Write' && typeof x.content === 'string') return html`<pre>${x.content}</pre>`;
@@ -1905,7 +1927,7 @@ function Ask({ q }) {
       onFocusIn=${() => setFocused(true)} onFocusOut=${() => setFocused(false)}>
     <div class="title">${askTitle(q.tool, x)}${q.who ? html` <span class="dim">· [${q.who}] asks</span>` : ''}${more > 0 ? html` <span class="dim">· ${more} more waiting</span>` : ''}</div>
     <div class="what">
-      ${q.tool === 'Bash' && x ? html`<pre>${x.command}</pre>` : html`<div class="args">${q.tool}(${toolArgs(q.tool, x, JSON.stringify(q.input))})</div><${ToolInput} name=${q.tool} x=${x} raw=${JSON.stringify(q.input)}/>`}
+      <${Guard} text=${JSON.stringify(q.input)}>${q.tool === 'Bash' && typeof x?.command === 'string' ? html`<pre>${x.command}</pre>` : html`<div class="args">${q.tool}(${toolArgs(q.tool, x, JSON.stringify(q.input))})</div><${ToolInput} name=${q.tool} x=${x} raw=${JSON.stringify(q.input)}/>`}</${Guard}>
       ${q.desc && html`<div class="dim">${q.desc}</div>`}
     </div>
     <div>Do you want to proceed?${!focused && html` <span class="dim">(Tab or a click here to answer)</span>`}</div>
@@ -3299,7 +3321,7 @@ function findKey(e) {
       }
       if (!n) return;
       if (d > 0 && f.sel + d >= n) loadMore();
-      set({ find: { ...f, sel: Math.max(0, Math.min(n - 1, f.sel + d)) } });
+      set({ find: { ...S.find, sel: Math.max(0, Math.min(n - 1, f.sel + d)) } }); // S.find: loadMore's busy stays
       return;
     }
     case 'Enter':
@@ -3542,7 +3564,7 @@ function MemLine({ l }) {
   return html`<div class=${'mem-box' + (l.n === 1 ? ' one' : '')}>
     <button class="fold" data-k=${k} aria-expanded="true" title=${memWhen(l)} onClick=${() => memToggle(l)}>▾ ${k} · ${l.n > 1 ? count(l.n, 'message') + ' · fold' : 'fold'}</button>
     ${!z ? html`<div class="mem-wait">Opening…</div>`
-      : z.msg ? html`<${MsgView} m=${z.msg} state=${z.msg.kind === 'tool' ? 'done' : ''}/>`
+      : z.msg ? html`<${Guard} text=${z.msg.text}><${MsgView} m=${z.msg} state=${z.msg.kind === 'tool' ? 'done' : ''}/></${Guard}>`
       : z.lines.map(h => html`<${MemLine} key=${h.id + '+' + h.n} l=${h}/>`)}
   </div>`;
 }

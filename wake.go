@@ -215,6 +215,9 @@ func parseEvery(s string) (time.Duration, error) {
 	if days, ok := strings.CutSuffix(s, "d"); ok {
 		var n int
 		n, err = strconv.Atoi(days)
+		if n > everyDaysMax { // more would not fit a duration
+			return 0, errEvery
+		}
 		d = time.Duration(n) * 24 * time.Hour
 	}
 	if err != nil || d <= 0 {
@@ -222,6 +225,9 @@ func parseEvery(s string) (time.Duration, error) {
 	}
 	return d, nil
 }
+
+// everyDaysMax is the most days an every takes: a hundred years.
+const everyDaysMax = 36500
 
 // everyText writes d as parseEvery reads it: whole days past one as days.
 func everyText(d time.Duration) string {

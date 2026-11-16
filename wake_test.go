@@ -200,7 +200,7 @@ func TestParseEvery(t *testing.T) {
 			t.Fatalf("parseEvery(%q) = %v, %v; want %v", in, got, err, want)
 		}
 	}
-	for _, in := range []string{"soon", "", "-1h", "0d", "1.5d"} {
+	for _, in := range []string{"soon", "", "-1h", "0d", "1.5d", "40000d", "99999999999999d", "9223372036854775807d"} {
 		if _, err := parseEvery(in); err == nil {
 			t.Fatalf("parseEvery(%q): no error", in)
 		}

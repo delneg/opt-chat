@@ -1184,7 +1184,8 @@ func (c *Chat) ZoomRun(id, count int) (string, []string) {
 		return no, nil
 	}
 	c.mu.Unlock()
-	end := min(id+max(count, 1), len(msgs))
+	// count is the model's: id+count could pass what an int holds.
+	end := id + min(max(count, 1), len(msgs)-id)
 	lookups := lookupRefs(msgs[:end]) // a result's call may come before id
 	var parts, imgs []string
 	size := 0

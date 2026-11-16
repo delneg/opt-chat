@@ -1208,6 +1208,25 @@ func TestCviewSurvivesRestart(t *testing.T) {
 	}
 }
 
+// A count past what an int holds reads to the chat's end, as any count
+// past it does: zoom's count comes from the model.
+func TestZoomRunHugeCount(t *testing.T) {
+	t.Parallel()
+	c, _ := fakeChat(t, t.TempDir(), 100)
+	c.Log("user", "one")
+	c.Log("opt", "two")
+	c.Log("user", "three")
+	for _, count := range []int{math.MaxInt, math.MaxInt - 1, math.MinInt} {
+		want := "1+1|opt: two\n\n2+1|user: three"
+		if count < 0 {
+			want = "1+1|opt: two" // as a count of 1
+		}
+		if got, _ := c.ZoomRun(1, count); got != want {
+			t.Errorf("ZoomRun(1, %d) = %q, want %q", count, got, want)
+		}
+	}
+}
+
 // zoom(id, 1, count) gives count messages from id on whole, with their
 // images, up to zoomRunMax bytes in all (an image as zoomRunImage), the
 // first whatever its size, then says where to go on.

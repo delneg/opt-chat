@@ -52,7 +52,6 @@ type webServer struct {
 
 const keysKept = 1000
 
-// firstSend reports whether a send with this key is new, and notes it.
 // forget lets a send with key come again: what it carried was not sent.
 func (w *webServer) forget(key string) {
 	w.mu.Lock()
@@ -60,6 +59,7 @@ func (w *webServer) forget(key string) {
 	delete(w.keys, key)
 }
 
+// firstSend reports whether a send with this key is new, and notes it.
 func (w *webServer) firstSend(key string) bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()

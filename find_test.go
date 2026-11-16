@@ -143,6 +143,29 @@ func TestFind(t *testing.T) {
 	}
 }
 
+// A match's who is its message's [Name], read from the message's first
+// part: a later part of a long report that happens to start with "[" names
+// no one, and neither does a "[" never closed.
+func TestFindWho(t *testing.T) {
+	t.Parallel()
+	c, _ := fakeChat(t, t.TempDir(), 100)
+	line := strings.Repeat("x", 99) + "\n"
+	c.Log("work", "[Scout] report\n"+strings.Repeat(line, clipMax/100-1)+strings.Repeat("y", 60)+"\n[see the appendix, wombat")
+	c.Log("work", "[an open bracket and a quokka")
+	c.mu.Lock()
+	parts := len(c.msgs)
+	c.mu.Unlock()
+	if parts != 3 {
+		t.Fatalf("%d messages, want the report in 2 parts and 1 more", parts)
+	}
+	if r := c.Find("wombat", 0, false); len(r.Hits) != 1 || r.Hits[0].I != 0 || r.Hits[0].Who != "Scout" {
+		t.Errorf("a later part's match: %+v", r.Hits)
+	}
+	if r := c.Find("quokka", 0, false); len(r.Hits) != 1 || r.Hits[0].Who != "" || !strings.Contains(r.Hits[0].Snip, "quokka") {
+		t.Errorf("a bracket never closed: %+v", r.Hits)
+	}
+}
+
 // A find answers 30 at a time, the next page from more, the total the
 // whole log's.
 func TestFindPages(t *testing.T) {

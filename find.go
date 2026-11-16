@@ -18,6 +18,7 @@ import (
 const (
 	findPage   = 30  // matches a find answers at once
 	aroundSide = 100 // messages around reads on each side of its message
+	whoMax     = 100 // bytes of a work line's [Name]: a longer "[...]" is its text, not who wrote it
 )
 
 // findTerms are what a message must hold to match text: each word, and
@@ -224,10 +225,13 @@ func (c *Chat) Find(text string, before int, mine bool) foundReply {
 		default:
 			h := found{I: first, Kind: m.Kind, Date: msgs[first].Date, Imported: m.Imported}
 			h.Snip = strings.Join(strings.Fields(snippet(s, at, end, 70, 160)), " ")
-			if m.Kind == "work" && strings.HasPrefix(m.Text, "[") {
-				h.Who, _, _ = strings.Cut(m.Text[1:], "]")
-				if rest, ok := strings.CutPrefix(h.Snip, "["+h.Who+"]"); ok {
-					h.Snip = strings.TrimSpace(rest)
+			// Its [Name] heads its first part; a later part's "[" is its text's.
+			if head := msgs[first].Text; m.Kind == "work" && strings.HasPrefix(head, "[") {
+				if who, _, ok := strings.Cut(head[1:], "]"); ok && len(who) <= whoMax {
+					h.Who = who
+					if rest, ok := strings.CutPrefix(h.Snip, "["+who+"]"); ok {
+						h.Snip = strings.TrimSpace(rest)
+					}
 				}
 			}
 			r.Hits = append(r.Hits, h)

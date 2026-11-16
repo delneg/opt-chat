@@ -152,6 +152,7 @@ type resumer struct {
 	fire  func(resumeState)
 	mu    sync.Mutex
 	st    resumeState
+	last  map[string]time.Time // when each last finished without the limit, this run: see finishedSince
 	timer *time.Timer
 	done  bool
 }
@@ -219,17 +220,19 @@ func (r *resumer) note(who string, reset time.Time, grace time.Duration, now tim
 	if r.st.Due[who].Before(at) {
 		r.st.Due[who] = at
 	}
+	delete(r.last, who)
 	r.save()
 	r.arm()
 	return r.st.Due[who], true
 }
 
 // due takes the resumes whose time has come out of the file, then hands
-// them on: a crash between the two loses them rather than repeats them.
+// them on, with when it took them (Fired): a crash between the two loses
+// them rather than repeats them.
 func (r *resumer) due() {
 	r.mu.Lock()
 	now := time.Now()
-	out := resumeState{Due: map[string]time.Time{}, Tries: r.st.Tries}
+	out := resumeState{Due: map[string]time.Time{}, Tries: r.st.Tries, Fired: now}
 	for who, at := range r.st.Due {
 		if !at.After(now) {
 			out.Due[who] = at
@@ -256,6 +259,10 @@ func (r *resumer) due() {
 func (r *resumer) went(who string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.last == nil {
+		r.last = map[string]time.Time{}
+	}
+	r.last[who] = time.Now()
 	if _, waits := r.st.Due[who]; !waits && r.st.Tries == 0 {
 		return
 	}
@@ -266,6 +273,16 @@ func (r *resumer) went(who string) {
 	}
 	r.save()
 	r.arm()
+}
+
+// finishedSince tells whether who finished without the limit since t, when
+// due took its resume out: its turn ended as the reset came, so the resume
+// on its way has nothing to resume.
+func (r *resumer) finishedSince(who string, t time.Time) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	at, ok := r.last[who]
+	return ok && !t.IsZero() && !at.Before(t)
 }
 
 func (r *resumer) stop() {
@@ -381,8 +398,11 @@ func (a *Agent) resumeAfterLimit(s resumeState) {
 		stopped = append(stopped, "["+name+"]")
 		a.mu.Lock()
 		_, working := a.running[name]
+		r := a.resumes
 		a.mu.Unlock()
-		if working { // already at work again: the user told it something
+		// Already at work again: the user told it something. Or it finished
+		// as the reset came, after this resume was taken out for it.
+		if working || r != nil && r.finishedSince(name, s.Fired) {
 			continue
 		}
 		if out, ok := a.tell(name, tell{text: limitNote}); ok {

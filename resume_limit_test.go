@@ -317,6 +317,47 @@ func TestResumeSkipsSubagentThatFinished(t *testing.T) {
 	}
 }
 
+// A subagent that finishes as its reset comes, after the resumer took its
+// resume out of resume.json and before the resume reached it, is not told
+// to pick up where it stopped: it has just finished. (Under load,
+// TestResumeSkipsSubagentThatFinished hit this window once.)
+func TestResumeSkipsSubagentFinishingAtReset(t *testing.T) {
+	t.Parallel()
+	c, _ := fakeChat(t, t.TempDir(), 100)
+	a := newHarness(t, c).agent
+	a.Spawn("Worker", "do it", "", "", 0, nil)
+	waitFor(t, "Worker's report", func() bool { return workLine(c, "[Worker]") })
+
+	fired := make(chan struct{})
+	r, err := startResumer(c.dir, func(s resumeState) { // Worker's turn ends between the two
+		a.limitWent("Worker")
+		a.resumeAfterLimit(s)
+		close(fired)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(r.stop)
+	a.mu.Lock()
+	a.resumes = r
+	a.mu.Unlock()
+	now := time.Now()
+	if _, ok := r.note("Worker", now.Add(50*time.Millisecond), 0, now); !ok {
+		t.Fatal("no resume noted")
+	}
+	select {
+	case <-fired:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the resume never went out")
+	}
+	if log := agentPlain(c.dir, "Worker"); strings.Contains(log, "usage limit has reset") {
+		t.Errorf("Worker finished as the reset came, then was told to pick up after it:\n%s", log)
+	}
+	// One that has not finished since is still resumed.
+	a.resumeAfterLimit(resumeState{Due: map[string]time.Time{"Worker": time.Now()}, Fired: time.Now()})
+	waitFor(t, "Worker told at a later reset", func() bool { return strings.Contains(agentPlain(c.dir, "Worker"), "usage limit has reset") })
+}
+
 // Each one the limit stopped goes on at its own reset: a subagent stopped
 // by the five-hour window is not held until Opt's weekly Opus reset. Found
 // by a TLA+ model of the resume (property NoLateResume).

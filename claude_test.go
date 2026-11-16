@@ -1329,17 +1329,44 @@ func TestTurnRecallsNotItself(t *testing.T) {
 	}
 }
 
+// How long a subagent has been at work, as the turn's input says it.
+func TestAtIt(t *testing.T) {
+	t.Parallel()
+	const m = 60_000
+	for _, c := range []struct {
+		started, now int64
+		want         string
+	}{
+		{0, 99 * m, ""}, // no record yet
+		{10 * m, 10 * m, "under a minute"},
+		{10 * m, 11*m - 1, "under a minute"},
+		{10 * m, 9 * m, "under a minute"}, // the clock went back
+		{10 * m, 11 * m, "1 min"},
+		{10 * m, 69*m + 59_999, "59 min"},
+		{10 * m, 70 * m, "1 h"},
+		{10 * m, 135 * m, "2 h 5 min"},
+		{10 * m, 10*m + 50*60*m, "50 h"},
+	} {
+		if got := atIt(c.started, c.now); got != c.want {
+			t.Errorf("atIt(%d, %d) = %q, want %q", c.started, c.now, got, c.want)
+		}
+	}
+}
+
 // A turn's input names the subagents at work, so Opt never starts one again.
 func TestTurnNamesRunning(t *testing.T) {
 	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	a, _ := fakeAgent(t, c)
-	a.running["Scout"], a.running["Ann"] = nil, nil
+	a.running["Scout"], a.running["Ann"], a.running["New"] = nil, nil, nil
+	a.subLocked("Ann", func(s *sub) { s.Started = nowMs() - 12*60_000 - 30_000 })
+	a.subLocked("New", func(s *sub) { s.Started = nowMs() })
 	if err := (&Turn{agent: a}).Run(context.Background(), []message{{kind: "user", text: "hi"}}); err != nil {
 		t.Fatal(err)
 	}
 	last := c.msgs[len(c.msgs)-1]
-	if !strings.Contains(last.Text, `[opt-chat] Subagents at work now: [Ann], [Scout].\n\nhi`) {
+	// Each with how long it has been at it; Scout's call is reserved, with no record yet.
+	if !strings.Contains(last.Text, `[opt-chat] Subagents at work now: [Ann] (for 12 min), [New] (for under a minute), [Scout].\n\nhi`) {
 		t.Fatalf("reply: %q", last.Text)
 	}
 	if user := c.msgs[0]; user.Text != "hi" {

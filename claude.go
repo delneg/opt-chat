@@ -1234,15 +1234,44 @@ func (t *Turn) detach() []message {
 	return left
 }
 
-// atWork names the subagents at work, so that Opt knows, with no zoom,
-// what is underway; nil when none is.
+// atWork names the subagents at work, each with how long it has been at
+// it, so that Opt knows, with no zoom, what is underway and what may be
+// stuck; nil when none is.
 func (a *Agent) atWork() []block {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if names := slices.Sorted(maps.Keys(a.running)); len(names) > 0 {
-		return []block{textBlock("[opt-chat] Subagents at work now: [" + strings.Join(names, "], [") + "].\n\n")}
+	names := slices.Sorted(maps.Keys(a.running))
+	if len(names) == 0 {
+		return nil
 	}
-	return nil
+	now := nowMs()
+	for i, name := range names {
+		names[i] = "[" + name + "]"
+		if s := a.subs[name]; s != nil {
+			if d := atIt(s.Started, now); d != "" {
+				names[i] += " (for " + d + ")"
+			}
+		}
+	}
+	return []block{textBlock("[opt-chat] Subagents at work now: " + strings.Join(names, ", ") + ".\n\n")}
+}
+
+// atIt says how long a subagent set to work at started (unix ms) has been
+// at it at now: whole minutes, hours past 59 of them; "" with no start.
+func atIt(started, now int64) string {
+	if started == 0 {
+		return ""
+	}
+	switch m := (now - started) / 60_000; {
+	case m < 1: // or the clock went back
+		return "under a minute"
+	case m < 60:
+		return fmt.Sprintf("%d min", m)
+	case m%60 == 0:
+		return fmt.Sprintf("%d h", m/60)
+	default:
+		return fmt.Sprintf("%d h %d min", m/60, m%60)
+	}
 }
 
 func (t *Turn) Run(ctx context.Context, msgs []message) error {

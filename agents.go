@@ -835,7 +835,8 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 	fresh := rec.State == "new" // the user's own: msg starts its session, with no view
 	resumed := len(msg) > 0 && !fresh
 	size := 0 // its context: the tokens its latest request read
-	ranOn := func() string { // the page may have switched it mid-call: see ChooseAgent
+	// ranOn is what it runs on now: the page may have switched it mid-call (ChooseAgent).
+	ranOn := func() string {
 		if now, err := a.loadRecord(name); err == nil {
 			return strings.TrimSpace(now.Model + " " + now.Effort)
 		}

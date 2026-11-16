@@ -29,6 +29,7 @@ func TestMain(m *testing.M) {
 		panic(err)
 	}
 	os.Setenv("CLAUDE_CONFIG_DIR", dir)
+	os.Unsetenv("GROQ_API_KEY") // voice messages are off unless a test sets them up: no audio ever goes to Groq
 	code := m.Run()
 	os.RemoveAll(dir)
 	os.Exit(code)

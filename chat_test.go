@@ -521,7 +521,9 @@ func TestImportKeepsDetail(t *testing.T) {
 	c.compact = inner
 	c.pump()
 	c.mu.Unlock()
-	waitFor(t, "the import built", func() bool { // fsyncs make it slow
+	// About 2,800 lines, each with its fsync: over a minute alone with the
+	// race detector, and over three beside the other tests.
+	waitForIn(t, 6*time.Minute, "the import built", func() bool {
 		c.mu.Lock()
 		defer c.mu.Unlock()
 		return len(c.busy) == 0 && len(c.ready0) == 0 && len(c.readyM) == 0

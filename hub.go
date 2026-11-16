@@ -311,16 +311,26 @@ func (h *hub) setTurn(f func(*liveTurn)) {
 	if h == nil {
 		return
 	}
+	// Sent in the same hold of h.mu as the change: the turn's own call and
+	// a message sent into it set it at once, and a page must get the later
+	// change last.
 	h.mu.Lock()
+	defer h.mu.Unlock()
 	before := h.turn
 	f(&h.turn)
 	t := h.turn
-	h.mu.Unlock()
 	t.Text, t.Thinking, t.Input = "", "", ""
 	before.Text, before.Thinking, before.Input = "", "", ""
-	if t != before {
-		h.send(turnUpdate{T: "turn", Turn: t})
+	if t == before {
+		return
 	}
+	u := turnUpdate{T: "turn", Turn: t}
+	b, err := json.Marshal(u)
+	if err != nil {
+		warn("hub: %v", err)
+		return
+	}
+	h.sendLocked(u, b)
 }
 
 // restart empties the reply or the thinking being written, as a new block

@@ -849,6 +849,10 @@ function onKey(e) {
   const el = e.target;
   if (e.isComposing || e.keyCode === 229) return;
   if (e.key === 'Enter' && e.timeStamp - composedAt < 100) { e.preventDefault(); return; }
+  if ((e.key === 'Backspace' || e.key === 'Delete') && !e.altKey && !e.metaKey && !e.ctrlKey && el.selectionStart === el.selectionEnd) {
+    const at = placeAt(el.value, el.selectionStart, e.key === 'Backspace');
+    if (at) { e.preventDefault(); cutPlace(el, at); return; }
+  }
   if (e.key === '?' && !el.value) { e.preventDefault(); set({ help: !S.help }); return; }
   const sugg = suggestions(el);
   if (sugg.length && !e.shiftKey && !e.altKey && !e.metaKey && !e.ctrlKey) {
@@ -934,6 +938,28 @@ function insertAtCaret(s) {
   el.setSelectionRange(i, j);
   if (!document.execCommand('insertText', false, text)) el.setRangeText(text, i, j, 'end');
   autosize();
+}
+
+// placeAt is the span of the attachment's placeholder that Backspace (back)
+// or Delete at caret i would cut into, or null: as in Claude Code, the key
+// takes the whole placeholder, not a character of it. Text that only reads
+// as one is text.
+function placeAt(v, i, back) {
+  for (const m of v.matchAll(PLACE)) {
+    const a = m.index, b = a + m[0].length;
+    if ((back ? a < i && i <= b : a <= i && i < b) && S.atts.some(x => x.at === m[0])) return [a, b];
+  }
+  return null;
+}
+
+// cutPlace deletes the span as one edit, which one ⌘Z takes back; the
+// input's change takes the attachment off, and the undo puts it back.
+function cutPlace(el, [a, b]) {
+  el.setSelectionRange(a, b);
+  if (!document.execCommand('delete')) {
+    el.setRangeText('', a, b, 'end');
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+  }
 }
 
 // gone are the attachments taken off since the last send: one whose

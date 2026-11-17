@@ -15,6 +15,8 @@ tools it serves to those calls over MCP) and a local web page you chat in,
 which works much like Claude Code in a terminal. The assistant is called
 Opt.
 
+[![opt-chat at work, a video on YouTube](https://img.youtube.com/vi/1qmN6YzLnUw/maxresdefault.jpg)](https://www.youtube.com/watch?v=1qmN6YzLnUw)
+
 ## Run
 
 You need Go 1.27 and a logged-in `claude` CLI.
